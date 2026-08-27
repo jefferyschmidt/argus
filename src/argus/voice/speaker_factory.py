@@ -36,6 +36,18 @@ class FallbackSpeaker:
                 log.exception("Cartesia synthesis failed, falling back to Piper for this reply")
         return self._get_piper().synthesize(text)
 
+    def synthesize_with_visemes(self, text: str):
+        """(samples, sample_rate, viseme_timeline) when the active backend
+        supports it (Cartesia); None if unavailable -- caller falls back to
+        amplitude-only mouth animation in that case (e.g. Piper, or a
+        Cartesia call that errored)."""
+        if self._cartesia is not None:
+            try:
+                return self._cartesia.synthesize_with_visemes(text)
+            except Exception:
+                log.exception("Cartesia viseme synthesis failed, falling back to plain synthesis")
+        return None
+
     def speak(self, text: str, stop_event=None) -> None:
         from argus.voice.audio_io import play_audio
 

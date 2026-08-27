@@ -265,6 +265,20 @@
   // a fake time-based wobble. Set alongside a "speaking" state event.
   var speakEnvelope = null, speakChunkMs = 40, speakStartAt = 0, speakDurationMs = 0;
 
+  // Real IPA-phoneme-derived mouth SHAPES (Cartesia only) -- when present,
+  // takes priority over the amplitude envelope for actual viseme shapes
+  // (open/rounded/closed) instead of just a height that pulses with volume.
+  var speakVisemes = null;
+  var VISEME_SHAPES = {
+    closed:    { open: 0.05, width: 0.35 },
+    open_wide: { open: 1.00, width: 0.75 },
+    rounded:   { open: 0.55, width: 0.30 },
+    mid:       { open: 0.45, width: 0.55 },
+    narrow:    { open: 0.20, width: 0.45 },
+    silence:   { open: 0.04, width: 0.40 }
+  };
+  var mouthShape = { open: 0.05, width: 0.4 }; // smoothed, drawn each frame
+
   function currentMouthAmp() {
     if (!speakEnvelope || !speakEnvelope.length) return null;
     var elapsed = performance.now() - speakStartAt;
@@ -276,20 +290,73 @@
     return speakEnvelope[i0] * (1 - frac) + speakEnvelope[i1] * frac;
   }
 
+  function currentVisemeTarget() {
+    if (!speakVisemes || !speakVisemes.length) return null;
+    var elapsedS = (performance.now() - speakStartAt) / 1000;
+    if (elapsedS < 0) return null;
+    // linear scan -- timelines are ~20-60 entries, not worth a binary search
+    for (var i = 0; i < speakVisemes.length; i++) {
+      var v = speakVisemes[i];
+      if (elapsedS >= v.start && elapsedS < v.end) return VISEME_SHAPES[v.viseme] || VISEME_SHAPES.narrow;
+    }
+    var last = speakVisemes[speakVisemes.length - 1];
+    return elapsedS < last.end + 0.2 ? VISEME_SHAPES.silence : null;
+  }
+
   function setState(name, event) {
     if (!STATES[name]) return;
     current = name;
-    if (name === "speaking" && event && event.envelope) {
+    if (name === "speaking" && event && event.visemes) {
+      speakVisemes = event.visemes;
+      speakEnvelope = null;
+      speakDurationMs = event.duration_ms || 0;
+      speakStartAt = performance.now();
+    } else if (name === "speaking" && event && event.envelope) {
       speakEnvelope = event.envelope;
+      speakVisemes = null;
       speakChunkMs = event.chunk_ms || 40;
       speakDurationMs = event.duration_ms || 0;
       speakStartAt = performance.now();
     } else if (name !== "speaking") {
       speakEnvelope = null;
+      speakVisemes = null;
     }
     if (name === "thinking") clearCaptions();
     stateLabel.textContent = STATES[name].label;
     stateSub.textContent = STATES[name].sub;
+  }
+
+  // ---------- lightweight expression from text ----------
+  // No sentiment ML -- just cheap, immediate signal from what's actually
+  // being said, decaying back to neutral over a couple seconds.
+  var moodBoost = 0, moodUntil = 0;
+  function applyMoodFromCaption(text) {
+    if (text.indexOf("!") !== -1) { moodBoost = 1; moodUntil = performance.now() + 2200; }
+    else if (text.indexOf("?") !== -1) { moodBoost = 0.55; moodUntil = performance.now() + 1800; }
+  }
+  function currentMoodFactor() {
+    if (performance.now() > moodUntil) return 0;
+    var remaining = (moodUntil - performance.now()) / 1000;
+    return moodBoost * Math.min(1, remaining);
+  }
+
+  // ---------- blink cycle ----------
+  var BLINK_DURATION_MS = 140;
+  var nextBlinkAt = performance.now() + 1500 + Math.random() * 3000;
+  var blinkStartedAt = -Infinity;
+  function blinkFactor() {
+    var now = performance.now();
+    if (now >= nextBlinkAt) {
+      blinkStartedAt = now;
+      nextBlinkAt = now + 2800 + Math.random() * 4200;
+    }
+    var sinceBlink = now - blinkStartedAt;
+    if (sinceBlink >= 0 && sinceBlink < BLINK_DURATION_MS) {
+      // 0 -> 1 -> 0 across the blink window (closed at the midpoint)
+      var phase = sinceBlink / BLINK_DURATION_MS;
+      return Math.abs(phase - 0.5) * 2;
+    }
+    return 1;
   }
 
   // ---------- live caption ----------
@@ -305,6 +372,7 @@
     if (captionLines.length > 2) captionLines.shift();
     captionTextEl.classList.remove("placeholder");
     captionTextEl.textContent = captionLines.join(" ");
+    applyMoodFromCaption(text);
   }
 
   // ---------- config ----------
@@ -500,24 +568,53 @@
     });
     hctx.globalCompositeOperation = "source-over";
 
-    var amp;
-    var realAmp = current === "speaking" ? currentMouthAmp() : null;
-    if (realAmp !== null) {
-      amp = Math.max(0.04, realAmp) * p.mouthAmp * s * 2.2;
-    } else if (current === "speaking") {
-      // No envelope yet for this utterance (e.g. very start) -- brief
-      // synthetic fallback so the mouth isn't frozen shut for one frame.
-      amp = (Math.sin(t * 0.9) * 0.5 + Math.sin(t * 2.3 + 1.4) * 0.35 + Math.sin(t * 5.1) * 0.15);
-      amp = Math.max(0.05, Math.abs(amp)) * p.mouthAmp * s;
-    } else {
-      amp = p.mouthAmp * s * (0.5 + 0.5 * Math.sin(t * 0.05));
+    // Mouth: real IPA-phoneme-derived shape (Cartesia) when available, else
+    // a real amplitude envelope, else a brief synthetic fallback for the
+    // first frame or two before either arrives. Smoothed toward its target
+    // each frame rather than snapping, so shape changes read as motion.
+    var target = current === "speaking" ? currentVisemeTarget() : null;
+    if (!target) {
+      var realAmp = current === "speaking" ? currentMouthAmp() : null;
+      if (realAmp !== null) {
+        target = { open: Math.max(0.04, realAmp) * 2.2, width: 0.45 };
+      } else if (current === "speaking") {
+        var synth = Math.abs(Math.sin(t * 0.9) * 0.5 + Math.sin(t * 2.3 + 1.4) * 0.35 + Math.sin(t * 5.1) * 0.15);
+        target = { open: Math.max(0.05, synth), width: 0.45 };
+      } else {
+        target = { open: 0.15 * (0.5 + 0.5 * Math.sin(t * 0.05)), width: 0.4 };
+      }
     }
+    var smoothing = current === "speaking" ? 0.4 : 0.15;
+    mouthShape.open += (target.open - mouthShape.open) * smoothing;
+    mouthShape.width += (target.width - mouthShape.width) * smoothing;
+
     var mouthY = cy + bob + 0.55 * s;
-    var mouthW = 0.34 * s;
+    var mouthW = Math.max(0.08, mouthShape.width) * s * 0.85;
+    var mouthH = Math.max(0.03, mouthShape.open) * s * 0.34 * p.mouthAmp / 0.34;
     hctx.fillStyle = "#8FD4FF";
     hctx.shadowColor = "#4FE1FF";
     hctx.shadowBlur = current === "speaking" ? 10 : 3;
-    hctx.fillRect(cx - mouthW / 2 + jx, mouthY - amp / 2, mouthW, Math.max(1.5, amp));
+    hctx.fillRect(cx - mouthW / 2 + jx, mouthY - mouthH / 2, mouthW, Math.max(1.5, mouthH));
+    hctx.shadowBlur = 0;
+
+    // Eyes: two small filled shapes with an idle blink cycle plus a cheap
+    // expression boost (wider on "!", a touch wider+longer on "?") from
+    // whatever's actually being said -- no sentiment ML, just immediate,
+    // legible feedback.
+    var mood = currentMoodFactor();
+    var blink = blinkFactor();
+    var eyeY = cy + bob - 0.40 * s;
+    var eyeDX = 0.30 * s;
+    var eyeBaseR = 0.045 * s * (1 + mood * 0.35);
+    var eyeH = Math.max(0.6, blink) * eyeBaseR;
+    hctx.fillStyle = "#EAF3FF";
+    hctx.shadowColor = "#8FD4FF";
+    hctx.shadowBlur = 4;
+    [-1, 1].forEach(function (side) {
+      hctx.beginPath();
+      hctx.ellipse(cx + side * eyeDX + jx, eyeY + jy, eyeBaseR, eyeH, 0, 0, Math.PI * 2);
+      hctx.fill();
+    });
     hctx.shadowBlur = 0;
 
     hctx.globalAlpha = 1;

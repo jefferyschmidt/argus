@@ -32,6 +32,50 @@ class CartesiaSpeaker:
         samples = np.frombuffer(audio_bytes, dtype=np.int16)
         return samples, _SAMPLE_RATE
 
+    def synthesize_with_visemes(self, text: str) -> tuple[np.ndarray, int, list[dict]] | None:
+        """Same audio as synthesize(), plus a phoneme-timing-derived viseme
+        timeline for real mouth-shape animation instead of amplitude-only.
+        Uses the SSE endpoint (generate() doesn't support timestamps)."""
+        from argus.voice.text_cleanup import clean_for_speech
+        from argus.voice.visemes import build_viseme_timeline
+
+        text = clean_for_speech(text)
+        if not text.strip():
+            return None
+
+        stream = self._client.tts.generate_sse(
+            model_id=settings.cartesia_model,
+            transcript=text,
+            voice={"id": settings.cartesia_voice_id},
+            output_format={"container": "raw", "encoding": "pcm_s16le", "sample_rate": _SAMPLE_RATE},
+            add_phoneme_timestamps=True,
+        )
+        audio_chunks = []
+        phonemes: list[str] = []
+        starts: list[float] = []
+        ends: list[float] = []
+        try:
+            for event in stream:
+                if event.type == "chunk":
+                    audio = event.audio
+                    if audio:
+                        audio_chunks.append(audio)
+                elif event.type == "phoneme_timestamps":
+                    pt = event.phoneme_timestamps
+                    phonemes.extend(pt.phonemes)
+                    starts.extend(pt.start)
+                    ends.extend(pt.end)
+                elif event.type in ("done", "error"):
+                    break
+        finally:
+            stream.close()  # unclosed SSE stream segfaults at interpreter exit
+
+        if not audio_chunks:
+            return None
+        samples = np.frombuffer(b"".join(audio_chunks), dtype=np.int16)
+        timeline = build_viseme_timeline(phonemes, starts, ends)
+        return samples, _SAMPLE_RATE, timeline
+
     def speak(self, text: str, stop_event=None) -> None:
         from argus.voice.audio_io import play_audio
 

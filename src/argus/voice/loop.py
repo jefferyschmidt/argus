@@ -153,27 +153,42 @@ class VoiceLoop:
         # itself onnxruntime compute, and letting it overlap with the
         # watcher's continuous wake-word inference was starving the CPU on
         # this hardware badly enough to produce long silences.
+        visemes = None
         try:
-            synthesized = self.speaker.synthesize(text)
+            with_visemes = self.speaker.synthesize_with_visemes(text)
         except Exception:
-            log.exception("Speech synthesis failed")
-            console.print("[red](speech synthesis failed -- see log)[/red]")
-            return False
-        if synthesized is None:
-            return False
-        samples, sample_rate = synthesized
+            log.exception("Viseme synthesis failed; falling back to plain synthesis")
+            with_visemes = None
 
-        # Publish state + the real amplitude envelope together, right as
-        # playback is about to start -- the UI's mouth animation follows
-        # this envelope instead of a fake time-based wobble.
-        from argus.voice.audio_io import compute_envelope
-        envelope = compute_envelope(samples, sample_rate)
-        chunk_ms = 40
-        ui_events.publish({
+        if with_visemes is not None:
+            samples, sample_rate, visemes = with_visemes
+        else:
+            try:
+                synthesized = self.speaker.synthesize(text)
+            except Exception:
+                log.exception("Speech synthesis failed")
+                console.print("[red](speech synthesis failed -- see log)[/red]")
+                return False
+            if synthesized is None:
+                return False
+            samples, sample_rate = synthesized
+
+        # Publish state + real mouth-shape data together, right as playback
+        # is about to start. Real IPA phoneme timing (visemes) when the
+        # backend supports it (Cartesia); otherwise a plain RMS amplitude
+        # envelope so the mouth still moves with the actual audio, just
+        # without distinct shapes.
+        state_event = {
             "type": "state", "value": "speaking",
-            "envelope": envelope, "chunk_ms": chunk_ms,
             "duration_ms": round(len(samples) / sample_rate * 1000),
-        })
+        }
+        if visemes:
+            state_event["visemes"] = visemes
+        else:
+            from argus.voice.audio_io import compute_envelope
+            state_event["envelope"] = compute_envelope(samples, sample_rate)
+            state_event["chunk_ms"] = 40
+        ui_events.publish(state_event)
 
         stop_event = threading.Event()
 
