@@ -84,6 +84,14 @@ class WakeWordListener:
 
         return np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)
 
+    def reset(self) -> None:
+        """Clears the model's internal rolling-prediction state. Call this
+        before starting a fresh listening session on a model instance that
+        was already used -- without it, residual state from the previous
+        detection (patience/debounce history) can cause spurious immediate
+        triggers on the very next predict() calls."""
+        self._model.reset()
+
     def score_frame(self, frame: np.ndarray) -> float:
         """Used by the voice loop during TTS playback to detect barge-in."""
         scores = self._model.predict(frame.reshape(-1))

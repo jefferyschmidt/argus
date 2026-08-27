@@ -54,7 +54,15 @@ class VoiceLoop:
 
     def _speak_with_barge_in(self, text: str) -> None:
         stop_event = threading.Event()
-        speak_thread = threading.Thread(target=self.speaker.speak, args=(text, stop_event))
+
+        def _speak_safely():
+            try:
+                self.speaker.speak(text, stop_event)
+            except Exception:
+                log.exception("Speech synthesis/playback failed")
+                console.print("[red](speech failed -- see log)[/red]")
+
+        speak_thread = threading.Thread(target=_speak_safely)
         speak_thread.start()
         # Best-effort barge-in watcher; if it errors for any reason, speech
         # just plays to completion instead of taking the whole loop down.
@@ -66,6 +74,11 @@ class VoiceLoop:
 
     def _watch_for_barge_in(self, stop_event: threading.Event, speak_thread: threading.Thread) -> None:
         import sounddevice as sd
+
+        # Without this, leftover prediction state from the wake-word model's
+        # last real detection can cause an immediate spurious trigger here,
+        # stopping playback before anything audible plays.
+        self.wake_word.reset()
 
         chunk = 1280
         with sd.InputStream(samplerate=16000, channels=1, dtype="int16", blocksize=chunk) as stream:
