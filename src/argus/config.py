@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     voice_silence_rms_threshold: float = 60.0
     # After Argus finishes speaking, how long to keep listening without
     # requiring the wake word again before falling back to wake-word-only.
-    followup_window_seconds: float = 6.0
+    followup_window_seconds: float = 10.0
     # Barge-in runs continuous wake-word inference while speech plays, which
     # competes with Piper's own onnx compute for CPU on this hardware. If it
     # causes stalls/silence, set VOICE_BARGE_IN_ENABLED=false in .env.
