@@ -15,7 +15,7 @@ class Tool:
     description: str
     input_schema: dict
     tier: PermissionTier
-    handler: Callable[[dict], str]
+    handler: Callable[[dict], str | bytes]  # bytes handler output is treated as a PNG image
 
     def to_anthropic_schema(self) -> dict:
         return {

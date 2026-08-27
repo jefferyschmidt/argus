@@ -52,8 +52,20 @@ argus memory review   # confirm/reject agent-proposed core memories
 
 ## Roadmap
 
-1. ~~Core loop (text-only)~~ -- this repo, in progress
-2. Tools + permission tiers (allowlist / confirm / deny)
-3. Voice: wake word -> STT -> orchestrator -> TTS, with barge-in
-4. Autonomous agent loop (separate mode, goal file, budget caps, audit log)
-5. Computer control + smart home (Home Assistant)
+1. ~~Core loop (text-only)~~
+2. ~~Tools + permission tiers~~ (allow/confirm/deny; web search, sandboxed
+   filesystem + real Documents/Downloads/Desktop, shell)
+3. ~~Voice: wake word -> STT -> orchestrator -> TTS, with barge-in~~ plus
+   conversational follow-up window (no wake word needed between turns)
+4. Desktop/app control (in progress)
+5. Autonomous agent loop (separate mode, goal file, budget caps, audit log)
+6. Email/calendar, smart home (Home Assistant) -- need OAuth/app setup first
+
+### Later / not yet scoped
+
+- Smarter conversational listening: after the wake word, distinguish speech
+  actually directed at Argus from ambient conversation/background noise,
+  rather than relying on a fixed follow-up timeout. Likely needs the LLM
+  itself judging addressee intent from the transcript, not just VAD timing.
+- Custom "Argus" wake-word model (currently using openWakeWord's bundled
+  hey_jarvis_v0.1 as a placeholder).

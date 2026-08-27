@@ -5,6 +5,7 @@ import numpy as np
 
 from argus.config import settings
 from argus.voice.audio_io import play_audio
+from argus.voice.text_cleanup import clean_for_speech
 
 
 class Speaker:
@@ -20,6 +21,7 @@ class Speaker:
         watcher's continuous wake-word inference) starts competing for CPU
         -- on this CPU-only hardware, overlapping the two caused silent/
         stalled playback with no exception."""
+        text = clean_for_speech(text)
         if not text.strip():
             return None
         audio_chunks = list(self._voice.synthesize(text))

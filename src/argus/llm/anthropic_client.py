@@ -1,3 +1,4 @@
+import base64
 import logging
 
 import anthropic
@@ -18,6 +19,21 @@ _MAX_TOOL_ITERATIONS = 8
 # not through our ToolRegistry, so it needs no local handler/permission tier.
 # Capped at a handful of searches per turn as a cost/runaway guard.
 _WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 3}
+
+
+def _tool_result_content(result) -> str | list[dict]:
+    """A tool handler returning raw PNG bytes (e.g. take_screenshot) becomes
+    an actual image block the model can see, not just a text description."""
+    if isinstance(result, bytes):
+        return [{
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64.b64encode(result).decode("ascii"),
+            },
+        }]
+    return str(result)
 
 
 class AnthropicClient:
@@ -96,7 +112,7 @@ class AnthropicClient:
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": str(result),
+                    "content": _tool_result_content(result),
                 })
             history.append({"role": "user", "content": tool_results})
 
