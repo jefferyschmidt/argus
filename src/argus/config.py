@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # competes with Piper's own onnx compute for CPU on this hardware. If it
     # causes stalls/silence, set VOICE_BARGE_IN_ENABLED=false in .env.
     voice_barge_in_enabled: bool = True
+    # "Hot mic" window: once the wake word is heard, interrupting Argus
+    # mid-sentence doesn't require saying it again for this many seconds
+    # (refreshed by activity). Uses plain volume detection rather than
+    # wake-word matching, so it's much more prone to self-triggering on
+    # Argus's own voice without headphones -- set to 0 to disable.
+    open_barge_in_seconds: float = 30.0
 
     @property
     def data_dir(self) -> Path:

@@ -1,6 +1,7 @@
 import logging
 import queue
 import threading
+import time
 
 from rich.console import Console
 
@@ -14,6 +15,8 @@ from argus.ui import events as ui_events
 
 log = logging.getLogger(__name__)
 console = Console()
+
+_STOP_LISTENING_PHRASES = ("stop listening", "stop barging in", "quit interrupting")
 
 
 class _BargeInInterrupt(Exception):
@@ -37,12 +40,16 @@ class VoiceLoop:
     if you keep talking, the conversation continues hands-free; go quiet
     for that window and it drops back to requiring the wake word.
 
-    Barge-in: while a sentence plays, the wake-word model listens in the
-    background; hearing the wake word again cuts playback AND aborts the
-    rest of the streamed generation. Caveat: without acoustic echo
-    cancellation, speaking through open speakers (not headphones) risks the
-    mic picking up Argus's own voice and false-triggering. Headphones avoid
-    this cleanly."""
+    Barge-in: while a sentence plays, Argus listens in the background for an
+    interruption. Two tiers:
+    - Hot mic (settings.open_barge_in_seconds after the wake word, refreshed
+      by activity): plain volume detection -- just start talking, no wake
+      word needed. Higher self-feedback risk on open speakers since it's
+      not checking for anything specific, just loudness.
+    - Otherwise: the wake-word model listening for "hey jarvis" again, which
+      is far less prone to false-triggering on Argus's own voice since it
+      needs to phonetically match.
+    Say "stop listening" to end the hot-mic window early."""
 
     def __init__(self, orchestrator: Orchestrator | None = None):
         console.print("[dim]Loading voice models (wake word, STT, TTS)...[/dim]")
@@ -50,6 +57,14 @@ class VoiceLoop:
         self.wake_word = WakeWordListener()
         self.transcriber = Transcriber()
         self.speaker = build_speaker()
+        self._hot_mic_until = 0.0
+
+    def _refresh_hot_mic(self) -> None:
+        if settings.open_barge_in_seconds > 0:
+            self._hot_mic_until = time.monotonic() + settings.open_barge_in_seconds
+
+    def _hot_mic_active(self) -> bool:
+        return time.monotonic() < self._hot_mic_until
 
     def run(self) -> None:
         console.print("[bold cyan]Argus[/bold cyan] listening for wake word. Ctrl+C to quit.\n")
@@ -59,6 +74,7 @@ class VoiceLoop:
                 def _on_wake():
                     console.print("[green](wake word heard, listening...)[/green]")
                     ui_events.publish({"type": "state", "value": "listening"})
+                    self._refresh_hot_mic()
 
                 samples = self.wake_word.listen_for_wake_and_command(on_wake=_on_wake)
             except KeyboardInterrupt:
@@ -87,6 +103,13 @@ class VoiceLoop:
             return False
 
         console.print(f"[bold green]you>[/bold green] {text}")
+
+        if any(phrase in text.lower() for phrase in _STOP_LISTENING_PHRASES):
+            self._hot_mic_until = 0.0
+            console.print("[dim](hot mic off -- wake word needed to interrupt again)[/dim]\n")
+            return True
+
+        self._refresh_hot_mic()
 
         sentence_queue: queue.Queue[str | None] = queue.Queue()
         interrupted = threading.Event()
@@ -173,10 +196,15 @@ class VoiceLoop:
         except Exception:
             log.exception("Barge-in watcher failed; continuing without it")
         play_thread.join()
+        if interrupted:
+            self._refresh_hot_mic()
         return interrupted
 
     def _watch_for_barge_in(self, stop_event: threading.Event, play_thread: threading.Thread) -> bool:
+        import numpy as np
         import sounddevice as sd
+
+        hot_mic = self._hot_mic_active()
 
         # Without this, leftover prediction state from the wake-word model's
         # last real detection can cause an immediate spurious trigger here.
@@ -186,8 +214,9 @@ class VoiceLoop:
         # Right after reset() that buffer is mostly empty, and scoring
         # against it produced sharp spurious near-1.0 triggers within the
         # first 1-2 frames in testing -- an artifact of the cold buffer, not
-        # real audio. Feed the model during warm-up without acting on scores.
-        warmup_chunks = 16  # ~1.28s at 80ms/chunk
+        # real audio. Feed the model during warm-up without acting on scores
+        # (skip entirely in hot-mic mode -- it doesn't use wake-word scoring).
+        warmup_chunks = 0 if hot_mic else 16  # ~1.28s at 80ms/chunk
         chunk = 1280
         with sd.InputStream(samplerate=16000, channels=1, dtype="int16", blocksize=chunk) as stream:
             for _ in range(warmup_chunks):
@@ -198,7 +227,18 @@ class VoiceLoop:
 
             while play_thread.is_alive():
                 frame, _ = stream.read(chunk)
-                score = self.wake_word.score_frame(frame.reshape(-1))
+                frame = frame.reshape(-1)
+
+                if hot_mic:
+                    rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
+                    if rms > settings.voice_silence_rms_threshold:
+                        console.print("[yellow](barge-in: hot mic heard you)[/yellow]")
+                        log.info("hot-mic barge-in triggered at rms=%.1f", rms)
+                        stop_event.set()
+                        return True
+                    continue
+
+                score = self.wake_word.score_frame(frame)
                 if score > 0.2:
                     log.info("barge-in watch: score=%.3f", score)
                 if score > 0.6:
