@@ -120,6 +120,7 @@ class VoiceLoop:
                 if sentence is None:
                     return
                 console.print(f"[bold cyan]argus>[/bold cyan] {sentence}")
+                ui_events.publish({"type": "caption", "text": sentence})
                 if self._speak_with_barge_in(sentence):
                     interrupted.set()
                     return
