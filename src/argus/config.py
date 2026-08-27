@@ -18,6 +18,19 @@ class Settings(BaseSettings):
     argus_data_dir: str = "data"
     daily_budget_usd: float = 5.0
 
+    # Voice (Phase 3). openWakeWord ships a few pretrained wake words but not
+    # "Argus" -- hey_jarvis_v0.1 is the closest bundled model until a custom
+    # one is trained (see README). Swap via WAKE_WORD_MODEL once you have one.
+    wake_word_model: str = "hey_jarvis_v0.1"
+    wake_word_threshold: float = 0.5
+    whisper_model_size: str = "base.en"
+    piper_voice: str = "en_US-lessac-medium"
+    audio_sample_rate: int = 16000
+    # RMS threshold above which a frame counts as speech (for
+    # record-until-silence VAD). Mic-dependent -- tune with
+    # scripts/calibrate_mic.py if speech isn't being detected.
+    voice_silence_rms_threshold: float = 60.0
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir

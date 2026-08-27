@@ -22,7 +22,25 @@ def chat() -> None:
         if not user_text.strip():
             continue
         reply = orch.handle(user_text)
-        console.print(f"[bold cyan]argus>[/bold cyan] {reply}\n")
+        tag = f"[dim]({orch.last_tier.value}: {orch.last_model})[/dim]"
+        console.print(f"[bold cyan]argus>[/bold cyan] {reply} {tag}\n")
+
+
+def voice() -> None:
+    from argus.voice.loop import VoiceLoop
+
+    try:
+        loop = VoiceLoop()
+    except ImportError as e:
+        console.print(
+            f"[red]Voice dependencies not installed:[/red] {e}\n"
+            "Install with: pip install -e \".[voice]\""
+        )
+        return
+    try:
+        loop.run()
+    except KeyboardInterrupt:
+        pass
 
 
 def memory_review() -> None:
@@ -50,6 +68,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("chat", help="Start an interactive chat session")
+    sub.add_parser("voice", help="Start wake-word voice mode")
 
     memory_parser = sub.add_parser("memory", help="Memory management")
     memory_sub = memory_parser.add_subparsers(dest="memory_command")
@@ -59,6 +78,8 @@ def main() -> None:
 
     if args.command == "memory" and args.memory_command == "review":
         memory_review()
+    elif args.command == "voice":
+        voice()
     else:
         chat()
 

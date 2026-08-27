@@ -30,6 +30,8 @@ class Orchestrator:
         self.memory = MemoryManager(session_id=session_id)
         self.router = ModelRouter(daily_cap_usd=daily_cap_usd)
         self.tools = tool_registry or build_default_registry()
+        self.last_tier: Tier | None = None
+        self.last_model: str | None = None
 
     def handle(self, user_text: str) -> str:
         self.memory.remember_turn("user", user_text)
@@ -44,6 +46,9 @@ class Orchestrator:
             result = self.router.complete([Message(role="user", content=user_text)], system=system)
         else:
             result = self.router.complete_with_tools(user_text, system=system, tool_registry=self.tools)
+
+        self.last_tier = result.tier
+        self.last_model = result.model
 
         reply, proposed = _extract_core_memory(result.text)
         if proposed:
