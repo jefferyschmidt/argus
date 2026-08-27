@@ -55,11 +55,24 @@ argus memory review   # confirm/reject agent-proposed core memories
 1. ~~Core loop (text-only)~~
 2. ~~Tools + permission tiers~~ (allow/confirm/deny; web search, sandboxed
    filesystem + real Documents/Downloads/Desktop, shell)
-3. ~~Voice: wake word -> STT -> orchestrator -> TTS, with barge-in~~ plus
-   conversational follow-up window (no wake word needed between turns)
-4. Desktop/app control (in progress)
-5. Autonomous agent loop (separate mode, goal file, budget caps, audit log)
-6. Email/calendar, smart home (Home Assistant) -- need OAuth/app setup first
+3. ~~Voice: wake word -> STT -> orchestrator -> TTS~~, plus conversational
+   follow-up window, barge-in, and sentence-by-sentence streamed replies
+   (speak sentence 1 while later sentences are still generating)
+4. ~~Desktop/app control~~ (screenshot as a real image the model can see,
+   list windows, click, type, press keys, open apps)
+5. Cartesia TTS (natural cloud voice, matching the AI-receptionist project)
+   with automatic Piper fallback when offline/unconfigured -- in progress
+6. Autonomous agent loop (separate mode, goal file, budget caps, audit log)
+7. Email/calendar, smart home (Home Assistant) -- need OAuth/app setup first
+8. Camera/vision: periodic frame capture + Claude vision for general scene
+   and object description (straightforward, same pattern as the screenshot
+   tool). Face *recognition* (identifying specific known people, not just
+   "a face is present") is a distinct, harder capability -- needs a local
+   enrollment/embedding system since that's biometric matching, and carries
+   real privacy considerations to think through explicitly before building.
+   ASL translation is the hardest of the three -- continuous gesture
+   recognition, not single-frame classification, and good open models for
+   it are scarce; treat as a stretch goal, not a near-term deliverable.
 
 ### Later / not yet scoped
 
@@ -68,4 +81,8 @@ argus memory review   # confirm/reject agent-proposed core memories
   rather than relying on a fixed follow-up timeout. Likely needs the LLM
   itself judging addressee intent from the transcript, not just VAD timing.
 - Custom "Argus" wake-word model (currently using openWakeWord's bundled
-  hey_jarvis_v0.1 as a placeholder).
+  hey_jarvis_v0.1 as a placeholder) -- deferred; real chunk of work
+  (synthetic training data, negative-audio dataset, slow CPU training).
+- Investigate why time-to-first-sentence in streaming mode is slower than
+  expected (~13s in one live test) -- likely system-prompt size or API
+  latency, not a code regression, but worth profiling separately.
