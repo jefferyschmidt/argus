@@ -119,8 +119,20 @@ class VoiceLoop:
         # last real detection can cause an immediate spurious trigger here.
         self.wake_word.reset()
 
+        # openWakeWord's embedding model scores over a rolling ~1.3s window.
+        # Right after reset() that buffer is mostly empty, and scoring
+        # against it produced sharp spurious near-1.0 triggers within the
+        # first 1-2 frames in testing -- an artifact of the cold buffer, not
+        # real audio. Feed the model during warm-up without acting on scores.
+        warmup_chunks = 16  # ~1.28s at 80ms/chunk
         chunk = 1280
         with sd.InputStream(samplerate=16000, channels=1, dtype="int16", blocksize=chunk) as stream:
+            for _ in range(warmup_chunks):
+                if not play_thread.is_alive():
+                    return
+                frame, _ = stream.read(chunk)
+                self.wake_word.score_frame(frame.reshape(-1))
+
             while play_thread.is_alive():
                 frame, _ = stream.read(chunk)
                 score = self.wake_word.score_frame(frame.reshape(-1))
