@@ -1,3 +1,4 @@
+import base64
 from datetime import datetime
 
 from argus.config import settings
@@ -5,6 +6,7 @@ from argus.llm.base import Message, Tier
 from argus.llm.router import ModelRouter, classify
 from argus.memory.manager import MemoryManager
 from argus.tools import ToolRegistry, build_default_registry
+from argus.ui import events as ui_events
 from argus.voice.sentence_splitter import SentenceBuffer
 
 SYSTEM_PROMPT = """You are Argus, a personal AI assistant running locally for your user
@@ -76,7 +78,34 @@ class Orchestrator:
             grounding += f"\nUser's location: {settings.user_location}"
         return SYSTEM_PROMPT + grounding + ("\n\n" + context if context else "")
 
+    def _on_tool_call(self, name: str, tool_input: dict, result) -> None:
+        tool = self.tools._tools.get(name)
+        event = {
+            "type": "tool_call",
+            "name": name,
+            "input": tool_input,
+            "tier": tool.tier.value if tool else None,
+        }
+        if isinstance(result, bytes):
+            event["image"] = base64.b64encode(result).decode("ascii")
+            event["result"] = f"<{len(result)} bytes>"
+        else:
+            event["result"] = str(result)[:400]
+        ui_events.publish(event)
+
+    def _publish_turn_end(self) -> None:
+        ui_events.publish({
+            "type": "system",
+            "tier": self.last_tier.value if self.last_tier else None,
+            "model": self.last_model,
+            "spend": self.router.cost_governor.spend_today,
+            "cap": self.router.cost_governor.daily_cap_usd,
+        })
+        ui_events.publish({"type": "memory", **self.memory.stats()})
+
     def handle(self, user_text: str) -> str:
+        ui_events.publish({"type": "transcript", "role": "you", "text": user_text})
+        ui_events.publish({"type": "state", "value": "thinking"})
         self.memory.remember_turn("user", user_text)
         system = self._build_system(user_text)
 
@@ -86,7 +115,9 @@ class Orchestrator:
         if classify(user_text) is Tier.LOCAL:
             result = self.router.complete([Message(role="user", content=user_text)], system=system)
         else:
-            result = self.router.complete_with_tools(user_text, system=system, tool_registry=self.tools)
+            result = self.router.complete_with_tools(
+                user_text, system=system, tool_registry=self.tools, on_tool_call=self._on_tool_call
+            )
 
         self.last_tier = result.tier
         self.last_model = result.model
@@ -96,6 +127,8 @@ class Orchestrator:
             self.memory.core.propose(proposed)
 
         self.memory.remember_turn("assistant", reply)
+        ui_events.publish({"type": "transcript", "role": "argus", "text": reply, "tier": result.tier.value, "model": result.model})
+        self._publish_turn_end()
         return reply
 
     def handle_streaming(self, user_text: str, on_sentence) -> str:
@@ -103,6 +136,8 @@ class Orchestrator:
         sentence becomes available instead of only returning once the full
         reply is done -- lets voice mode start speaking sentence 1 while
         later sentences are still being generated."""
+        ui_events.publish({"type": "transcript", "role": "you", "text": user_text})
+        ui_events.publish({"type": "state", "value": "thinking"})
         self.memory.remember_turn("user", user_text)
         system = self._build_system(user_text)
 
@@ -118,6 +153,8 @@ class Orchestrator:
             if reply:
                 on_sentence(reply)
             self.memory.remember_turn("assistant", reply)
+            ui_events.publish({"type": "transcript", "role": "argus", "text": reply, "tier": result.tier.value, "model": result.model})
+            self._publish_turn_end()
             return reply
 
         buffer = SentenceBuffer()
@@ -129,7 +166,7 @@ class Orchestrator:
                     on_sentence(sentence)
 
         result = self.router.complete_with_tools_streaming(
-            user_text, system=system, tool_registry=self.tools, on_text=on_text
+            user_text, system=system, tool_registry=self.tools, on_text=on_text, on_tool_call=self._on_tool_call
         )
         self.last_tier = result.tier
         self.last_model = result.model
@@ -143,6 +180,8 @@ class Orchestrator:
             self.memory.core.propose(proposed)
 
         self.memory.remember_turn("assistant", reply)
+        ui_events.publish({"type": "transcript", "role": "argus", "text": reply, "tier": result.tier.value, "model": result.model})
+        self._publish_turn_end()
         return reply
 
 

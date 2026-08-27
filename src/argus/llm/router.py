@@ -115,6 +115,7 @@ class ModelRouter:
         tool_registry,
         on_text,
         force_tier: Tier | None = None,
+        on_tool_call=None,
     ) -> CompletionResult:
         tier = force_tier or classify(user_text)
         if tier is Tier.LOCAL:
@@ -123,7 +124,7 @@ class ModelRouter:
         self.cost_governor.check()
 
         result = self.frontier.complete_with_tools_streaming(
-            user_text, system, tool_registry, on_text, tier=tier
+            user_text, system, tool_registry, on_text, tier=tier, on_tool_call=on_tool_call
         )
         cost = estimate_cost(tier, result.input_tokens, result.output_tokens)
         self.cost_governor.record(cost)

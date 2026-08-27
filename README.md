@@ -33,9 +33,15 @@ ollama pull llama3.2:3b
 ## Usage
 
 ```bash
-argus chat            # interactive chat
+argus chat            # interactive chat -- also opens the visual console
+argus voice            # wake-word voice mode -- also opens the visual console
+argus agent "<goal>"   # autonomous mode: figure out what needs doing and do it
 argus memory review   # confirm/reject agent-proposed core memories
 ```
+
+`chat` and `voice` both auto-launch **Argus Console** (needs `pip install -e ".[ui]"`)
+at http://127.0.0.1:8765 -- a live view of voice state, transcript, tool
+calls (with real generated images), memory, and routing/spend.
 
 ## Architecture
 
@@ -96,8 +102,12 @@ argus memory review   # confirm/reject agent-proposed core memories
 14. Undo/rollback for risky actions -- especially file writes and desktop
     control: back up before overwriting, so a bad CONFIRM-tier action is
     recoverable, not just "confirmed and done."
-15. Observability dashboard -- a small local web page showing recent
-    actions, spend, and memory; the log file is the only visibility today.
+15. ~~Observability dashboard~~ -- **Argus Console**: a live local web UI
+    (`argus voice`/`argus chat` auto-launch it) showing real-time voice
+    state, transcript, tool calls (with actual generated images -- e.g. a
+    live screenshot thumbnail), memory stats, routing tier, and spend.
+    Runs in-process over a WebSocket since it reads an in-memory event bus,
+    so it only shows data when launched alongside chat/voice, not standalone.
 16. Memory privacy/audit controls -- browse, export, or purge episodic/
     semantic memory as a whole (core-memory review already exists, but
     there's no "what do you know about me" / "forget X" for everything

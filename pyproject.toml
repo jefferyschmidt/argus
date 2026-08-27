@@ -17,6 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ui = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+]
 voice = [
     "faster-whisper>=1.0.3",
     "piper-tts>=1.2.0",

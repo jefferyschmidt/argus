@@ -9,8 +9,31 @@ from argus.orchestrator import Orchestrator
 console = Console()
 
 
+def _maybe_start_ui_server(port: int = 8765) -> None:
+    """Best-effort: the visual console runs in-process (it reads live state
+    off an in-memory event bus), so it only has anything to show when
+    started alongside chat/voice, not as a standalone command."""
+    try:
+        from argus.ui.server import run as run_ui
+    except ImportError:
+        console.print('[dim](Visual console not installed -- pip install -e ".[ui]" to enable it)[/dim]')
+        return
+
+    import threading
+    import webbrowser
+
+    threading.Thread(target=run_ui, kwargs={"port": port}, daemon=True).start()
+    url = f"http://127.0.0.1:{port}"
+    console.print(f"[dim]Visual console: {url}[/dim]")
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
 def chat() -> None:
     orch = Orchestrator()
+    _maybe_start_ui_server()
     console.print("[bold cyan]Argus[/bold cyan] online. Type 'exit' to quit.\n")
     while True:
         try:
@@ -37,6 +60,7 @@ def voice() -> None:
             "Install with: pip install -e \".[voice]\""
         )
         return
+    _maybe_start_ui_server()
     try:
         loop.run()
     except KeyboardInterrupt:

@@ -50,3 +50,13 @@ class MemoryManager:
             )
 
         return "\n\n".join(parts)
+
+    def stats(self) -> dict:
+        episodic_count = self.conn.execute(
+            "SELECT COUNT(*) FROM episodes WHERE session_id = ?", (self.session_id,)
+        ).fetchone()[0]
+        return {
+            "core": len(self.core.list_confirmed()),
+            "semantic": self.semantic._collection.count(),
+            "episodic": episodic_count,
+        }

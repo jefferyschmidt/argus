@@ -10,6 +10,7 @@ from argus.voice.audio_io import record_followup
 from argus.voice.speaker_factory import build_speaker
 from argus.voice.stt import Transcriber
 from argus.voice.wake_word import WakeWordListener
+from argus.ui import events as ui_events
 
 log = logging.getLogger(__name__)
 console = Console()
@@ -53,10 +54,13 @@ class VoiceLoop:
     def run(self) -> None:
         console.print("[bold cyan]Argus[/bold cyan] listening for wake word. Ctrl+C to quit.\n")
         while True:
+            ui_events.publish({"type": "state", "value": "listening"})
             try:
-                samples = self.wake_word.listen_for_wake_and_command(
-                    on_wake=lambda: console.print("[green](wake word heard, listening...)[/green]")
-                )
+                def _on_wake():
+                    console.print("[green](wake word heard, listening...)[/green]")
+                    ui_events.publish({"type": "state", "value": "listening"})
+
+                samples = self.wake_word.listen_for_wake_and_command(on_wake=_on_wake)
             except KeyboardInterrupt:
                 break
 
@@ -68,6 +72,7 @@ class VoiceLoop:
             # word until the user goes quiet for the timeout window.
             while True:
                 console.print(f"[dim](listening for follow-up, {settings.followup_window_seconds:.0f}s...)[/dim]")
+                ui_events.publish({"type": "state", "value": "listening"})
                 followup = record_followup(settings.followup_window_seconds)
                 if followup is None or not self._process_utterance(followup):
                     console.print("[dim](back to wake-word listening)[/dim]\n")
@@ -124,6 +129,7 @@ class VoiceLoop:
         # itself onnxruntime compute, and letting it overlap with the
         # watcher's continuous wake-word inference was starving the CPU on
         # this hardware badly enough to produce long silences.
+        ui_events.publish({"type": "state", "value": "speaking"})
         try:
             synthesized = self.speaker.synthesize(text)
         except Exception:

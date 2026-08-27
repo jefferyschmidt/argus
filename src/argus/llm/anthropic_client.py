@@ -138,6 +138,7 @@ class AnthropicClient:
         tool_registry,
         on_text,
         tier: Tier = Tier.FAST,
+        on_tool_call=None,
     ) -> CompletionResult:
         """Same tool-use loop as complete_with_tools, but streams text
         deltas to on_text(chunk: str) as they arrive instead of returning
@@ -183,6 +184,8 @@ class AnthropicClient:
                 except Exception as e:
                     log.exception("Tool %s failed", block.name)
                     result = f"error: tool raised {type(e).__name__}: {e}"
+                if on_tool_call is not None:
+                    on_tool_call(block.name, block.input, result)
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
