@@ -59,6 +59,10 @@ class VoiceLoop:
         self.transcriber = Transcriber()
         self.speaker = build_speaker()
         self._hot_mic_until = 0.0
+        # Held for the full duration of processing one utterance (voice,
+        # typed, or push-to-talk) so two never run concurrently against the
+        # same speaker/mic/orchestrator state.
+        self._interaction_lock = threading.Lock()
 
         # Without this, a CONFIRM-tier tool call mid-task silently blocks on
         # a keyboard input() with no spoken prompt -- indistinguishable from
@@ -66,6 +70,26 @@ class VoiceLoop:
         # terminal.
         from argus.voice.confirm import make_voice_confirmer
         self.orchestrator.tools.confirmer = make_voice_confirmer(self.speaker, self.transcriber)
+
+        # Text input and push-to-talk both come from the console, not the
+        # wake-word mic loop -- handled on their own thread so they aren't
+        # blocked behind the main loop's wait for the wake word.
+        threading.Thread(target=self._external_input_worker, daemon=True).start()
+
+    def _external_input_worker(self) -> None:
+        from argus.voice.audio_io import record_while
+
+        while True:
+            text = ui_commands.get_text_message(timeout=0.2)
+            if text:
+                with self._interaction_lock:
+                    self._process_utterance(text=text)
+                continue
+            if ui_commands.is_push_to_talk_active():
+                with self._interaction_lock:
+                    ui_events.publish({"type": "state", "value": "listening"})
+                    samples = record_while(ui_commands.is_push_to_talk_active)
+                    self._process_utterance(samples)
 
     def _refresh_hot_mic(self) -> None:
         if settings.open_barge_in_seconds > 0:
@@ -93,7 +117,9 @@ class VoiceLoop:
 
             # The wake-word-triggered command is always explicit intent --
             # no addressee check needed.
-            if not self._process_utterance(samples, check_addressee=False):
+            with self._interaction_lock:
+                processed = self._process_utterance(samples, check_addressee=False)
+            if not processed:
                 console.print("[dim](heard nothing, back to listening)[/dim]\n")
                 continue
 
@@ -106,7 +132,12 @@ class VoiceLoop:
                 console.print(f"[dim](listening for follow-up, {settings.followup_window_seconds:.0f}s...)[/dim]")
                 ui_events.publish({"type": "state", "value": "listening"})
                 followup = record_followup(settings.followup_window_seconds)
-                if followup is None or not self._process_utterance(followup, check_addressee=True):
+                if followup is None:
+                    console.print("[dim](back to wake-word listening)[/dim]\n")
+                    break
+                with self._interaction_lock:
+                    kept_going = self._process_utterance(followup, check_addressee=True)
+                if not kept_going:
                     console.print("[dim](back to wake-word listening)[/dim]\n")
                     break
 
@@ -133,15 +164,17 @@ class VoiceLoop:
             log.exception("Addressee check failed; treating utterance as addressed")
             return True  # fail open -- never silently drop a real request
 
-    def _process_utterance(self, samples, check_addressee: bool = False) -> bool:
-        """Transcribes, then streams the reply through the orchestrator,
+    def _process_utterance(self, samples=None, text: str | None = None, check_addressee: bool = False) -> bool:
+        """Transcribes (unless text is already given -- typed input skips
+        STT entirely), then streams the reply through the orchestrator,
         speaking each sentence as it's generated. Returns False only when
         there's genuinely nothing to keep the follow-up window open for
         (empty/silence) -- an ignored stray utterance still returns True,
         since the user may well resume talking to Argus a moment later and
         the conversation shouldn't end just because of one aside to someone
         else in the room."""
-        text = self.transcriber.transcribe(samples)
+        if text is None:
+            text = self.transcriber.transcribe(samples)
         if not text:
             return False
 

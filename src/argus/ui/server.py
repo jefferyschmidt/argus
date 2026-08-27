@@ -5,6 +5,7 @@ from pathlib import Path
 import anyio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from argus.config import settings
 from argus.ui import commands as ui_commands
@@ -37,6 +38,31 @@ def config() -> dict:
 def stop_listening() -> dict:
     ui_commands.request_stop_listening()
     ui_events.publish({"type": "toast", "text": "Hot mic turned off from the console."})
+    return {"ok": True}
+
+
+class TextInput(BaseModel):
+    text: str
+
+
+@app.post("/api/text_input")
+def text_input(payload: TextInput) -> dict:
+    text = payload.text.strip()
+    if not text:
+        return {"ok": False, "error": "empty"}
+    ui_commands.submit_text_message(text)
+    return {"ok": True}
+
+
+@app.post("/api/ptt_start")
+def ptt_start() -> dict:
+    ui_commands.start_push_to_talk()
+    return {"ok": True}
+
+
+@app.post("/api/ptt_stop")
+def ptt_stop() -> dict:
+    ui_commands.stop_push_to_talk()
     return {"ok": True}
 
 

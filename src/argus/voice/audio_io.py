@@ -6,6 +6,26 @@ from argus.config import settings
 FRAME_MS = 30
 _SILENCE_HANG_MS = 900
 _MAX_RECORD_SECONDS = 20
+_MAX_PTT_SECONDS = 45  # safety cap in case a stop signal is somehow missed
+
+
+def record_while(should_continue) -> np.ndarray:
+    """Records for as long as should_continue() returns True, checked once
+    per frame -- externally controlled (push-to-talk button held), not
+    VAD-gated like the other record_* functions here."""
+    sr = settings.audio_sample_rate
+    frame_len = int(sr * FRAME_MS / 1000)
+    max_frames = (_MAX_PTT_SECONDS * 1000) // FRAME_MS
+
+    chunks: list[np.ndarray] = []
+    with sd.InputStream(samplerate=sr, channels=1, dtype="int16", blocksize=frame_len) as stream:
+        for _ in range(int(max_frames)):
+            if not should_continue():
+                break
+            frame, _ = stream.read(frame_len)
+            chunks.append(frame.reshape(-1))
+
+    return np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)
 
 
 def record_until_silence() -> np.ndarray:
