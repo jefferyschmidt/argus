@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from argus.llm.base import Message, Tier
 from argus.llm.router import ModelRouter, classify
 from argus.memory.manager import MemoryManager
@@ -21,7 +23,9 @@ person is alive, prices, schedules, news) -- search immediately, don't ask
 permission first and don't just answer from memory of what you or the user
 said in a past conversation. Prior conversation turns are not a source of
 truth for time-sensitive facts; a live search result always overrides
-whatever was said before, including by you.
+whatever was said before, including by you. The current date/time is
+injected below the live message -- trust it over your training cutoff for
+"today", "this week", "how long ago", etc.
 
 If you learn something about the user that should persist long-term (a
 standing preference, an ongoing project, a fact about their life), say so
@@ -47,7 +51,8 @@ class Orchestrator:
         self.memory.remember_turn("user", user_text)
 
         context = self.memory.build_context(query=user_text)
-        system = SYSTEM_PROMPT + ("\n\n" + context if context else "")
+        now = datetime.now().strftime("%A, %B %d, %Y, %I:%M %p")
+        system = SYSTEM_PROMPT + f"\n\nCurrent date/time: {now}" + ("\n\n" + context if context else "")
 
         # Local 3B model can't do reliable tool calling, so trivial messages
         # that would route local skip tools entirely; anything else gets
