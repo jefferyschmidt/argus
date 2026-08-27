@@ -85,6 +85,8 @@ class ModelRouter:
         system: str,
         tool_registry,
         force_tier: Tier | None = None,
+        max_iterations: int | None = None,
+        on_tool_call=None,
     ) -> CompletionResult:
         """Tool use always runs on the frontier tier -- the local 3B model
         isn't reliable at structured tool calling, and if it's escalating
@@ -95,7 +97,13 @@ class ModelRouter:
 
         self.cost_governor.check()  # let BudgetExceeded propagate -- no silent local fallback for tool use
 
-        result = self.frontier.complete_with_tools(user_text, system, tool_registry, tier=tier)
+        kwargs = {}
+        if max_iterations is not None:
+            kwargs["max_iterations"] = max_iterations
+        if on_tool_call is not None:
+            kwargs["on_tool_call"] = on_tool_call
+
+        result = self.frontier.complete_with_tools(user_text, system, tool_registry, tier=tier, **kwargs)
         cost = estimate_cost(tier, result.input_tokens, result.output_tokens)
         self.cost_governor.record(cost)
         return result

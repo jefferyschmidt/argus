@@ -68,18 +68,26 @@ class AnthropicClient:
         system: str,
         tool_registry,
         tier: Tier = Tier.FAST,
+        max_iterations: int = _MAX_TOOL_ITERATIONS,
+        on_tool_call=None,
     ) -> CompletionResult:
         """Runs the full tool-use loop: send message, execute any tool calls
         the model asks for via the registry (which enforces permission
         tiers), feed results back, repeat until the model gives a final
-        text answer or the iteration cap is hit."""
+        text answer or the iteration cap is hit.
+
+        on_tool_call(name, input, result), if given, fires after every tool
+        execution -- used for audit logging in agent mode. If it raises, the
+        exception propagates out of this call immediately (used to enforce
+        a wall-clock budget mid-run rather than only checking between
+        top-level calls)."""
         from argus.tools.registry import ToolDenied
 
         model = _TIER_MODEL[tier]()
         history: list[dict] = [{"role": "user", "content": user_text}]
         total_in = total_out = 0
 
-        for _ in range(_MAX_TOOL_ITERATIONS):
+        for _ in range(max_iterations):
             response = self._client.messages.create(
                 model=model,
                 max_tokens=4096,
@@ -109,6 +117,8 @@ class AnthropicClient:
                 except Exception as e:
                     log.exception("Tool %s failed", block.name)
                     result = f"error: tool raised {type(e).__name__}: {e}"
+                if on_tool_call is not None:
+                    on_tool_call(block.name, block.input, result)
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,

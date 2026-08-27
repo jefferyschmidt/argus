@@ -43,6 +43,16 @@ def voice() -> None:
         pass
 
 
+def agent(goal: str) -> None:
+    from argus.agent.runner import AgentRunner
+
+    runner = AgentRunner()
+    console.print(f"[bold cyan]Argus[/bold cyan] working autonomously on:\n  {goal}\n")
+    result = runner.run(goal)
+    console.print(f"\n[bold cyan]Result>[/bold cyan] {result}")
+    console.print(f"[dim]Audit log: {runner.audit.path}[/dim]")
+
+
 def memory_review() -> None:
     mem = MemoryManager()
     pending = mem.core.list_pending()
@@ -70,6 +80,9 @@ def main() -> None:
     sub.add_parser("chat", help="Start an interactive chat session")
     sub.add_parser("voice", help="Start wake-word voice mode")
 
+    agent_parser = sub.add_parser("agent", help="Run an autonomous goal")
+    agent_parser.add_argument("goal", help="What Argus should figure out and do")
+
     memory_parser = sub.add_parser("memory", help="Memory management")
     memory_sub = memory_parser.add_subparsers(dest="memory_command")
     memory_sub.add_parser("review", help="Review agent-proposed core memories")
@@ -80,6 +93,8 @@ def main() -> None:
         memory_review()
     elif args.command == "voice":
         voice()
+    elif args.command == "agent":
+        agent(args.goal)
     else:
         chat()
 

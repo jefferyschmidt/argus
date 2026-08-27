@@ -60,11 +60,15 @@ argus memory review   # confirm/reject agent-proposed core memories
    (speak sentence 1 while later sentences are still generating)
 4. ~~Desktop/app control~~ (screenshot as a real image the model can see,
    list windows, click, type, press keys, open apps)
-5. Cartesia TTS (natural cloud voice, matching the AI-receptionist project)
-   with automatic Piper fallback when offline/unconfigured -- in progress
-6. Autonomous agent loop (separate mode, goal file, budget caps, audit log)
-   -- self-modification (below) depends on this being solid first, since
-   both are about Argus taking action with less direct supervision.
+5. ~~Cartesia TTS~~ (natural cloud voice, matching the AI-receptionist
+   project) with automatic Piper fallback when offline/unconfigured
+6. ~~Autonomous agent loop~~ -- `argus agent "<goal>"`: extended tool-use
+   loop (up to 25 iterations, 10min wall-clock cap by default) with a full
+   JSONL audit trail of every tool call at data/agent_audit.jsonl. Same
+   permission tiers as normal conversation -- ALLOW tools run unsupervised,
+   CONFIRM tools still require a human's yes. Self-modification (below)
+   depends on this being solid first, since both are about Argus taking
+   action with less direct supervision.
 7. Email/calendar, smart home (Home Assistant) -- need OAuth/app setup first
 8. Camera/vision: periodic frame capture + Claude vision for general scene
    and object description (straightforward, same pattern as the screenshot
