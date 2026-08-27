@@ -14,6 +14,11 @@ _TIER_MODEL = {
 
 _MAX_TOOL_ITERATIONS = 8
 
+# Anthropic's server-side web search -- executes on Anthropic's infrastructure,
+# not through our ToolRegistry, so it needs no local handler/permission tier.
+# Capped at a handful of searches per turn as a cost/runaway guard.
+_WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 3}
+
 
 class AnthropicClient:
     """Frontier tier. Does the real reasoning since local generation is
@@ -63,7 +68,7 @@ class AnthropicClient:
                 model=model,
                 max_tokens=4096,
                 system=system,
-                tools=tool_registry.schemas(),
+                tools=tool_registry.schemas() + [_WEB_SEARCH_TOOL],
                 messages=history,
             )
             total_in += response.usage.input_tokens

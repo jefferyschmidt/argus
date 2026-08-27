@@ -1,4 +1,5 @@
 import logging
+import re
 
 from argus.llm.anthropic_client import AnthropicClient
 from argus.llm.base import CompletionResult, Message, Tier
@@ -21,14 +22,24 @@ _ADVANCED_KEYWORDS = (
     "write code",
     "research",
 )
-_LOCAL_ENOUGH_MAX_LEN = 60
+_LOCAL_ENOUGH_MAX_LEN = 40
+# LOCAL has no tool access (web search, filesystem, etc.), so it's reserved
+# for genuine small talk -- anything that might need a real fact or current
+# info defaults to FAST instead of guessing from length alone. This is a
+# whitelist, not a blocklist, on purpose: default to giving tools access.
+_SMALL_TALK_PATTERNS = re.compile(
+    r"^(hi|hello|hey|yo|sup|good\s?(morning|afternoon|evening|night)|"
+    r"how'?s?\s?it\s?going|how\s?are\s?you|what'?s\s?up|"
+    r"thanks?|thank\s?you|thx|ok|okay|cool|nice|great|got\s?it|sounds?\s?good|"
+    r"bye|goodbye|see\s?ya|later|good\s?bye)[.!? ]*$"
+)
 
 
 def classify(text: str) -> Tier:
-    lowered = text.lower()
+    lowered = text.lower().strip()
     if any(kw in lowered for kw in _ADVANCED_KEYWORDS) or len(text) > 400:
         return Tier.ADVANCED
-    if len(text) <= _LOCAL_ENOUGH_MAX_LEN:
+    if len(text) <= _LOCAL_ENOUGH_MAX_LEN and _SMALL_TALK_PATTERNS.match(lowered):
         return Tier.LOCAL
     return Tier.FAST
 

@@ -45,5 +45,13 @@ class Settings(BaseSettings):
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    @property
+    def real_fs_roots(self) -> list[Path]:
+        """Real folders (beyond the sandbox) the file tools may touch.
+        Deliberately narrow -- your actual Documents/Downloads/Desktop, not
+        the whole filesystem. Extend by editing this list if you want more."""
+        home = Path.home()
+        return [p for p in (home / "Documents", home / "Downloads", home / "Desktop") if p.exists()]
+
 
 settings = Settings()
