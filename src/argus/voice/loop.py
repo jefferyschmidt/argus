@@ -7,8 +7,8 @@ from rich.console import Console
 from argus.config import settings
 from argus.orchestrator import Orchestrator
 from argus.voice.audio_io import record_followup
+from argus.voice.speaker_factory import build_speaker
 from argus.voice.stt import Transcriber
-from argus.voice.tts import Speaker
 from argus.voice.wake_word import WakeWordListener
 
 log = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ class VoiceLoop:
         self.orchestrator = orchestrator or Orchestrator()
         self.wake_word = WakeWordListener()
         self.transcriber = Transcriber()
-        self.speaker = Speaker()
+        self.speaker = build_speaker()
 
     def run(self) -> None:
         console.print("[bold cyan]Argus[/bold cyan] listening for wake word. Ctrl+C to quit.\n")
