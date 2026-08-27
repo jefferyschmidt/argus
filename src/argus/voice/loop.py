@@ -4,7 +4,6 @@ import threading
 from rich.console import Console
 
 from argus.orchestrator import Orchestrator
-from argus.voice.audio_io import record_until_silence
 from argus.voice.stt import Transcriber
 from argus.voice.tts import Speaker
 from argus.voice.wake_word import WakeWordListener
@@ -35,12 +34,12 @@ class VoiceLoop:
         console.print("[bold cyan]Argus[/bold cyan] listening for wake word. Ctrl+C to quit.\n")
         while True:
             try:
-                self.wake_word.wait_for_wake()
+                samples = self.wake_word.listen_for_wake_and_command(
+                    on_wake=lambda: console.print("[green](wake word heard, listening...)[/green]")
+                )
             except KeyboardInterrupt:
                 break
 
-            console.print("[green](wake word heard, listening...)[/green]")
-            samples = record_until_silence()
             text = self.transcriber.transcribe(samples)
             if not text:
                 console.print("[dim](heard nothing, back to listening)[/dim]\n")
