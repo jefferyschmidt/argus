@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     wake_word_threshold: float = 0.5
     whisper_model_size: str = "base.en"
     piper_voice: str = "en_US-lessac-medium"
+    # Optional. If set, Cartesia is used for TTS (much more natural), with
+    # automatic fallback to Piper if unset, unreachable, or it errors.
+    cartesia_api_key: str = ""
+    cartesia_voice_id: str = "f9836c6e-a0bd-460e-9d3c-f7299fa60f94"  # reused from the AI-receptionist project
+    cartesia_model: str = "sonic-3"
     audio_sample_rate: int = 16000
     # RMS threshold above which a frame counts as speech (for
     # record-until-silence VAD). Mic-dependent -- tune with

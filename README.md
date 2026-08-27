@@ -101,6 +101,28 @@ argus memory review   # confirm/reject agent-proposed core memories
 - Voice-gated confirmation for the riskiest actions (an extra layer beyond
   a typed/spoken "yes").
 
+### Dream / stretch goals
+
+- Personal knowledge graph -- not just flat memory, but a structured map of
+  people/projects/relationships built over time, so it can answer
+  relational questions ("who else is on the Coshocton line besides Jason?").
+- Second-brain ingestion -- drop a PDF/note/article into a watched folder
+  and it auto-indexes + summarizes into memory, building real long-term
+  expertise on your world instead of only remembering conversations.
+- Proactive research digests -- tell it what you care about (a competitor,
+  a technology, a hobby) and it periodically surfaces a digest unprompted.
+- "Teach me once" macros -- walk it through a multi-step task manually one
+  time and it generalizes that into a replayable skill, instead of you
+  re-describing the same task every time.
+- Ambient stuck-detection -- with desktop visibility already in place, it
+  could notice you've been stuck on the same error for a while and offer
+  help unprompted, rather than only ever reacting to a direct ask.
+- "Second opinion" mode for big decisions -- reason from a few angles
+  (skeptic, domain expert, risk-focused) internally before giving one
+  synthesized recommendation on something consequential.
+- Cross-device handoff -- once remote/mobile access exists, a conversation
+  started on your phone continues seamlessly when you sit at this machine.
+
 ### Later / not yet scoped
 
 - Smarter conversational listening: after the wake word, distinguish speech
