@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     # Optional. If set, Cartesia is used for TTS (much more natural), with
     # automatic fallback to Piper if unset, unreachable, or it errors.
     cartesia_api_key: str = ""
-    cartesia_voice_id: str = "f9836c6e-a0bd-460e-9d3c-f7299fa60f94"  # reused from the AI-receptionist project
+    cartesia_voice_id: str = "ef191366-f52f-447a-a398-ed8c0f2943a1"  # Archie -- warm, conversational British male
     cartesia_model: str = "sonic-3"
     audio_sample_rate: int = 16000
     # RMS threshold above which a frame counts as speech (for
