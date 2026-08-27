@@ -63,6 +63,8 @@ argus memory review   # confirm/reject agent-proposed core memories
 5. Cartesia TTS (natural cloud voice, matching the AI-receptionist project)
    with automatic Piper fallback when offline/unconfigured -- in progress
 6. Autonomous agent loop (separate mode, goal file, budget caps, audit log)
+   -- self-modification (below) depends on this being solid first, since
+   both are about Argus taking action with less direct supervision.
 7. Email/calendar, smart home (Home Assistant) -- need OAuth/app setup first
 8. Camera/vision: periodic frame capture + Claude vision for general scene
    and object description (straightforward, same pattern as the screenshot
@@ -111,6 +113,25 @@ argus memory review   # confirm/reject agent-proposed core memories
 21. Meeting assistant -- join/transcribe/summarize calls and extract action
     items. Genuinely valuable but a bigger lift than the others here (needs
     audio capture from other apps, or a bot-join integration).
+22. Self-modification -- Argus edits its own source in response to
+    conversation ("you can't do X yet" -> plan it, build it, right then).
+    Deferred until the autonomous agent loop (item 6) is solid, since both
+    are about less-supervised action and the second should build on lessons
+    from the first. Design decided when this comes up again:
+    - Open its file tools to its own `src/argus` (currently excluded from
+      the sandbox on purpose).
+    - Every change is a real git commit -- nothing is ever unrecoverable,
+      and the diff is inspectable after the fact.
+    - It must run the test suite itself; a change only counts as done if
+      tests pass, not just "looks right."
+    - Self-edits require explicit user confirmation, at minimum -- this is
+      a materially higher-risk category than other CONFIRM-tier actions
+      (e.g. it editing its own permission tiers), so lean toward confirm
+      rather than broad access here even once other tools loosen up.
+    - No hot-reload: Python doesn't pick up code changes in a running
+      process, so the flow is propose -> tests pass -> tell the user to
+      restart (or later, have it restart itself deliberately) -- never a
+      silent rewrite-and-keep-running-on-old-code situation.
 
 ### Lower priority / nice-to-have
 
