@@ -23,7 +23,16 @@ def _list_windows(args: dict) -> str:
 def _click(args: dict) -> str:
     import pyautogui
 
-    x, y = args["x"], args["y"]
+    try:
+        x, y = int(args["x"]), int(args["y"])
+    except (KeyError, TypeError, ValueError):
+        # A malformed x/y (e.g. one coordinate string like "258, 60" instead
+        # of two separate ints) would otherwise hit pyautogui's fallback
+        # that tries to locate an *image* on screen -- a cryptic
+        # FileNotFoundError that doesn't tell the model what actually went
+        # wrong. This gives it something it can actually self-correct from.
+        return f"error: x and y must both be integers, got x={args.get('x')!r} y={args.get('y')!r}"
+
     if args.get("double"):
         pyautogui.doubleClick(x, y)
     else:
@@ -126,7 +135,10 @@ press_key_tool = Tool(
 
 open_app_tool = Tool(
     name="open_app",
-    description="Open an application by name (e.g. 'notepad', 'calc') or a file/folder path.",
+    description=(
+        "Open an application by name (e.g. 'notepad', 'calc'), a file/folder path, "
+        "or a URL (opens in the default browser, e.g. 'https://youtube.com')."
+    ),
     input_schema={
         "type": "object",
         "properties": {"app": {"type": "string"}},

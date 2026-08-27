@@ -115,7 +115,11 @@ class AnthropicClient:
                 except ToolDenied as e:
                     result = f"error: {e}"
                 except Exception as e:
-                    log.exception("Tool %s failed", block.name)
+                    # Not log.exception -- tool errors are fed back to the
+                    # model and it usually self-corrects (e.g. malformed
+                    # arguments, retried with the right ones), so a full
+                    # traceback on every recoverable hiccup is just noise.
+                    log.warning("Tool %s failed: %s: %s", block.name, type(e).__name__, e)
                     result = f"error: tool raised {type(e).__name__}: {e}"
                 if on_tool_call is not None:
                     on_tool_call(block.name, block.input, result)
@@ -182,7 +186,11 @@ class AnthropicClient:
                 except ToolDenied as e:
                     result = f"error: {e}"
                 except Exception as e:
-                    log.exception("Tool %s failed", block.name)
+                    # Not log.exception -- tool errors are fed back to the
+                    # model and it usually self-corrects (e.g. malformed
+                    # arguments, retried with the right ones), so a full
+                    # traceback on every recoverable hiccup is just noise.
+                    log.warning("Tool %s failed: %s: %s", block.name, type(e).__name__, e)
                     result = f"error: tool raised {type(e).__name__}: {e}"
                 if on_tool_call is not None:
                     on_tool_call(block.name, block.input, result)
