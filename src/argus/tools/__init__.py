@@ -9,6 +9,7 @@ from argus.tools.desktop import (
 )
 from argus.tools.filesystem import list_dir_tool, read_file_tool, run_shell_tool, write_file_tool
 from argus.tools.registry import ToolRegistry, console_confirmer
+from argus.tools.web_content import fetch_image_tool
 
 
 def build_default_registry() -> ToolRegistry:
@@ -24,6 +25,7 @@ def build_default_registry() -> ToolRegistry:
         type_text_tool,
         press_key_tool,
         open_app_tool,
+        fetch_image_tool,
     ):
         registry.register(tool)
     return registry
