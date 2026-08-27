@@ -3,7 +3,9 @@ import threading
 
 from rich.console import Console
 
+from argus.config import settings
 from argus.orchestrator import Orchestrator
+from argus.voice.audio_io import record_followup
 from argus.voice.stt import Transcriber
 from argus.voice.tts import Speaker
 from argus.voice.wake_word import WakeWordListener
@@ -16,6 +18,11 @@ class VoiceLoop:
     """wake word -> record -> transcribe -> orchestrator -> speak, with
     everything also printed to the screen (spoken output is never the only
     output, per the original requirement).
+
+    Conversational follow-ups: after Argus finishes speaking, it keeps
+    listening (no wake word needed) for settings.followup_window_seconds --
+    if you keep talking, the conversation continues hands-free; go quiet
+    for that window and it drops back to requiring the wake word.
 
     Barge-in: while Argus is speaking, the wake-word model keeps listening
     in the background; hearing the wake word again cuts playback and starts
@@ -40,17 +47,33 @@ class VoiceLoop:
             except KeyboardInterrupt:
                 break
 
-            text = self.transcriber.transcribe(samples)
-            if not text:
+            if not self._process_utterance(samples):
                 console.print("[dim](heard nothing, back to listening)[/dim]\n")
                 continue
 
-            console.print(f"[bold green]you>[/bold green] {text}")
-            reply = self.orchestrator.handle(text)
-            tag = f"[dim]({self.orchestrator.last_tier.value}: {self.orchestrator.last_model})[/dim]"
-            console.print(f"[bold cyan]argus>[/bold cyan] {reply} {tag}\n")
+            # Conversational follow-ups: keep listening without the wake
+            # word until the user goes quiet for the timeout window.
+            while True:
+                console.print(f"[dim](listening for follow-up, {settings.followup_window_seconds:.0f}s...)[/dim]")
+                followup = record_followup(settings.followup_window_seconds)
+                if followup is None or not self._process_utterance(followup):
+                    console.print("[dim](back to wake-word listening)[/dim]\n")
+                    break
 
-            self._speak_with_barge_in(reply)
+    def _process_utterance(self, samples) -> bool:
+        """Transcribes, routes through the orchestrator, and speaks the
+        reply. Returns False if nothing usable was heard (empty/silence)."""
+        text = self.transcriber.transcribe(samples)
+        if not text:
+            return False
+
+        console.print(f"[bold green]you>[/bold green] {text}")
+        reply = self.orchestrator.handle(text)
+        tag = f"[dim]({self.orchestrator.last_tier.value}: {self.orchestrator.last_model})[/dim]"
+        console.print(f"[bold cyan]argus>[/bold cyan] {reply} {tag}\n")
+
+        self._speak_with_barge_in(reply)
+        return True
 
     def _speak_with_barge_in(self, text: str) -> None:
         stop_event = threading.Event()

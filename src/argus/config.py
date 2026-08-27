@@ -17,6 +17,9 @@ class Settings(BaseSettings):
 
     argus_data_dir: str = "data"
     daily_budget_usd: float = 5.0
+    # Optional -- set in .env so location-dependent questions (weather, "near
+    # me" searches) don't need to be asked every time. Empty by default.
+    user_location: str = ""
 
     # Voice (Phase 3). openWakeWord ships a few pretrained wake words but not
     # "Argus" -- hey_jarvis_v0.1 is the closest bundled model until a custom
@@ -30,6 +33,9 @@ class Settings(BaseSettings):
     # record-until-silence VAD). Mic-dependent -- tune with
     # scripts/calibrate_mic.py if speech isn't being detected.
     voice_silence_rms_threshold: float = 60.0
+    # After Argus finishes speaking, how long to keep listening without
+    # requiring the wake word again before falling back to wake-word-only.
+    followup_window_seconds: float = 6.0
 
     @property
     def data_dir(self) -> Path:

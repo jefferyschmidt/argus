@@ -117,7 +117,11 @@ write_file_tool = Tool(
 
 run_shell_tool = Tool(
     name="run_shell",
-    description="Run a shell command in the sandboxed workspace directory. 30s timeout.",
+    description=(
+        "Run a shell command in the sandboxed workspace directory. Executes via "
+        "cmd.exe on Windows -- use Windows commands (dir, type, del, copy), not "
+        "Unix/bash ones (ls, cat, rm, cp). 30s timeout."
+    ),
     input_schema={
         "type": "object",
         "properties": {"command": {"type": "string"}},

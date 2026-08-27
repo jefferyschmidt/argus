@@ -1,12 +1,13 @@
 from datetime import datetime
 
+from argus.config import settings
 from argus.llm.base import Message, Tier
 from argus.llm.router import ModelRouter, classify
 from argus.memory.manager import MemoryManager
 from argus.tools import ToolRegistry, build_default_registry
 
-SYSTEM_PROMPT = """You are Argus, a personal AI assistant running locally for your user.
-Be direct and concise. You have access to layered memory (core facts, semantic
+SYSTEM_PROMPT = """You are Argus, a personal AI assistant running locally for your user
+on Windows. Be direct and concise. You have access to layered memory (core facts, semantic
 recall, recent conversation) injected below the live message -- use it, and
 don't ask the user to repeat things you already know from it.
 
@@ -51,8 +52,12 @@ class Orchestrator:
         self.memory.remember_turn("user", user_text)
 
         context = self.memory.build_context(query=user_text)
-        now = datetime.now().strftime("%A, %B %d, %Y, %I:%M %p")
-        system = SYSTEM_PROMPT + f"\n\nCurrent date/time: {now}" + ("\n\n" + context if context else "")
+        now = datetime.now().astimezone()
+        now_str = now.strftime("%A, %B %d, %Y, %I:%M %p %Z")
+        grounding = f"\n\nCurrent date/time: {now_str}"
+        if settings.user_location:
+            grounding += f"\nUser's location: {settings.user_location}"
+        system = SYSTEM_PROMPT + grounding + ("\n\n" + context if context else "")
 
         # Local 3B model can't do reliable tool calling, so trivial messages
         # that would route local skip tools entirely; anything else gets
