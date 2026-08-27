@@ -76,38 +76,58 @@ class VoiceLoop:
         return True
 
     def _speak_with_barge_in(self, text: str) -> None:
+        # Synthesize BEFORE starting the watcher -- Piper's synthesis is
+        # itself onnxruntime compute, and letting it overlap with the
+        # watcher's continuous wake-word inference was starving the CPU on
+        # this hardware badly enough to produce long silences.
+        try:
+            synthesized = self.speaker.synthesize(text)
+        except Exception:
+            log.exception("Speech synthesis failed")
+            console.print("[red](speech synthesis failed -- see log)[/red]")
+            return
+        if synthesized is None:
+            return
+        samples, sample_rate = synthesized
+
         stop_event = threading.Event()
 
-        def _speak_safely():
+        def _play_safely():
+            from argus.voice.audio_io import play_audio
             try:
-                self.speaker.speak(text, stop_event)
+                play_audio(samples, sample_rate=sample_rate, stop_event=stop_event)
             except Exception:
-                log.exception("Speech synthesis/playback failed")
-                console.print("[red](speech failed -- see log)[/red]")
+                log.exception("Speech playback failed")
+                console.print("[red](speech playback failed -- see log)[/red]")
 
-        speak_thread = threading.Thread(target=_speak_safely)
-        speak_thread.start()
-        # Best-effort barge-in watcher; if it errors for any reason, speech
-        # just plays to completion instead of taking the whole loop down.
+        if not settings.voice_barge_in_enabled:
+            _play_safely()
+            return
+
+        play_thread = threading.Thread(target=_play_safely)
+        play_thread.start()
         try:
-            self._watch_for_barge_in(stop_event, speak_thread)
+            self._watch_for_barge_in(stop_event, play_thread)
         except Exception:
             log.exception("Barge-in watcher failed; continuing without it")
-        speak_thread.join()
+        play_thread.join()
 
-    def _watch_for_barge_in(self, stop_event: threading.Event, speak_thread: threading.Thread) -> None:
+    def _watch_for_barge_in(self, stop_event: threading.Event, play_thread: threading.Thread) -> None:
         import sounddevice as sd
 
         # Without this, leftover prediction state from the wake-word model's
-        # last real detection can cause an immediate spurious trigger here,
-        # stopping playback before anything audible plays.
+        # last real detection can cause an immediate spurious trigger here.
         self.wake_word.reset()
 
         chunk = 1280
         with sd.InputStream(samplerate=16000, channels=1, dtype="int16", blocksize=chunk) as stream:
-            while speak_thread.is_alive():
+            while play_thread.is_alive():
                 frame, _ = stream.read(chunk)
-                if self.wake_word.score_frame(frame.reshape(-1)) > 0.6:
+                score = self.wake_word.score_frame(frame.reshape(-1))
+                if score > 0.2:
+                    log.info("barge-in watch: score=%.3f", score)
+                if score > 0.6:
                     console.print("[yellow](barge-in: stopping speech)[/yellow]")
+                    log.info("barge-in triggered at score=%.3f", score)
                     stop_event.set()
                     return

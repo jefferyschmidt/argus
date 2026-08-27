@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # After Argus finishes speaking, how long to keep listening without
     # requiring the wake word again before falling back to wake-word-only.
     followup_window_seconds: float = 6.0
+    # Barge-in runs continuous wake-word inference while speech plays, which
+    # competes with Piper's own onnx compute for CPU on this hardware. If it
+    # causes stalls/silence, set VOICE_BARGE_IN_ENABLED=false in .env.
+    voice_barge_in_enabled: bool = True
 
     @property
     def data_dir(self) -> Path:

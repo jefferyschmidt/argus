@@ -1,8 +1,8 @@
 import argparse
-import logging
 
 from rich.console import Console
 
+from argus.logging_config import setup_logging
 from argus.memory.manager import MemoryManager
 from argus.orchestrator import Orchestrator
 
@@ -63,7 +63,7 @@ def memory_review() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.WARNING)
+    setup_logging()
     parser = argparse.ArgumentParser(prog="argus")
     sub = parser.add_subparsers(dest="command")
 

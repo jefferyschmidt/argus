@@ -14,14 +14,28 @@ class Speaker:
         model_path = _voice_model_path(settings.piper_voice)
         self._voice = PiperVoice.load(str(model_path))
 
-    def speak(self, text: str, stop_event: threading.Event | None = None) -> None:
+    def synthesize(self, text: str) -> tuple[np.ndarray, int] | None:
+        """CPU-heavy step (onnxruntime). Deliberately separate from play()
+        so it can run to completion BEFORE anything else (like the barge-in
+        watcher's continuous wake-word inference) starts competing for CPU
+        -- on this CPU-only hardware, overlapping the two caused silent/
+        stalled playback with no exception."""
         if not text.strip():
-            return
+            return None
         audio_chunks = list(self._voice.synthesize(text))
         if not audio_chunks:
-            return
+            return None
         samples = np.concatenate([c.audio_int16_array for c in audio_chunks])
-        play_audio(samples, sample_rate=audio_chunks[0].sample_rate, stop_event=stop_event)
+        return samples, audio_chunks[0].sample_rate
+
+    def speak(self, text: str, stop_event: threading.Event | None = None) -> None:
+        """Convenience wrapper for callers that don't need to control the
+        synthesize/play split (e.g. one-off scripts, text chat)."""
+        synthesized = self.synthesize(text)
+        if synthesized is None:
+            return
+        samples, sample_rate = synthesized
+        play_audio(samples, sample_rate=sample_rate, stop_event=stop_event)
 
 
 def _voice_model_path(voice_name: str) -> Path:
