@@ -7,6 +7,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 from argus.config import settings
+from argus.ui import commands as ui_commands
 from argus.ui import events as ui_events
 
 log = logging.getLogger(__name__)
@@ -30,6 +31,13 @@ def config() -> dict:
         "followup_window_seconds": settings.followup_window_seconds,
         "daily_budget_usd": settings.daily_budget_usd,
     }
+
+
+@app.post("/api/stop_listening")
+def stop_listening() -> dict:
+    ui_commands.request_stop_listening()
+    ui_events.publish({"type": "toast", "text": "Hot mic turned off from the console."})
+    return {"ok": True}
 
 
 @app.websocket("/ws")

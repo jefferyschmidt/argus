@@ -11,6 +11,7 @@ from argus.voice.audio_io import record_followup
 from argus.voice.speaker_factory import build_speaker
 from argus.voice.stt import Transcriber
 from argus.voice.wake_word import WakeWordListener
+from argus.ui import commands as ui_commands
 from argus.ui import events as ui_events
 
 log = logging.getLogger(__name__)
@@ -64,6 +65,9 @@ class VoiceLoop:
             self._hot_mic_until = time.monotonic() + settings.open_barge_in_seconds
 
     def _hot_mic_active(self) -> bool:
+        if ui_commands.consume_stop_listening_request():
+            self._hot_mic_until = 0.0
+            console.print("[dim](hot mic off -- stopped from the console)[/dim]")
         return time.monotonic() < self._hot_mic_until
 
     def run(self) -> None:
@@ -80,27 +84,63 @@ class VoiceLoop:
             except KeyboardInterrupt:
                 break
 
-            if not self._process_utterance(samples):
+            # The wake-word-triggered command is always explicit intent --
+            # no addressee check needed.
+            if not self._process_utterance(samples, check_addressee=False):
                 console.print("[dim](heard nothing, back to listening)[/dim]\n")
                 continue
 
             # Conversational follow-ups: keep listening without the wake
-            # word until the user goes quiet for the timeout window.
+            # word until the user goes quiet for the timeout window. Unlike
+            # the wake-word command, anything heard here could be genuine
+            # follow-up OR the open mic picking up unrelated conversation --
+            # gate it.
             while True:
                 console.print(f"[dim](listening for follow-up, {settings.followup_window_seconds:.0f}s...)[/dim]")
                 ui_events.publish({"type": "state", "value": "listening"})
                 followup = record_followup(settings.followup_window_seconds)
-                if followup is None or not self._process_utterance(followup):
+                if followup is None or not self._process_utterance(followup, check_addressee=True):
                     console.print("[dim](back to wake-word listening)[/dim]\n")
                     break
 
-    def _process_utterance(self, samples) -> bool:
+    def _seems_addressed_to_argus(self, text: str) -> bool:
+        """Cheap gate for follow-up-window utterances: is this actually
+        meant for Argus, or is the open mic picking up stray conversation
+        (e.g. talking to someone else in the room)? Uses the local model
+        since it's already warm and this doesn't need frontier reasoning --
+        real addressee detection is a harder, deferred problem (see
+        README roadmap); this is a cheap first line of defense, not that."""
+        from argus.llm.base import Message
+
+        try:
+            prompt = (
+                "Is the following something a person would say TO an AI "
+                "voice assistant -- a question, request, or command -- or "
+                "is it more likely stray conversation/background talk not "
+                f'meant for the assistant?\nUtterance: "{text}"\n'
+                "Reply with exactly one word: ADDRESSED or STRAY."
+            )
+            result = self.orchestrator.router.local.complete([Message(role="user", content=prompt)])
+            return "STRAY" not in result.text.upper()
+        except Exception:
+            log.exception("Addressee check failed; treating utterance as addressed")
+            return True  # fail open -- never silently drop a real request
+
+    def _process_utterance(self, samples, check_addressee: bool = False) -> bool:
         """Transcribes, then streams the reply through the orchestrator,
-        speaking each sentence as it's generated. Returns False if nothing
-        usable was heard (empty/silence)."""
+        speaking each sentence as it's generated. Returns False only when
+        there's genuinely nothing to keep the follow-up window open for
+        (empty/silence) -- an ignored stray utterance still returns True,
+        since the user may well resume talking to Argus a moment later and
+        the conversation shouldn't end just because of one aside to someone
+        else in the room."""
         text = self.transcriber.transcribe(samples)
         if not text:
             return False
+
+        if check_addressee and not self._seems_addressed_to_argus(text):
+            console.print(f"[dim]you (ignored, seems unaddressed)> {text}[/dim]\n")
+            return True  # keep the follow-up window open, just ignore this one
 
         console.print(f"[bold green]you>[/bold green] {text}")
 

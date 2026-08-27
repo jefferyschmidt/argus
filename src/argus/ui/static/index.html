@@ -40,6 +40,24 @@
   .dot-live { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--err); margin-right: 7px; }
   .dot-live.up { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent), 0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
 
+  .stop-listening-btn {
+    font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--ink-dim); background: var(--bg-panel); border: 1px solid var(--line); border-radius: 3px;
+    padding: 5px 10px; cursor: pointer; transition: border-color .15s, color .15s;
+  }
+  .stop-listening-btn:hover { border-color: var(--danger, var(--err)); color: var(--err); }
+  .stop-listening-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .stop-listening-btn:active { transform: translateY(1px); }
+
+  .toast {
+    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(12px);
+    font-family: var(--font-mono); font-size: 12px; color: var(--ink);
+    background: var(--bg-panel); border: 1px solid var(--line-strong); border-radius: 4px;
+    padding: 9px 16px; opacity: 0; pointer-events: none; transition: opacity .25s ease, transform .25s ease;
+    box-shadow: 0 10px 30px -8px rgba(0,0,0,.6);
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
   .hero { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 22px 20px 6px; }
   .hero-row { display: flex; align-items: stretch; justify-content: center; gap: 16px; flex-wrap: wrap; width: 100%; }
   .head-frame {
@@ -147,10 +165,12 @@
       <span class="tagline">Personal Intelligence &middot; Local-First</span>
     </div>
     <div class="top-status">
+      <button class="stop-listening-btn" id="stopListeningBtn" title="Turn off hot-mic barge-in">Stop listening</button>
       <span><span class="dot-live" id="liveDot"></span><span id="liveLabel">Connecting</span></span>
       <span class="clock" id="clock">--:--:--</span>
     </div>
   </div>
+  <div class="toast" id="toast"></div>
 
   <div class="hero">
     <div class="hero-row">
@@ -480,8 +500,25 @@
       }
       else if (event.type === "memory") updateMemory(event);
       else if (event.type === "system") updateSystem(event);
+      else if (event.type === "toast") showToast(event.text);
     };
   }
+
+  // ---------- toast + stop-listening button ----------
+  var toastEl = document.getElementById("toast");
+  var toastTimer = null;
+  function showToast(text) {
+    toastEl.textContent = text;
+    toastEl.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 3000);
+  }
+
+  document.getElementById("stopListeningBtn").addEventListener("click", function () {
+    fetch("/api/stop_listening", { method: "POST" }).catch(function () {
+      showToast("Couldn't reach Argus -- is it still running?");
+    });
+  });
   connect();
 
   // ============================================================
