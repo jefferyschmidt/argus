@@ -5,6 +5,7 @@ from argus.llm.base import Message, Tier
 from argus.llm.router import ModelRouter, classify
 from argus.memory.manager import MemoryManager
 from argus.tools import ToolRegistry, build_default_registry
+from argus.voice.sentence_splitter import SentenceBuffer
 
 SYSTEM_PROMPT = """You are Argus, a personal AI assistant running locally for your user
 on Windows. Be direct and concise. Your replies are always spoken aloud AND shown as
@@ -66,16 +67,18 @@ class Orchestrator:
         self.last_tier: Tier | None = None
         self.last_model: str | None = None
 
-    def handle(self, user_text: str) -> str:
-        self.memory.remember_turn("user", user_text)
-
+    def _build_system(self, user_text: str) -> str:
         context = self.memory.build_context(query=user_text)
         now = datetime.now().astimezone()
         now_str = now.strftime("%A, %B %d, %Y, %I:%M %p %Z")
         grounding = f"\n\nCurrent date/time: {now_str}"
         if settings.user_location:
             grounding += f"\nUser's location: {settings.user_location}"
-        system = SYSTEM_PROMPT + grounding + ("\n\n" + context if context else "")
+        return SYSTEM_PROMPT + grounding + ("\n\n" + context if context else "")
+
+    def handle(self, user_text: str) -> str:
+        self.memory.remember_turn("user", user_text)
+        system = self._build_system(user_text)
 
         # Local 3B model can't do reliable tool calling, so trivial messages
         # that would route local skip tools entirely; anything else gets
@@ -87,6 +90,53 @@ class Orchestrator:
 
         self.last_tier = result.tier
         self.last_model = result.model
+
+        reply, proposed = _extract_core_memory(result.text)
+        if proposed:
+            self.memory.core.propose(proposed)
+
+        self.memory.remember_turn("assistant", reply)
+        return reply
+
+    def handle_streaming(self, user_text: str, on_sentence) -> str:
+        """Like handle(), but calls on_sentence(text) as each complete
+        sentence becomes available instead of only returning once the full
+        reply is done -- lets voice mode start speaking sentence 1 while
+        later sentences are still being generated."""
+        self.memory.remember_turn("user", user_text)
+        system = self._build_system(user_text)
+
+        if classify(user_text) is Tier.LOCAL:
+            # Ollama isn't streamed here -- local replies are short enough
+            # that streaming wouldn't meaningfully reduce latency anyway.
+            result = self.router.complete([Message(role="user", content=user_text)], system=system)
+            self.last_tier = result.tier
+            self.last_model = result.model
+            reply, proposed = _extract_core_memory(result.text)
+            if proposed:
+                self.memory.core.propose(proposed)
+            if reply:
+                on_sentence(reply)
+            self.memory.remember_turn("assistant", reply)
+            return reply
+
+        buffer = SentenceBuffer()
+        marker = "CORE_MEMORY:"
+
+        def on_text(delta: str) -> None:
+            for sentence in buffer.add(delta):
+                if marker not in sentence:
+                    on_sentence(sentence)
+
+        result = self.router.complete_with_tools_streaming(
+            user_text, system=system, tool_registry=self.tools, on_text=on_text
+        )
+        self.last_tier = result.tier
+        self.last_model = result.model
+
+        tail = buffer.flush()
+        if tail and marker not in tail:
+            on_sentence(tail)
 
         reply, proposed = _extract_core_memory(result.text)
         if proposed:

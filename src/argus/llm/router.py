@@ -99,3 +99,24 @@ class ModelRouter:
         cost = estimate_cost(tier, result.input_tokens, result.output_tokens)
         self.cost_governor.record(cost)
         return result
+
+    def complete_with_tools_streaming(
+        self,
+        user_text: str,
+        system: str,
+        tool_registry,
+        on_text,
+        force_tier: Tier | None = None,
+    ) -> CompletionResult:
+        tier = force_tier or classify(user_text)
+        if tier is Tier.LOCAL:
+            tier = Tier.FAST
+
+        self.cost_governor.check()
+
+        result = self.frontier.complete_with_tools_streaming(
+            user_text, system, tool_registry, on_text, tier=tier
+        )
+        cost = estimate_cost(tier, result.input_tokens, result.output_tokens)
+        self.cost_governor.record(cost)
+        return result
