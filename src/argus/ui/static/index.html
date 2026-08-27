@@ -237,9 +237,34 @@
   var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   var stateLabel = document.getElementById("stateLabel");
   var stateSub = document.getElementById("stateSub");
-  function setState(name) {
+
+  // Real amplitude envelope for the current utterance, if any -- drives the
+  // mouth animation in lock-step with actual synthesized audio instead of
+  // a fake time-based wobble. Set alongside a "speaking" state event.
+  var speakEnvelope = null, speakChunkMs = 40, speakStartAt = 0, speakDurationMs = 0;
+
+  function currentMouthAmp() {
+    if (!speakEnvelope || !speakEnvelope.length) return null;
+    var elapsed = performance.now() - speakStartAt;
+    if (elapsed < 0 || elapsed > speakDurationMs + 150) return null;
+    var idx = elapsed / speakChunkMs;
+    var i0 = Math.max(0, Math.min(speakEnvelope.length - 1, Math.floor(idx)));
+    var i1 = Math.min(speakEnvelope.length - 1, i0 + 1);
+    var frac = idx - i0;
+    return speakEnvelope[i0] * (1 - frac) + speakEnvelope[i1] * frac;
+  }
+
+  function setState(name, event) {
     if (!STATES[name]) return;
     current = name;
+    if (name === "speaking" && event && event.envelope) {
+      speakEnvelope = event.envelope;
+      speakChunkMs = event.chunk_ms || 40;
+      speakDurationMs = event.duration_ms || 0;
+      speakStartAt = performance.now();
+    } else if (name !== "speaking") {
+      speakEnvelope = null;
+    }
     stateLabel.textContent = STATES[name].label;
     stateSub.textContent = STATES[name].sub;
   }
@@ -340,7 +365,7 @@
       var event;
       try { event = JSON.parse(ev.data); } catch (e) { return; }
 
-      if (event.type === "state") setState(event.value);
+      if (event.type === "state") setState(event.value, event);
       else if (event.type === "transcript") addTranscriptLine(event.role, event.text, event.tier, event.model);
       else if (event.type === "tool_call") {
         addToolCall(event.name, event.tier);
@@ -437,7 +462,12 @@
     hctx.globalCompositeOperation = "source-over";
 
     var amp;
-    if (current === "speaking") {
+    var realAmp = current === "speaking" ? currentMouthAmp() : null;
+    if (realAmp !== null) {
+      amp = Math.max(0.04, realAmp) * p.mouthAmp * s * 2.2;
+    } else if (current === "speaking") {
+      // No envelope yet for this utterance (e.g. very start) -- brief
+      // synthetic fallback so the mouth isn't frozen shut for one frame.
       amp = (Math.sin(t * 0.9) * 0.5 + Math.sin(t * 2.3 + 1.4) * 0.35 + Math.sin(t * 5.1) * 0.15);
       amp = Math.max(0.05, Math.abs(amp)) * p.mouthAmp * s;
     } else {

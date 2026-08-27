@@ -129,7 +129,6 @@ class VoiceLoop:
         # itself onnxruntime compute, and letting it overlap with the
         # watcher's continuous wake-word inference was starving the CPU on
         # this hardware badly enough to produce long silences.
-        ui_events.publish({"type": "state", "value": "speaking"})
         try:
             synthesized = self.speaker.synthesize(text)
         except Exception:
@@ -139,6 +138,18 @@ class VoiceLoop:
         if synthesized is None:
             return False
         samples, sample_rate = synthesized
+
+        # Publish state + the real amplitude envelope together, right as
+        # playback is about to start -- the UI's mouth animation follows
+        # this envelope instead of a fake time-based wobble.
+        from argus.voice.audio_io import compute_envelope
+        envelope = compute_envelope(samples, sample_rate)
+        chunk_ms = 40
+        ui_events.publish({
+            "type": "state", "value": "speaking",
+            "envelope": envelope, "chunk_ms": chunk_ms,
+            "duration_ms": round(len(samples) / sample_rate * 1000),
+        })
 
         stop_event = threading.Event()
 

@@ -80,6 +80,25 @@ def record_followup(timeout_seconds: float) -> np.ndarray | None:
     return np.concatenate(chunks) if chunks else None
 
 
+def compute_envelope(samples: np.ndarray, sample_rate: int, chunk_ms: int = 40) -> list[float]:
+    """RMS amplitude per chunk_ms window, normalized to this utterance's own
+    peak (0-1). Used to drive real mouth-movement sync in the UI instead of
+    a fake time-based wobble."""
+    if samples.size == 0:
+        return []
+    chunk_len = max(1, int(sample_rate * chunk_ms / 1000))
+    n_chunks = max(1, len(samples) // chunk_len)
+    values = []
+    for i in range(n_chunks):
+        chunk = samples[i * chunk_len : (i + 1) * chunk_len]
+        rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2))) if chunk.size else 0.0
+        values.append(rms)
+    peak = max(values) if values else 0.0
+    if peak <= 0:
+        return [0.0] * len(values)
+    return [round(v / peak, 3) for v in values]
+
+
 def play_audio(samples: np.ndarray, sample_rate: int, stop_event=None) -> None:
     """Blocking playback. If stop_event is set mid-playback, stops immediately
     (this is the barge-in mechanism -- see voice/loop.py)."""
