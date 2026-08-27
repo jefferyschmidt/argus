@@ -60,6 +60,13 @@ class VoiceLoop:
         self.speaker = build_speaker()
         self._hot_mic_until = 0.0
 
+        # Without this, a CONFIRM-tier tool call mid-task silently blocks on
+        # a keyboard input() with no spoken prompt -- indistinguishable from
+        # a hang if you're listening for a voice response, not watching the
+        # terminal.
+        from argus.voice.confirm import make_voice_confirmer
+        self.orchestrator.tools.confirmer = make_voice_confirmer(self.speaker, self.transcriber)
+
     def _refresh_hot_mic(self) -> None:
         if settings.open_barge_in_seconds > 0:
             self._hot_mic_until = time.monotonic() + settings.open_barge_in_seconds
