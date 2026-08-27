@@ -73,6 +73,33 @@ argus memory review   # confirm/reject agent-proposed core memories
    ASL translation is the hardest of the three -- continuous gesture
    recognition, not single-frame classification, and good open models for
    it are scarce; treat as a stretch goal, not a near-term deliverable.
+9. Proactive daily briefing -- greets you (morning / when you sit down) with
+   weather, calendar, relevant overnight news, anything flagged while away,
+   instead of only ever responding when spoken to.
+10. Scheduled routines/automations -- "every morning at 7, check X and tell
+    me": recurring tasks it just does on a schedule, tied into the agent
+    loop rather than requiring you to ask each time.
+11. Reminders & a real task list -- persisted, surfaced proactively at the
+    right time, not just answered once and forgotten.
+12. Remote access from your phone -- Argus is currently chained to this PC;
+    even a simple web chat interface or a Telegram bridge would make it
+    useful when you're not sitting here.
+13. Plugin/skill system -- a clean pattern for adding new tools/capabilities
+    without touching core code, so the tool ecosystem can keep growing
+    without every addition being a bespoke change.
+14. Undo/rollback for risky actions -- especially file writes and desktop
+    control: back up before overwriting, so a bad CONFIRM-tier action is
+    recoverable, not just "confirmed and done."
+15. Observability dashboard -- a small local web page showing recent
+    actions, spend, and memory; the log file is the only visibility today.
+
+### Lower priority / nice-to-have
+
+- Speaker recognition (know *who's* talking -- useful once more than one
+  person interacts with Argus).
+- Document/receipt scanning via camera.
+- Voice-gated confirmation for the riskiest actions (an extra layer beyond
+  a typed/spoken "yes").
 
 ### Later / not yet scoped
 
