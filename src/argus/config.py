@@ -16,10 +16,19 @@ class Settings(BaseSettings):
     anthropic_advanced_model: str = "claude-sonnet-5"
 
     argus_data_dir: str = "data"
+    daily_budget_usd: float = 5.0
 
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @property
+    def workspace_dir(self) -> Path:
+        """Sandbox root for file tools. Everything the file tools touch is
+        confined under here until later phases widen scope deliberately."""
+        d = self.data_dir / "workspace"
         d.mkdir(parents=True, exist_ok=True)
         return d
 

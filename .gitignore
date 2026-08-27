@@ -11,6 +11,8 @@ dist/
 data/*.db
 data/chroma/
 data/*.sqlite3
+data/spend.json
+data/workspace/
 
 *.log
 

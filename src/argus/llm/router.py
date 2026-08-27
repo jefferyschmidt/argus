@@ -38,6 +38,8 @@ class ModelRouter:
         self.local = OllamaClient()
         self.frontier = AnthropicClient()
         self.cost_governor = CostGovernor(daily_cap_usd=daily_cap_usd)
+        if self.local.is_available():
+            self.local.prewarm()
 
     def complete(
         self,
@@ -62,6 +64,27 @@ class ModelRouter:
             raise
 
         result = self.frontier.complete(messages, system=system, tier=tier)
+        cost = estimate_cost(tier, result.input_tokens, result.output_tokens)
+        self.cost_governor.record(cost)
+        return result
+
+    def complete_with_tools(
+        self,
+        user_text: str,
+        system: str,
+        tool_registry,
+        force_tier: Tier | None = None,
+    ) -> CompletionResult:
+        """Tool use always runs on the frontier tier -- the local 3B model
+        isn't reliable at structured tool calling, and if it's escalating
+        to tools at all the task probably warranted the frontier anyway."""
+        tier = force_tier or classify(user_text)
+        if tier is Tier.LOCAL:
+            tier = Tier.FAST
+
+        self.cost_governor.check()  # let BudgetExceeded propagate -- no silent local fallback for tool use
+
+        result = self.frontier.complete_with_tools(user_text, system, tool_registry, tier=tier)
         cost = estimate_cost(tier, result.input_tokens, result.output_tokens)
         self.cost_governor.record(cost)
         return result

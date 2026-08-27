@@ -1,4 +1,5 @@
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from argus.memory.core import CoreMemoryStore
 from argus.memory.episodic import EpisodicStore
@@ -13,11 +14,14 @@ class MemoryManager:
         self.core = CoreMemoryStore(self.conn)
         self.episodic = EpisodicStore(self.conn)
         self.semantic = SemanticStore()
+        # Embedding a turn is CPU work that doesn't need to finish before we
+        # reply -- only queries (build_context) need to be synchronous.
+        self._embed_pool = ThreadPoolExecutor(max_workers=1)
 
     def remember_turn(self, role: str, content: str) -> None:
         episode_id = self.episodic.add(self.session_id, role, content)
-        # Every turn is searchable later, even before any rollup/summary job runs.
-        self.semantic.add(
+        self._embed_pool.submit(
+            self.semantic.add,
             doc_id=f"episode-{episode_id}",
             text=content,
             metadata={"role": role, "session_id": self.session_id},

@@ -1,12 +1,18 @@
+import logging
+
 import anthropic
 
 from argus.config import settings
 from argus.llm.base import CompletionResult, Message, Tier
 
+log = logging.getLogger(__name__)
+
 _TIER_MODEL = {
     Tier.FAST: lambda: settings.anthropic_model,
     Tier.ADVANCED: lambda: settings.anthropic_advanced_model,
 }
+
+_MAX_TOOL_ITERATIONS = 8
 
 
 class AnthropicClient:
@@ -33,4 +39,63 @@ class AnthropicClient:
             model=model,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
+        )
+
+    def complete_with_tools(
+        self,
+        user_text: str,
+        system: str,
+        tool_registry,
+        tier: Tier = Tier.FAST,
+    ) -> CompletionResult:
+        """Runs the full tool-use loop: send message, execute any tool calls
+        the model asks for via the registry (which enforces permission
+        tiers), feed results back, repeat until the model gives a final
+        text answer or the iteration cap is hit."""
+        from argus.tools.registry import ToolDenied
+
+        model = _TIER_MODEL[tier]()
+        history: list[dict] = [{"role": "user", "content": user_text}]
+        total_in = total_out = 0
+
+        for _ in range(_MAX_TOOL_ITERATIONS):
+            response = self._client.messages.create(
+                model=model,
+                max_tokens=4096,
+                system=system,
+                tools=tool_registry.schemas(),
+                messages=history,
+            )
+            total_in += response.usage.input_tokens
+            total_out += response.usage.output_tokens
+
+            if response.stop_reason != "tool_use":
+                text = "".join(b.text for b in response.content if b.type == "text")
+                return CompletionResult(
+                    text=text, tier=tier, model=model,
+                    input_tokens=total_in, output_tokens=total_out,
+                )
+
+            history.append({"role": "assistant", "content": response.content})
+            tool_results = []
+            for block in response.content:
+                if block.type != "tool_use":
+                    continue
+                try:
+                    result = tool_registry.execute(block.name, block.input)
+                except ToolDenied as e:
+                    result = f"error: {e}"
+                except Exception as e:
+                    log.exception("Tool %s failed", block.name)
+                    result = f"error: tool raised {type(e).__name__}: {e}"
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": str(result),
+                })
+            history.append({"role": "user", "content": tool_results})
+
+        return CompletionResult(
+            text="(stopped: too many tool iterations without a final answer)",
+            tier=tier, model=model, input_tokens=total_in, output_tokens=total_out,
         )
