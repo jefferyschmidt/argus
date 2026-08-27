@@ -92,6 +92,25 @@ argus memory review   # confirm/reject agent-proposed core memories
     recoverable, not just "confirmed and done."
 15. Observability dashboard -- a small local web page showing recent
     actions, spend, and memory; the log file is the only visibility today.
+16. Memory privacy/audit controls -- browse, export, or purge episodic/
+    semantic memory as a whole (core-memory review already exists, but
+    there's no "what do you know about me" / "forget X" for everything
+    else). Matters for trust as memory accumulates, not just a nice-to-have.
+17. Backup/restore -- everything lives only on this machine (SQLite +
+    Chroma); a simple encrypted backup step before this becomes something
+    relied on daily.
+18. Graceful offline-degraded mode -- Ollama already falls back for chat
+    when Anthropic's unreachable, but tools like web search and desktop
+    control just fail silently right now. Clear "I'm offline, here's what
+    I can still do" behavior instead.
+19. Voice journaling -- a lightweight "take a note" mode that captures
+    freeform spoken thoughts to a running, later-searchable log. Natural
+    fit given the voice-first design and existing memory system.
+20. Multi-language support -- on-the-fly translation, useful for travel or
+    reading/responding to non-English content.
+21. Meeting assistant -- join/transcribe/summarize calls and extract action
+    items. Genuinely valuable but a bigger lift than the others here (needs
+    audio capture from other apps, or a bot-join integration).
 
 ### Lower priority / nice-to-have
 
