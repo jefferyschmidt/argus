@@ -16,6 +16,7 @@ data/workspace/
 data/piper_voices/
 data/undo/
 data/google_calendar_token.json
+data/events/
 
 *.log
 
