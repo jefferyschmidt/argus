@@ -94,9 +94,11 @@ calls (with real generated images), memory, and routing/spend.
 11. ~~Reminders & a real task list~~ -- persisted (sqlite), surfaced
     proactively (a background poll speaks a due reminder even outside an
     active conversation), not just answered once and forgotten.
-12. Remote access from your phone -- Argus is currently chained to this PC;
-    even a simple web chat interface or a Telegram bridge would make it
-    useful when you're not sitting here.
+12. ~~Remote access from your phone~~ -- a Telegram bridge (`argus voice`
+    only): set TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_CHAT_ID and message
+    your bot from anywhere. No inbound port opened -- it only long-polls
+    Telegram's servers -- and messages route through the same text-input
+    path the console uses, so full tool/memory/streaming-reply access.
 13. Plugin/skill system -- a clean pattern for adding new tools/capabilities
     without touching core code, so the tool ecosystem can keep growing
     without every addition being a bespoke change.

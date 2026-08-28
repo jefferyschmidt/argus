@@ -61,6 +61,16 @@ def voice() -> None:
         )
         return
     _maybe_start_ui_server()
+
+    # Remote access (README item 12): wired into voice mode specifically,
+    # not chat, since voice already runs an always-on background worker
+    # draining the same text-message queue a Telegram message is pushed
+    # onto -- chat's input loop is a plain synchronous console.input(),
+    # with no consumer that could pick up a message arriving from
+    # elsewhere. No-ops entirely if TELEGRAM_BOT_TOKEN isn't set.
+    from argus.telegram_bridge import TelegramBridge
+    TelegramBridge().start()
+
     try:
         loop.run()
     except KeyboardInterrupt:

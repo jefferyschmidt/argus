@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     # Argus's own voice without headphones -- set to 0 to disable.
     open_barge_in_seconds: float = 30.0
 
+    # Remote access (README item 12) -- lets Argus be reached from your
+    # phone without exposing any port on this machine: the bridge only
+    # makes outbound long-poll requests to Telegram's servers, Telegram
+    # handles the actual networking. Both empty by default (feature off).
+    # telegram_allowed_chat_id is a real access control, not a convenience --
+    # without it, anyone who finds the bot could command Argus.
+    telegram_bot_token: str = ""
+    telegram_allowed_chat_id: str = ""
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir
