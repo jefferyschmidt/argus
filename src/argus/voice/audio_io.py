@@ -9,6 +9,16 @@ _MAX_RECORD_SECONDS = 20
 _MAX_PTT_SECONDS = 45  # safety cap in case a stop signal is somehow missed
 
 
+class ListeningPaused(Exception):
+    """Raised out of a blocking mic-read loop when should_stop() fires
+    mid-capture -- confirmed live as a real gap: "Stop listening" only
+    took effect at the top of the NEXT listen attempt, so the mic kept
+    actively capturing (and, worse, transcribing) for up to the full
+    length of whatever was already in progress. This propagates all the
+    way out through the `with sd.InputStream(...)` block so the stream is
+    actually closed -- a real mute, not just "stop starting new captures"."""
+
+
 def record_while(should_continue, chunks_out: list | None = None) -> np.ndarray:
     """Records for as long as should_continue() returns True, checked once
     per frame -- externally controlled (push-to-talk button held), not
@@ -71,14 +81,21 @@ def record_until_silence(chunks_out: list | None = None) -> np.ndarray:
     return np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)
 
 
-def record_followup(timeout_seconds: float, chunks_out: list | None = None) -> np.ndarray | None:
+def record_followup(
+    timeout_seconds: float, chunks_out: list | None = None, should_stop=None
+) -> np.ndarray | None:
     """Listens (no wake word needed) for up to timeout_seconds for the user
     to start talking. Returns None if nothing was said in time -- caller
     should fall back to requiring the wake word again. If speech starts,
     records until silence same as record_until_silence, with no separate
     timeout on the rest of the utterance.
 
-    chunks_out: see record_while."""
+    chunks_out: see record_while.
+
+    should_stop: optional callable checked once per frame; when it returns
+    True, raises ListeningPaused immediately instead of continuing to
+    capture -- see that class's docstring for why this needs to be a raise
+    (closing the stream), not just an early return."""
     sr = settings.audio_sample_rate
     frame_len = int(sr * FRAME_MS / 1000)
     silence_hang_frames = _SILENCE_HANG_MS // FRAME_MS
@@ -92,6 +109,8 @@ def record_followup(timeout_seconds: float, chunks_out: list | None = None) -> n
 
     with sd.InputStream(samplerate=sr, channels=1, dtype="int16", blocksize=frame_len) as stream:
         for _ in range(int(max_frames)):
+            if should_stop is not None and should_stop():
+                raise ListeningPaused()
             frame, _ = stream.read(frame_len)
             frame = frame.reshape(-1)
 

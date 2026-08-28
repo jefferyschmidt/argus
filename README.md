@@ -10,6 +10,36 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 ("Stop listening" still wasn't a real mute)**:
+reported live -- "it needs to basically be a mute input button for
+Argus." The earlier persistent-pause redesign (see below) made pause
+state stick, but only took effect BETWEEN listen attempts -- if the mic
+was already mid-capture when paused, it kept actively capturing (and
+transcribing) for however long that attempt took (up to 20s for the
+wake-word engine, up to the full follow-up window otherwise), which
+doesn't read as "muted" at all. Added `ListeningPaused`
+(`voice/audio_io.py`) plus a `should_stop` callback threaded through
+`record_followup`, `LocalWakeWordListener`, and `WakeWordListener` --
+checked every audio frame, not just once per call/utterance, and raised
+immediately (not just an early return) so the `with sd.InputStream(...)`
+block actually closes the stream on the way out. `voice/loop.py` passes
+`ui_commands.is_listening_paused` as `should_stop` and catches
+`ListeningPaused` in both the wake-word listen and the follow-up loop,
+looping back to `_wait_while_listening_paused()`, which blocks with no
+stream open at all until resumed.
+
+**Added, 2026-08-28 (voice-accessible core-memory review)**: with the
+memory consolidation worker now proposing facts unattended every ~10
+minutes, pending memories could pile up invisibly if nobody happened to
+be looking at the console -- confirming/rejecting one was previously only
+possible by clicking Confirm/Reject in the browser or running `argus
+memory review` in a terminal. Added `list_pending_core_memories`,
+`confirm_core_memory`, `reject_core_memory` tools (direct DB access via a
+fresh connection, same pattern as `ui/server.py`'s
+`_resolve_core_memory`, publishing the identical `core_memory_resolved`/
+`memory` events so a connected console stays in sync) so "what's pending
+to remember" and "yes, remember that one" work hands-free.
+
 **Fixed live, 2026-08-28 (a transient audio-device error crashed the
 whole process)**: reported live -- a `sounddevice.PortAudioError:
 Unanticipated host error [PaErrorCode -9999]: 'There is no driver

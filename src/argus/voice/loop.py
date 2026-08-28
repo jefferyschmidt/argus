@@ -10,7 +10,7 @@ from rich.console import Console
 
 from argus.config import settings
 from argus.orchestrator import Orchestrator
-from argus.voice.audio_io import record_followup
+from argus.voice.audio_io import ListeningPaused, record_followup
 from argus.voice.speaker_factory import build_speaker
 from argus.voice.stt import Transcriber
 from argus.voice.wake_word import WakeWordListener
@@ -352,10 +352,23 @@ class VoiceLoop:
                 samples, wake_command_text = self.wake_word.listen_for_wake_and_command(
                     on_wake=_on_wake, chunks_out=wake_chunks, on_checking=_on_checking,
                     hot_mic_check=self._hot_mic_active,
+                    should_stop=ui_commands.is_listening_paused,
                 )
                 stop_watcher.set()
             except KeyboardInterrupt:
                 break
+            except ListeningPaused:
+                # Confirmed live as a real gap: "Stop listening" only took
+                # effect between utterance-capture attempts, so the mic
+                # kept actively capturing (and transcribing) for however
+                # long whatever was already in progress took -- reported
+                # as "it needs to basically be a mute input button."
+                # should_stop above raised this mid-capture, closing the
+                # stream immediately; looping back to the top re-enters
+                # _wait_while_listening_paused(), which blocks with no
+                # stream open at all until resumed.
+                stop_watcher.set()
+                continue
             except sd.PortAudioError:
                 # Confirmed live as a real crash: a transient audio-device
                 # hiccup (Bluetooth mic dropping out, another app grabbing
@@ -406,7 +419,14 @@ class VoiceLoop:
                 followup_chunks: list = []
                 stop_watcher = self._start_hearing_watcher(followup_chunks)
                 try:
-                    followup = record_followup(settings.followup_window_seconds, chunks_out=followup_chunks)
+                    followup = record_followup(
+                        settings.followup_window_seconds, chunks_out=followup_chunks,
+                        should_stop=ui_commands.is_listening_paused,
+                    )
+                except ListeningPaused:
+                    stop_watcher.set()
+                    console.print("[dim](listening paused mid-follow-up -- back to wake-word listening)[/dim]\n")
+                    break
                 except sd.PortAudioError:
                     # Same transient audio-device recovery as the wake-word
                     # listen above -- don't let it crash the whole process.

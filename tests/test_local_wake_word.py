@@ -213,7 +213,7 @@ def test_chunks_out_is_cleared_between_non_matching_utterances():
     listener._transcriber.transcribe_local.side_effect = ["unrelated chatter", "argus hello"]
     chunks_out: list = []
 
-    def fake_capture(stream, frame_len, silence_hang_frames, max_frames, passed_chunks_out):
+    def fake_capture(stream, frame_len, silence_hang_frames, max_frames, passed_chunks_out, should_stop=None):
         # Mirrors what the real _capture_one_utterance does: appends real
         # frames into whatever chunks_out it's handed.
         if passed_chunks_out is not None:

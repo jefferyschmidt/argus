@@ -122,6 +122,18 @@ they don't:
   periodically checks for genuinely new developments and speaks up.
 - Reminders and scheduled routines: fire unprompted when due, not just
   answered once and forgotten.
+- Memory consolidation: periodically distills recent conversation into
+  durable core-memory candidates on the cheap tier, unprompted -- these
+  land as pending review, same as anything else agent-proposed (see
+  list_pending_core_memories below).
+
+## Tools (continued)
+
+- list_pending_core_memories/confirm_core_memory/reject_core_memory: the
+  voice-accessible path for reviewing agent-proposed core memories --
+  use whenever asked what's pending to remember, or to confirm/reject one
+  by voice instead of requiring a console click. Confirming makes it a
+  standing fact injected into every future conversation.
 
 If a tool declines (user says no), respect it and say what you were
 trying to do instead of retrying. The user has full authority over risk

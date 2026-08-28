@@ -2,6 +2,7 @@ import numpy as np
 import sounddevice as sd
 
 from argus.config import settings
+from argus.voice.audio_io import ListeningPaused
 
 _CHUNK_SAMPLES = 1280  # openWakeWord expects 80ms chunks @ 16kHz
 _SILENCE_HANG_CHUNKS = 11  # ~880ms at 80ms/chunk
@@ -36,7 +37,8 @@ class WakeWordListener:
                     return
 
     def listen_for_wake_and_command(
-        self, on_wake=None, chunks_out: list | None = None, on_checking=None, hot_mic_check=None
+        self, on_wake=None, chunks_out: list | None = None, on_checking=None, hot_mic_check=None,
+        should_stop=None,
     ) -> tuple[np.ndarray, str | None]:
         """Blocks for the wake word, then records the command that follows
         on the SAME audio stream (no reopen gap, so nothing spoken right
@@ -60,7 +62,11 @@ class WakeWordListener:
         -- this engine has no transcript to fall back on if it skipped the
         wake-word check (see listen_for_wake_and_command's docstring on
         LocalWakeWordListener), so honoring it would require transcribing
-        every utterance anyway, defeating the point of this engine."""
+        every utterance anyway, defeating the point of this engine.
+
+        should_stop: checked once per frame in both phases, raises
+        ListeningPaused immediately when it returns True -- same real-mute
+        behavior as LocalWakeWordListener, see ListeningPaused's docstring."""
         from collections import deque
 
         self._model.reset()
@@ -77,6 +83,8 @@ class WakeWordListener:
         ) as stream:
             # Phase 1: wait for wake word.
             while True:
+                if should_stop is not None and should_stop():
+                    raise ListeningPaused()
                 frame, _ = stream.read(_CHUNK_SAMPLES)
                 frame = frame.reshape(-1)
                 recent.append(frame)
@@ -91,6 +99,8 @@ class WakeWordListener:
             # Phase 2: record the command on the same stream, starting
             # immediately -- no stream reopen, no dropped words.
             for _ in range(_MAX_COMMAND_CHUNKS):
+                if should_stop is not None and should_stop():
+                    raise ListeningPaused()
                 frame, _ = stream.read(_CHUNK_SAMPLES)
                 frame = frame.reshape(-1)
                 chunks.append(frame)

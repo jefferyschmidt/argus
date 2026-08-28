@@ -5,6 +5,7 @@ import numpy as np
 import sounddevice as sd
 
 from argus.config import settings
+from argus.voice.audio_io import ListeningPaused
 
 _FRAME_SAMPLES = 512  # Silero's required chunk size at 16kHz -- confirmed live as a
 # real, total bug: this used to be computed from a 30ms frame (480 samples
@@ -89,7 +90,8 @@ class LocalWakeWordListener:
         self._vad.reset()
 
     def listen_for_wake_and_command(
-        self, on_wake=None, chunks_out: list | None = None, on_checking=None, hot_mic_check=None
+        self, on_wake=None, chunks_out: list | None = None, on_checking=None, hot_mic_check=None,
+        should_stop=None,
     ) -> tuple[np.ndarray, str | None]:
         """Blocks until an utterance containing the wake word is heard.
         Returns (samples, command_text): samples is the full captured
@@ -117,7 +119,15 @@ class LocalWakeWordListener:
         real gap: anything Argus said on its own initiative (a proactive
         check-in, an email alert) never opened a hands-free follow-up
         window the way a normal reply did, so answering it directly with
-        no wake word looked like Argus silently ignoring what was said."""
+        no wake word looked like Argus silently ignoring what was said.
+
+        should_stop, if given, is checked once per audio frame (not just
+        once per utterance) and raises ListeningPaused immediately when it
+        returns True -- confirmed live as a real gap: "Stop listening"
+        previously only took effect between utterance-capture attempts, so
+        the mic kept actively capturing (and transcribing) for however
+        long whatever was already in progress took. See ListeningPaused's
+        docstring for why this has to be a raise, not an early return."""
         sr = settings.audio_sample_rate
         frame_len = _FRAME_SAMPLES
         silence_hang_frames = int(_SILENCE_HANG_MS // _FRAME_MS)
@@ -125,6 +135,8 @@ class LocalWakeWordListener:
 
         with sd.InputStream(samplerate=sr, channels=1, dtype="int16", blocksize=frame_len) as stream:
             while True:
+                if should_stop is not None and should_stop():
+                    raise ListeningPaused()
                 # chunks_out is the SAME list across every iteration of this
                 # loop (the caller creates it once, before this whole call)
                 # -- confirmed live as a real bug: without clearing it here,
@@ -141,7 +153,9 @@ class LocalWakeWordListener:
                 # about what the live caption displayed.
                 if chunks_out is not None:
                     chunks_out.clear()
-                utterance = self._capture_one_utterance(stream, frame_len, silence_hang_frames, max_frames, chunks_out)
+                utterance = self._capture_one_utterance(
+                    stream, frame_len, silence_hang_frames, max_frames, chunks_out, should_stop
+                )
                 if utterance is None or utterance.size == 0:
                     continue
 
@@ -168,16 +182,22 @@ class LocalWakeWordListener:
                 command = text[end_idx:].strip(" ,.-")
                 return utterance, (command or None)
 
-    def _capture_one_utterance(self, stream, frame_len, silence_hang_frames, max_frames, chunks_out):
+    def _capture_one_utterance(self, stream, frame_len, silence_hang_frames, max_frames, chunks_out, should_stop=None):
         """Waits for VAD-flagged speech to start, then records until a
         sustained silence. Returns None if the stream produced nothing
         speech-flagged within max_frames (lets the outer loop re-check
-        rather than blocking forever on a stalled/disconnected device)."""
+        rather than blocking forever on a stalled/disconnected device).
+
+        should_stop: see listen_for_wake_and_command's docstring -- checked
+        every frame here too, not just once per utterance, since this is
+        where most of the actual blocking time happens."""
         chunks: list[np.ndarray] = []
         silence_run = 0
         heard_speech = False
 
         for _ in range(int(max_frames)):
+            if should_stop is not None and should_stop():
+                raise ListeningPaused()
             frame, _ = stream.read(frame_len)
             frame = frame.reshape(-1)
             is_speech = self._vad.is_speech(frame, sample_rate=16000)
