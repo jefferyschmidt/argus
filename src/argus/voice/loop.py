@@ -85,6 +85,51 @@ class VoiceLoop:
         # wake-word mic loop -- handled on their own thread so they aren't
         # blocked behind the main loop's wait for the wake word.
         threading.Thread(target=self._external_input_worker, daemon=True).start()
+        threading.Thread(target=self._reminder_checker_worker, daemon=True).start()
+
+    def _reminder_checker_worker(self) -> None:
+        """Reminders are meant to be surfaced proactively, not just answered
+        once and forgotten -- polls for due-and-not-yet-announced reminders
+        every ~25s and speaks them. Uses a non-blocking lock acquire so it
+        never stalls or interrupts an in-progress conversation; a reminder
+        that's due while Argus is mid-turn just waits for the next poll
+        (it stays un-notified until it's actually announced)."""
+        from datetime import datetime
+
+        from argus.memory.reminders import ReminderStore
+        from argus.memory.store import get_connection
+
+        while True:
+            time.sleep(25)
+            conn = get_connection()
+            try:
+                due = ReminderStore(conn).list_due(datetime.now().astimezone().isoformat())
+            finally:
+                conn.close()
+
+            for reminder in due:
+                if not self._interaction_lock.acquire(blocking=False):
+                    break  # busy with something else; retry next poll
+                try:
+                    self._announce_reminder(reminder)
+                finally:
+                    self._interaction_lock.release()
+
+    def _announce_reminder(self, reminder) -> None:
+        from argus.memory.reminders import ReminderStore
+        from argus.memory.store import get_connection
+
+        conn = get_connection()
+        try:
+            ReminderStore(conn).mark_notified(reminder["id"])
+        finally:
+            conn.close()
+
+        text = f"Reminder: {reminder['text']}"
+        console.print(f"[bold yellow]argus (reminder)>[/bold yellow] {text}")
+        ui_events.publish({"type": "caption", "text": text})
+        ui_events.publish({"type": "transcript", "role": "argus", "text": text})
+        self._speak_with_barge_in(text)  # publishes its own "speaking" state event with real timing
 
     def _external_input_worker(self) -> None:
         from argus.voice.audio_io import record_while

@@ -21,6 +21,17 @@ CREATE TABLE IF NOT EXISTS core_memories (
 );
 
 CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id);
+
+CREATE TABLE IF NOT EXISTS reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    due_at TEXT NOT NULL,
+    text TEXT NOT NULL,
+    completed INTEGER NOT NULL DEFAULT 0,
+    notified INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(due_at);
 """
 
 
