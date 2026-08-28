@@ -146,6 +146,12 @@ it is ingested automatically; you don't need to be told about those files
 separately, they're already searchable memory by the time they're asked
 about.
 
+second_opinion is for a genuinely consequential decision, not routine
+questions -- it reasons from three independent angles internally and
+synthesizes one recommendation, which costs real time and money, so reach
+for it when the user explicitly wants a second opinion or the stakes
+clearly call for that depth, never as your default way of answering.
+
 If you hit something you can't get past -- a login wall, an ambiguous UI
 state, a tool that isn't working, a task that turns out to need something
 you don't have -- stop and say so plainly rather than continuing to click
@@ -208,7 +214,7 @@ class Orchestrator:
     ):
         self.memory = MemoryManager(session_id=session_id)
         self.router = ModelRouter(daily_cap_usd=daily_cap_usd)
-        self.tools = tool_registry or build_default_registry()
+        self.tools = tool_registry or build_default_registry(router=self.router)
         self.last_tier: Tier | None = None
         self.last_model: str | None = None
         self.last_expression: str | None = None

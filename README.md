@@ -265,9 +265,22 @@ calls (with real generated images), memory, and routing/spend.
 - Ambient stuck-detection -- with desktop visibility already in place, it
   could notice you've been stuck on the same error for a while and offer
   help unprompted, rather than only ever reacting to a direct ask.
-- "Second opinion" mode for big decisions -- reason from a few angles
+- ~~"Second opinion" mode for big decisions -- reason from a few angles
   (skeptic, domain expert, risk-focused) internally before giving one
-  synthesized recommendation on something consequential.
+  synthesized recommendation on something consequential.~~ Done: the
+  `second_opinion` tool (argus/tools/second_opinion.py) runs three
+  independent frontier-tier calls, each reasoning from its own angle
+  without seeing the others, then a fourth call synthesizes them into one
+  recommendation that names the real tradeoff rather than averaging the
+  takes together. Shares the orchestrator's real ModelRouter (and its cost
+  governor/daily cap) rather than spinning up a second one that would
+  silently bypass the spend cap -- only registered when a router is
+  actually supplied to build_default_registry. System prompt scopes it to
+  genuinely consequential decisions, not routine questions, since it's
+  ~4x the cost of a normal reply. Live-verified against the real Anthropic
+  API end to end: a real open-source-timing question in, a coherent
+  synthesized recommendation out, real spend correctly recorded on the
+  shared cost governor.
 - Cross-device handoff -- once remote/mobile access exists, a conversation
   started on your phone continues seamlessly when you sit at this machine.
 
