@@ -10,6 +10,19 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28**: `capture_camera`'s JPEG output was being sent to
+the Anthropic API hardcoded as `image/png` (`_tool_result_content` in
+`argus/llm/anthropic_client.py` assumed every tool-returned image was PNG --
+true for `take_screenshot`, false for `capture_camera`'s `cv2.imencode(".jpg",
+...)`), and there was no error handling around a turn failing at all --
+confirmed live that the resulting 400 from the API crashed the entire `argus
+voice` process, not just that one turn. Fixed both: `_tool_result_content`
+now sniffs the real format from magic bytes instead of assuming, and
+`VoiceLoop._process_utterance` catches any unexpected exception during a
+turn, reports it, and keeps the session alive instead of dying. Live-verified
+end to end against the real Anthropic API with a real camera capture (the
+exact reported scenario) -- correct description back, no crash.
+
 Phase 1: core orchestration loop + memory, text-only chat. See the roadmap
 below for what's next.
 

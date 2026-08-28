@@ -53,15 +53,30 @@ def _cached_tools(tool_registry) -> list[dict]:
     return tools
 
 
+def _image_media_type(data: bytes) -> str:
+    """Sniffs the real format from magic bytes rather than assuming PNG.
+    Confirmed live as a real, crashing bug: take_screenshot returns PNG
+    (pyautogui) but capture_camera returns JPEG (cv2.imencode(".jpg", ...))
+    -- both used to be sent through _tool_result_content hardcoded to
+    "image/png", which the Anthropic API flatly rejects on a mismatch
+    (400 Bad Request), and because this path has no try/except around it,
+    that exception propagated all the way up and killed the whole voice
+    process rather than degrading gracefully."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    return "image/png"
+
+
 def _tool_result_content(result) -> str | list[dict]:
-    """A tool handler returning raw PNG bytes (e.g. take_screenshot) becomes
-    an actual image block the model can see, not just a text description."""
+    """A tool handler returning raw image bytes (e.g. take_screenshot,
+    capture_camera) becomes an actual image block the model can see, not
+    just a text description."""
     if isinstance(result, bytes):
         return [{
             "type": "image",
             "source": {
                 "type": "base64",
-                "media_type": "image/png",
+                "media_type": _image_media_type(result),
                 "data": base64.b64encode(result).decode("ascii"),
             },
         }]

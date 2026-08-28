@@ -464,6 +464,17 @@ class VoiceLoop:
             self.orchestrator.handle_streaming(text, on_sentence=on_sentence)
         except _BargeInInterrupt:
             pass
+        except Exception:
+            # Previously uncaught here -- confirmed live that a single bad
+            # API response (e.g. a tool-result content-type mismatch) took
+            # down the entire `argus voice` process, not just that one
+            # turn. A turn failing is recoverable; the whole session dying
+            # because of it is not -- report it and keep listening instead.
+            log.exception("Turn failed unexpectedly: %r", text)
+            error_note = "Something went wrong on that one -- mind trying again?"
+            ui_events.publish({"type": "transcript", "role": "argus", "text": error_note})
+            ui_events.publish({"type": "caption", "text": error_note})
+            self._speak_with_barge_in(error_note)
         finally:
             sentence_queue.put(None)
             consumer_thread.join()
