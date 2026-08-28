@@ -111,6 +111,30 @@ def email_watch_status() -> dict:
     return {"email_watch": ui_commands.is_email_watch_enabled()}
 
 
+class ConfirmResponse(BaseModel):
+    id: int
+    allowed: bool
+
+
+@app.post("/api/confirm")
+def confirm(payload: ConfirmResponse) -> dict:
+    """Resolves a CONFIRM-tier tool request from the console UI -- the
+    fallback path when voice confirmation was unclear (see
+    voice/confirm.py). Deliberately not the terminal: confirming a tool
+    call should happen through the same interface as everything else."""
+    ui_commands.resolve_confirmation(payload.id, payload.allowed)
+    return {"ok": True}
+
+
+@app.get("/api/confirm/pending")
+def confirm_pending() -> dict:
+    """Lets a freshly-loaded/reconnected console pick up a confirmation
+    that was already requested before it connected -- the WS event alone
+    would be missed by a page that wasn't open yet."""
+    pending = ui_commands.get_pending_confirmation()
+    return {"pending": pending}
+
+
 def _resolve_core_memory(memory_id: int, confirmed: bool) -> dict:
     """Direct DB access rather than routing through the live VoiceLoop's
     in-memory objects -- confirm/reject is just a row update, and going

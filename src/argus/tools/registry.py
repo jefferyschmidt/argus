@@ -13,7 +13,9 @@ Confirmer = Callable[[str, dict], bool]
 def console_confirmer(tool_name: str, tool_input: dict) -> bool:
     print(f"\n[confirm] Argus wants to run '{tool_name}' with input: {tool_input}")
     answer = input("Allow? [y/N] ").strip().lower()
-    return answer == "y"
+    # A strict answer == "y" silently treated "yes" -- a completely
+    # natural thing to type -- as a decline, with no error or feedback.
+    return answer in ("y", "yes", "yeah", "yep", "sure", "ok", "okay")
 
 
 class ToolDenied(Exception):

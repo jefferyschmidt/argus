@@ -1,6 +1,8 @@
 import email
+import email.message
 import imaplib
 import logging
+import re
 import time
 from dataclasses import dataclass
 from email.header import decode_header
@@ -53,19 +55,54 @@ def _decode(value: str | None) -> str:
     return "".join(out).strip()
 
 
-def _plain_text_body(msg: email.message.Message) -> str:
-    if msg.is_multipart():
-        for part in msg.walk():
-            if part.get_content_type() == "text/plain" and not part.get("Content-Disposition"):
-                try:
-                    return part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", errors="replace")
-                except Exception:
-                    continue
-        return ""
+_HTML_STYLE_OR_SCRIPT = re.compile(r"<(style|script)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_HTML_TAG = re.compile(r"<[^>]+>")
+_HTML_WHITESPACE_RUN = re.compile(r"[ \t]+")
+_HTML_BLANK_LINES = re.compile(r"\n\s*\n+")
+
+
+def _strip_html(html: str) -> str:
+    """Confirmed live: a real single-part-HTML email (no text/plain part
+    at all -- common for marketing/notification mail) was coming through
+    as raw markup, both in the on-demand listing tool's output and in what
+    the triage classifier sees. Not a real HTML renderer, just enough to
+    make the text readable -- drop style/script blocks ENTIRELY first
+    (plain tag-stripping alone leaves their inner CSS/JS behind as visible
+    "content" -- also confirmed live, a marketing email's stylesheet
+    showed up verbatim in the snippet), then strip tags, collapse the
+    whitespace that leaves behind, and unescape the handful of entities
+    worth bothering with."""
+    text = _HTML_STYLE_OR_SCRIPT.sub(" ", html)
+    text = _HTML_TAG.sub(" ", text)
+    for entity, replacement in (("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'")):
+        text = text.replace(entity, replacement)
+    text = _HTML_WHITESPACE_RUN.sub(" ", text)
+    text = _HTML_BLANK_LINES.sub("\n", text)
+    return text.strip()
+
+
+def _decode_part(part: email.message.Message) -> str:
     try:
-        return msg.get_payload(decode=True).decode(msg.get_content_charset() or "utf-8", errors="replace")
+        raw = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", errors="replace")
     except Exception:
         return ""
+    return _strip_html(raw) if part.get_content_type() == "text/html" else raw
+
+
+def _plain_text_body(msg: email.message.Message) -> str:
+    if msg.is_multipart():
+        html_fallback = ""
+        for part in msg.walk():
+            if part.get("Content-Disposition"):
+                continue
+            if part.get_content_type() == "text/plain":
+                text = _decode_part(part)
+                if text:
+                    return text
+            elif part.get_content_type() == "text/html" and not html_fallback:
+                html_fallback = _decode_part(part)
+        return html_fallback  # only used if there was no text/plain part at all
+    return _decode_part(msg)
 
 
 @dataclass
@@ -90,9 +127,21 @@ class EmailWatcher:
 
     Read-state safe: uses BODY.PEEK (never IMAP-marks a message \\Seen),
     so this never disturbs what your regular mail client shows as
-    unread. Tracks which UIDs it has already announced in memory (not
-    persisted) so a restart re-triages recent unseen mail once, not the
-    same message forever, but also won't remember across restarts --
+    unread. Uses UID SEARCH/FETCH throughout, not plain sequence-number
+    search/fetch -- sequence numbers shift whenever the mailbox changes
+    (a message deleted elsewhere renumbers everything after it), which
+    would silently corrupt the announced-message dedup below; UIDs are
+    stable for the mailbox's lifetime.
+
+    Backlog-safe: the first check for any account only records a baseline
+    (the mailbox's current UIDNEXT) and processes nothing -- confirmed
+    live that "unseen" on a real long-used inbox can mean thousands of
+    old messages, not new arrivals, and triaging that backlog on first
+    connect would be slow, expensive, and not what "tell me about new
+    mail" means. Only mail that arrives at or after that baseline is ever
+    considered. Also tracks which UIDs it has already announced in memory
+    (not persisted) so a restart re-triages recent unseen mail once, not
+    the same message forever, but also won't remember across restarts --
     acceptable for a first pass; not a guarantee against ever repeating."""
 
     def __init__(self, orchestrator, speak_fn, interaction_lock):
@@ -100,6 +149,7 @@ class EmailWatcher:
         self._speak_fn = speak_fn
         self._interaction_lock = interaction_lock
         self._announced_uids: set[tuple[str, bytes]] = set()
+        self._baseline_uid: dict[str, int] = {}
 
     def run(self) -> None:
         while True:
@@ -119,15 +169,31 @@ class EmailWatcher:
             except Exception:
                 log.exception("Email check failed for %s", account["name"])
 
+    def _get_uidnext(self, conn, mailbox: str = "INBOX") -> int | None:
+        status, data = conn.status(mailbox, "(UIDNEXT)")
+        if status != "OK" or not data or not data[0]:
+            return None
+        match = re.search(rb"UIDNEXT (\d+)", data[0])
+        return int(match.group(1)) if match else None
+
     def _check_account(self, account: dict, user: str, password: str) -> None:
         conn = imaplib.IMAP4_SSL(account["host"])
         try:
             conn.login(user, password)
             conn.select("INBOX", readonly=True)
-            status, data = conn.search(None, "UNSEEN")
-            if status != "OK":
+
+            if account["name"] not in self._baseline_uid:
+                self._baseline_uid[account["name"]] = self._get_uidnext(conn) or 1
+                log.info("Email watcher baseline set for %s (UID >= %s)", account["name"], self._baseline_uid[account["name"]])
+                return
+
+            baseline = self._baseline_uid[account["name"]]
+            status, data = conn.uid("search", None, "UNSEEN")
+            if status != "OK" or not data or not data[0]:
                 return
             for uid in data[0].split():
+                if int(uid) < baseline:
+                    continue
                 key = (account["name"], uid)
                 if key in self._announced_uids:
                     continue
@@ -144,7 +210,7 @@ class EmailWatcher:
                 pass
 
     def _fetch_summary(self, conn, account_name: str, uid: bytes) -> "_EmailSummary | None":
-        status, data = conn.fetch(uid, "(BODY.PEEK[])")
+        status, data = conn.uid("fetch", uid, "(BODY.PEEK[])")
         if status != "OK" or not data or not isinstance(data[0], tuple):
             return None
         msg = email.message_from_bytes(data[0][1])
