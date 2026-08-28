@@ -123,9 +123,13 @@ calls (with real generated images), memory, and routing/spend.
     memory untouched -- that already has its own review flow). CLI-only,
     deliberately not an LLM-callable tool -- a mishearing shouldn't be
     able to wipe real history.
-17. Backup/restore -- everything lives only on this machine (SQLite +
-    Chroma); a simple encrypted backup step before this becomes something
-    relied on daily.
+17. ~~Backup/restore~~ -- `argus backup <path>` / `argus restore <path>`
+    (argus/backup.py). Zips the sqlite db + Chroma vector store +
+    sandboxed workspace, encrypts with a passphrase (PBKDF2-SHA256 ->
+    Fernet/AES-128-CBC+HMAC, tamper-evident not just confidential).
+    Passphrase typed via getpass (never written anywhere, never touches
+    .env or any file). Never includes .env itself -- a memory backup is
+    meant to be portable/storable, live API keys shouldn't travel with it.
 18. ~~Graceful offline-degraded mode~~ -- turned out worse than "fails
     silently": complete_with_tools/complete_with_tools_streaming had NO
     handling at all for Anthropic being unreachable, so a real network

@@ -159,6 +159,50 @@ def journal_list(query: str | None) -> None:
         console.print(f"[dim]{row['ts']}[/dim]  {row['text']}")
 
 
+def backup_create(path: str) -> None:
+    import getpass
+    from pathlib import Path
+
+    from argus.backup import create_backup
+
+    passphrase = getpass.getpass("Backup passphrase (remember this -- there's no recovery without it): ")
+    if not passphrase:
+        console.print("[red]Passphrase can't be empty -- nothing was created.[/red]")
+        return
+    if passphrase != getpass.getpass("Confirm passphrase: "):
+        console.print("[red]Passphrases didn't match -- nothing was created.[/red]")
+        return
+
+    result = create_backup(Path(path), passphrase)
+    console.print(
+        f"Backup created: [bold]{result['path']}[/bold] "
+        f"({result['entries']} files, {result['size_bytes']} bytes, encrypted)"
+    )
+
+
+def backup_restore(path: str) -> None:
+    import getpass
+    from pathlib import Path
+
+    from argus.backup import WrongPassphraseOrCorruptBackup, restore_backup
+
+    console.print(
+        "[yellow]This overwrites your current memory (sqlite db, semantic memory, "
+        "workspace files) with the contents of this backup.[/yellow]"
+    )
+    if console.input("Type 'restore' to confirm: ").strip() != "restore":
+        console.print("Cancelled -- nothing was restored.")
+        return
+
+    passphrase = getpass.getpass("Backup passphrase: ")
+    try:
+        result = restore_backup(Path(path), passphrase)
+    except (WrongPassphraseOrCorruptBackup, FileNotFoundError) as e:
+        console.print(f"[red]{e}[/red]")
+        return
+    console.print(f"Restored {result['entries']} files from backup.")
+
+
 def main() -> None:
     setup_logging()
     parser = argparse.ArgumentParser(prog="argus")
@@ -180,6 +224,12 @@ def main() -> None:
     journal_parser = sub.add_parser("journal", help="View voice-journal entries")
     journal_parser.add_argument("query", nargs="?", default=None, help="Optional search text")
 
+    backup_parser = sub.add_parser("backup", help="Create an encrypted backup of all memory")
+    backup_parser.add_argument("path", help="Output file path for the backup")
+
+    restore_parser = sub.add_parser("restore", help="Restore memory from an encrypted backup")
+    restore_parser.add_argument("path", help="Path to the backup file")
+
     args = parser.parse_args()
 
     if args.command == "memory" and args.memory_command == "review":
@@ -192,6 +242,10 @@ def main() -> None:
         memory_parser.print_help()
     elif args.command == "journal":
         journal_list(args.query)
+    elif args.command == "backup":
+        backup_create(args.path)
+    elif args.command == "restore":
+        backup_restore(args.path)
     elif args.command == "voice":
         voice()
     elif args.command == "agent":
