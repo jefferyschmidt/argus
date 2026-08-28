@@ -91,8 +91,9 @@ calls (with real generated images), memory, and routing/spend.
 10. Scheduled routines/automations -- "every morning at 7, check X and tell
     me": recurring tasks it just does on a schedule, tied into the agent
     loop rather than requiring you to ask each time.
-11. Reminders & a real task list -- persisted, surfaced proactively at the
-    right time, not just answered once and forgotten.
+11. ~~Reminders & a real task list~~ -- persisted (sqlite), surfaced
+    proactively (a background poll speaks a due reminder even outside an
+    active conversation), not just answered once and forgotten.
 12. Remote access from your phone -- Argus is currently chained to this PC;
     even a simple web chat interface or a Telegram bridge would make it
     useful when you're not sitting here.
