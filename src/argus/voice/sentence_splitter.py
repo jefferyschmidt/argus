@@ -1,6 +1,14 @@
 import re
 
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+# Two fixed-width lookbehind branches: the plain "ends in .!?" case,
+# and the same followed by one closing bracket or quote. Without the
+# second, a sentence closed inside a bracket or quote -- `(Checking the
+# calendar first.) Here's what I found.` or `He said "hello." Then left.`
+# -- never split at that boundary, because the character immediately
+# before the space is `)` or `"`, not `.`. That matters beyond tidiness:
+# a parenthesized internal thought has to arrive as its OWN sentence for
+# the voice loop to recognize and skip speaking it (see _is_thought).
+_SENTENCE_END = re.compile(r"""(?:(?<=[.!?])|(?<=[.!?][)\]"']))\s+""")
 
 
 class SentenceBuffer:

@@ -156,6 +156,9 @@
        transcript panel below. */
     width: 100%; overflow-y: auto; padding-top: 14px; scrollbar-width: thin;
   }
+  /* Internal thoughts: shown, never spoken. Set apart so it's obvious at
+     a glance which parts of a reply Argus actually said out loud. */
+  .caption-box .caption-text .thought { color: var(--ink-dim); font-style: italic; }
   .caption-box .caption-text.placeholder {
     color: var(--ink-dim); font-style: italic; font-size: 14px;
     display: flex; align-items: center; justify-content: center; height: 100%; padding-top: 0;
@@ -626,15 +629,41 @@
     captionTextEl.classList.remove("placeholder");
     idleEmoteCaptionShown = false; // a real turn starting always wins over an idle-emote name
   }
+  // Mirrors _is_thought in voice/loop.py: a whole sentence wrapped in
+  // parentheses is an internal thought -- shown, never spoken. The paren
+  // matching is strict (the opening one must close on the very last
+  // character) so an ordinary sentence like "(a) and (b) are both fine."
+  // isn't mistaken for one.
+  function isThought(text) {
+    var s = (text || "").trim();
+    if (s.length < 3 || s.charAt(0) !== "(" || s.charAt(s.length - 1) !== ")") return false;
+    var depth = 0;
+    for (var i = 0; i < s.length; i++) {
+      if (s.charAt(i) === "(") depth++;
+      else if (s.charAt(i) === ")") {
+        depth--;
+        if (depth === 0) return i === s.length - 1;
+      }
+    }
+    return false;
+  }
+
   function addCaption(text) {
     // Accumulates the WHOLE current reply -- cleared only at the start of
     // the next turn (clearCaptions(), on entering "thinking") -- and the
     // box scrolls internally rather than discarding older sentences, so a
     // long reply stays fully readable instead of only ever showing the
-    // last couple of sentences.
+    // last couple of sentences. Rebuilt as spans rather than one joined
+    // string so thoughts can be visually set apart from spoken text.
     captionLines.push(text);
     captionTextEl.classList.remove("placeholder");
-    captionTextEl.textContent = captionLines.join(" ");
+    captionTextEl.innerHTML = "";
+    captionLines.forEach(function (line, i) {
+      var span = document.createElement("span");
+      span.textContent = (i ? " " : "") + line;   // textContent, not innerHTML -- never interpret model output as markup
+      if (isThought(line)) span.className = "thought";
+      captionTextEl.appendChild(span);
+    });
     captionTextEl.scrollTop = captionTextEl.scrollHeight;
     applyMoodFromCaption(text);
   }

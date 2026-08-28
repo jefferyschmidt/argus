@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     # utterance renews the window (see voice/loop.py's run()), so this is
     # "how long since the last thing said," not a hard per-turn cap.
     followup_window_seconds: float = 30.0
+    # How much NEW speech has to arrive before the console's live "hearing"
+    # caption re-transcribes. Each pass is a real (rate-limited) hosted-STT
+    # call on the whole buffer so far, so an ungated preview burns quota
+    # that the actual command transcription then has to queue behind --
+    # see _start_hearing_watcher. Raise to cut API calls further, lower for
+    # a snappier caption; 0 disables the throttle entirely.
+    hearing_preview_min_new_seconds: float = 1.5
     # Barge-in runs continuous wake-word inference while speech plays, which
     # competes with Piper's own onnx compute for CPU on this hardware. If it
     # causes stalls/silence, set VOICE_BARGE_IN_ENABLED=false in .env.

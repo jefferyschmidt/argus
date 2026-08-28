@@ -47,11 +47,45 @@ _NON_HOT_MIC_LOCAL_BARGE_IN_HOLD_FRAMES = 6  # ~480ms
 # sd.InputStream.read()) could hang the entire turn -- and the visible
 # "speaking" state with it -- forever, even with audio long since done.
 _BARGE_IN_WATCHER_GRACE_SECONDS = 5.0
+# Live "hearing" caption cadence. This preview re-transcribes the whole
+# growing buffer, and Transcriber.transcribe prefers hosted Groq -- so
+# every pass is a real API call on a rate-limited key. Left ungated it
+# fired on any buffer change every 0.6s: measured over one real day,
+# 1766 transcription calls with 147 (8.3%) coming back 429, and those
+# rate-limit retries (3-13s of backoff) land on the ACTUAL command
+# transcription too, which is what "he's slow / stuck" looks like from
+# the outside. Requiring a meaningful chunk of NEW audio before each
+# pass keeps the caption useful while cutting the call volume roughly in
+# half on a typical utterance.
+_HEARING_POLL_SECONDS = 0.6
+_HEARING_MIN_SAMPLES = 8000  # ~0.5s at 16kHz before the first pass is worth making
 _LIKELY_ADDRESSED = re.compile(
     r"^(argus|hey\s+argus|can|could|would|will|are|do|does|did|is|"
     r"what|why|how|when|where|who|please)\b",
     re.IGNORECASE,
 )
+
+
+def _is_thought(sentence: str) -> bool:
+    """An internal thought: a whole sentence wrapped in parentheses, shown
+    in the console but never spoken aloud (see _speak_unless_thought).
+
+    Deliberately strict about the parens matching up -- the opening one
+    must be closed by the very last character -- so an ordinary spoken
+    sentence that merely happens to start and end with brackets ("(a) and
+    (b) are both fine.") isn't silently swallowed."""
+    s = sentence.strip()
+    if len(s) < 3 or not s.startswith("(") or not s.endswith(")"):
+        return False
+    depth = 0
+    for i, char in enumerate(s):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return i == len(s) - 1
+    return False
 
 
 class _BargeInInterrupt(Exception):
@@ -247,37 +281,49 @@ class VoiceLoop:
         stop_event = threading.Event()
 
         def watch() -> None:
-            last_len = 0
+            transcribed_through = 0  # samples already reflected in the caption
+            last_total = 0
             while not stop_event.is_set():
-                time.sleep(0.6)
-                current_len = len(chunks_out)
-                # The local wake-word engine's listen loop clears chunks_out
-                # between separate (non-matching) utterances now, so length
-                # can drop back to 0, not just grow -- treat any CHANGE as
-                # worth re-checking, not just growth, or a reset here would
-                # leave the caption stuck showing the previous utterance
-                # until the new one happened to out-grow the old one.
-                if current_len == last_len:
-                    continue
-                last_len = current_len
-                if current_len == 0:
-                    continue
+                time.sleep(_HEARING_POLL_SECONDS)
                 # A snapshot copy, not a direct concatenate of chunks_out --
-                # the listener thread can now clear() it concurrently
-                # between the length check above and this line (it didn't
-                # used to be cleared at all, only appended to), and
+                # the listener thread can clear() it concurrently (it does
+                # so between separate non-matching utterances), and
                 # np.concatenate([]) raises on an empty sequence. list(...)
-                # is a single atomic operation under the GIL; concatenating
+                # is a single atomic operation under the GIL; working from
                 # THAT copy is safe even if the original gets cleared right
                 # after this line runs.
                 snapshot = list(chunks_out)
                 if not snapshot:
+                    # Buffer reset between utterances -- start the next one's
+                    # caption from scratch rather than waiting for it to
+                    # out-grow the previous utterance.
+                    transcribed_through = last_total = 0
                     continue
-                samples = np.concatenate(snapshot)
-                if samples.size < 16000 * 0.5:  # skip until at least ~0.5s captured
+                # Summed rather than concatenated: this runs every poll, and
+                # only the passes that actually transcribe need the (much
+                # more expensive) contiguous copy.
+                total = sum(chunk.size for chunk in snapshot)
+                if total < last_total:
+                    # Shrank without us catching it empty -- the listener
+                    # cleared it and the next utterance is already building.
+                    # Same reset, just observed a poll later.
+                    transcribed_through = 0
+                last_total = total
+                # First pass of an utterance goes as soon as there's enough
+                # audio to be worth reading, so the caption still appears
+                # promptly; only the REFRESHES are throttled, which is where
+                # the call volume actually came from.
+                if transcribed_through == 0:
+                    needed = _HEARING_MIN_SAMPLES
+                else:
+                    needed = transcribed_through + int(
+                        settings.audio_sample_rate * settings.hearing_preview_min_new_seconds
+                    )
+                if total < needed:
                     continue
+                transcribed_through = total
                 try:
-                    text = self.transcriber.transcribe(samples)
+                    text = self.transcriber.transcribe(np.concatenate(snapshot))
                 except Exception:
                     continue
                 if text:
@@ -704,9 +750,7 @@ class VoiceLoop:
                 sentence = sentence_queue.get()
                 if sentence is None:
                     return
-                console.print(f"[bold cyan]argus>[/bold cyan] {sentence}")
-                ui_events.publish({"type": "caption", "text": sentence})
-                if self._speak_with_barge_in(sentence):
+                if self._speak_unless_thought(sentence):
                     interrupted.set()
                     # This sentence, plus anything the model had already
                     # generated but this thread hasn't spoken yet, is real
@@ -758,6 +802,19 @@ class VoiceLoop:
             return self._resume_after_interruption(pending_unspoken)
         return True
 
+    def _speak_unless_thought(self, sentence: str) -> bool:
+        """Displays a reply sentence, and speaks it unless it's an internal
+        thought (see _is_thought) -- those are shown in the console in
+        their parentheses but never voiced, so Argus can think out loud on
+        screen without narrating every step aloud. Returns True if barge-in
+        interrupted; a thought is never interrupted because nothing plays."""
+        console.print(f"[bold cyan]argus>[/bold cyan] {sentence}")
+        ui_events.publish({"type": "caption", "text": sentence})
+        if _is_thought(sentence):
+            console.print("[dim](thought -- not spoken)[/dim]")
+            return False
+        return self._speak_with_barge_in(sentence)
+
     def _listen_briefly(self, timeout: float, chunks_out: list | None = None):
         """record_followup that never raises. Both callers below sit inside
         _process_utterance, which run() invokes OUTSIDE its own
@@ -784,9 +841,7 @@ class VoiceLoop:
         because playback was interrupted again partway through; empty if
         every sentence played to completion."""
         for i, sentence in enumerate(sentences):
-            console.print(f"[bold cyan]argus>[/bold cyan] {sentence}")
-            ui_events.publish({"type": "caption", "text": sentence})
-            if self._speak_with_barge_in(sentence):
+            if self._speak_unless_thought(sentence):
                 return sentences[i:]
         return []
 

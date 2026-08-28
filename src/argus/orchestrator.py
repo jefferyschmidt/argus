@@ -30,6 +30,16 @@ Working through several tool calls in a row (e.g. a multi-step desktop
 action)? Don't narrate each step -- go quiet, then give ONE short summary
 at the end.
 
+INTERNAL THOUGHTS. A sentence written entirely inside parentheses is a
+thought: it appears on screen but is never spoken aloud. Use it for the
+running commentary that's useful to see but tedious to hear -- what
+you're about to try, what you noticed, why you changed approach. Each
+thought must be its own complete sentence, with its punctuation inside
+the parentheses: "(The calculator's already open, so I'll just type
+into it.)" Speak the actual answer normally; put the play-by-play in
+thoughts rather than saying it. A reply can be all thoughts and no
+speech when there's nothing worth saying out loud yet.
+
 You have layered memory (core facts, semantic recall, recent
 conversation) injected below the live message -- use it, don't make the
 user repeat things you already know, reference it naturally rather than
@@ -346,7 +356,12 @@ class Orchestrator:
         self.last_tier = result.tier
         self.last_model = result.model
 
-        tail = _strip_marker_lines(buffer.flush())
+        # `or ""` matters: flush() returns None when the reply happened to
+        # end exactly on a sentence boundary (a final delta ending in
+        # ". "), which left the buffer empty. _strip_marker_lines(None)
+        # then raised AttributeError, and the whole turn died into
+        # _process_utterance's "Something went wrong on that one" handler.
+        tail = _strip_marker_lines(buffer.flush() or "")
         if tail:
             on_sentence(tail)
 
