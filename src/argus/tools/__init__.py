@@ -8,7 +8,7 @@ from argus.tools.desktop import (
     take_screenshot_tool,
     type_text_tool,
 )
-from argus.tools.email import list_recent_emails_tool
+from argus.tools.email import list_recent_emails_tool, send_email_tool
 from argus.tools.filesystem import list_dir_tool, read_file_tool, run_shell_tool, write_file_tool
 from argus.tools.journal import search_journal_tool
 from argus.tools.registry import ToolRegistry, console_confirmer
@@ -49,6 +49,7 @@ def build_default_registry() -> ToolRegistry:
         cancel_reminder_tool,
         search_journal_tool,
         list_recent_emails_tool,
+        send_email_tool,
         create_scheduled_routine_tool,
         list_scheduled_routines_tool,
         cancel_scheduled_routine_tool,
