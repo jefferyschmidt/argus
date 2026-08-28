@@ -68,6 +68,14 @@ CREATE TABLE IF NOT EXISTS kg_facts (
 
 CREATE INDEX IF NOT EXISTS idx_kg_facts_subject ON kg_facts(subject);
 CREATE INDEX IF NOT EXISTS idx_kg_facts_object ON kg_facts(object);
+
+-- Single-row cursor: the highest episode id already considered for memory
+-- consolidation, so the same episodes are never re-summarized.
+CREATE TABLE IF NOT EXISTS consolidation_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_episode_id INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO consolidation_state (id, last_episode_id) VALUES (1, 0);
 """
 
 

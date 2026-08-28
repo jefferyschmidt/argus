@@ -160,6 +160,10 @@ class VoiceLoop:
         )
         threading.Thread(target=self.stuck_detection.run, daemon=True).start()
 
+        from argus.memory.consolidation_worker import ConsolidationWorker
+        self.consolidation_worker = ConsolidationWorker(self.orchestrator.router, self.orchestrator.memory)
+        threading.Thread(target=self.consolidation_worker.run, daemon=True).start()
+
     def _reminder_checker_worker(self) -> None:
         """Reminders are meant to be surfaced proactively, not just answered
         once and forgotten -- polls for due-and-not-yet-announced reminders

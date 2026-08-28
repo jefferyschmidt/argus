@@ -183,6 +183,19 @@ class Settings(BaseSettings):
     stuck_detection_scan_seconds: float = 60.0
     stuck_detection_idle_minutes: float = 8.0
 
+    # Memory consolidation (argus/memory/consolidation.py): the 2026-08-28
+    # "best-ever memory system" design set an explicit cost goal -- feel
+    # like accumulated knowledge without the token cost of ever-growing raw
+    # history in context. Periodically distills new episodic turns into
+    # durable core-memory candidates on the cheap local tier (never the
+    # frontier model), going through the exact same propose/review flow as
+    # any other agent-proposed core memory -- nothing is ever auto-
+    # confirmed. The raw episodes stay in the episodic/semantic stores
+    # untouched (nothing is deleted), so full detail is still searchable
+    # even after a distilled version has entered core memory.
+    memory_consolidation_enabled: bool = True
+    memory_consolidation_poll_seconds: float = 600.0  # 10 minutes
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir

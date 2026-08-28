@@ -10,6 +10,27 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Added, 2026-08-28 (memory consolidation -- first piece of the
+"best-ever memory system")**: implements two of the four explicit design
+goals agreed on 2026-08-28 ("feels like accumulated knowledge, not a
+lookup" and "stay cheap as it grows" -- the other two, prompt-cached
+injection and a searchable cold archive, were already true of the
+existing memory system on inspection: `orchestrator.py` already passes
+`cacheable_system=SYSTEM_PROMPT`, and `episodic`/`semantic` stores
+already keep every raw turn, untouched, forever). New
+`argus/memory/consolidation.py`: a background worker
+(`ConsolidationWorker`, polls every `memory_consolidation_poll_seconds`,
+10 minutes by default) periodically distills new episodic turns into
+durable core-memory candidates on the cheap `Tier.LOCAL` model, never the
+frontier tier -- same design as `idle_emote.py`'s on-the-fly generation.
+Every distilled fact goes through the exact same propose/review flow
+(`CoreMemoryStore.propose`, `core_memory_pending` UI event) as any other
+agent-proposed core memory -- nothing is ever auto-confirmed. A cursor
+(`consolidation_state` table) tracks the last episode considered so nothing
+is re-summarized, and doesn't advance on a failed model call, so a
+transient error just retries next poll rather than silently skipping that
+chunk of conversation forever.
+
 **Fixed live, 2026-08-28 (Argus didn't know its own capabilities)**:
 reported live -- asked what to say to get its attention, Argus suggested
 "hey jarvis" (the real wake word is "Argus"; `hey_jarvis_v0.1` is only an
