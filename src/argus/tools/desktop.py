@@ -143,6 +143,7 @@ click_tool = Tool(
         "required": ["x", "y"],
     },
     tier=PermissionTier.CONFIRM,
+    repeatable=True,
     handler=_click,
 )
 
@@ -155,6 +156,7 @@ type_text_tool = Tool(
         "required": ["text"],
     },
     tier=PermissionTier.CONFIRM,
+    repeatable=True,
     handler=_type_text,
 )
 
@@ -174,6 +176,7 @@ press_key_tool = Tool(
         "required": ["keys"],
     },
     tier=PermissionTier.CONFIRM,
+    repeatable=True,
     handler=_press_key,
 )
 

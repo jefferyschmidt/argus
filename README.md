@@ -10,6 +10,41 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (voice confirmations gave no "listening" cue)**:
+reported live -- "he asked 'may I click?' for approval for something, but
+didn't go to 'listening' to hear my response." `make_voice_confirmer`'s
+`_try_voice` spoke the yes/no prompt and started recording, but never
+published a state update -- the console stayed on whatever it last showed
+while genuinely waiting on the mic. Fixed by publishing `{"type": "state",
+"value": "listening", "mode": "confirming"}` (reusing the existing
+`confirming` label) right before recording, and a `thinking` state after,
+so the console visibly shows Argus is listening for the spoken answer.
+
+**Fixed live, 2026-08-28 (a confirmation for every single click)**:
+reported live -- "it's asking for confirmation for every click. That's
+too much. It needs to be able to act a little more independently once it
+has instructions and confirmation." Multi-step desktop automation (click,
+type_text, press_key) asked to confirm on every single tool call, making
+real tasks (several clicks in a row) unusable hands-free. Added a
+`repeatable` flag on `Tool`: approving one call of a repeatable CONFIRM
+tool auto-approves the rest of that same tool for the rest of the current
+task (`ToolRegistry._task_approved`), reset at the start of every new
+user-initiated turn (`Orchestrator.handle`'s `reset_task_autonomy()`
+call) so it never carries across unrelated requests. `click`, `type_text`,
+and `press_key` are now marked `repeatable=True`; higher-stakes one-shot
+actions (`open_app`, `capture_camera`, filesystem writes, email, etc.)
+are untouched and still confirm every time.
+
+**Tightened live, 2026-08-28 (still too wordy despite the earlier
+trim)**: reported live -- "he's probably saying 500 words when 50 would
+do." The existing "BE CONCISE" rule said "a few sentences by default,"
+which wasn't restrictive enough in practice, and multi-step tool tasks
+(e.g. desktop automation) were narrating every individual step aloud,
+which adds up fast even when each narration is individually short.
+Tightened the target to "a sentence or two, 40 words or fewer" and added
+an explicit instruction to work through multi-step tool sequences without
+a running commentary, giving one short summary at the end instead.
+
 **Fixed live, 2026-08-28 (local wake-word: no feedback during the slow
 part)**: reported live -- "it heard me (you can see my speech to text),
 but it's not doing anything." The console's live hearing caption showed

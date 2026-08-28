@@ -30,12 +30,18 @@ def make_voice_confirmer(speaker, transcriber):
         """Returns True/False on a clear answer, None if nothing usable
         was heard (silence, unclear, or a transcription/audio error)."""
         from argus.voice.audio_io import record_followup
+        from argus.ui import events as ui_events
 
         try:
             speaker.speak(prompt_text)
         except Exception:
             log.exception("Failed to speak confirmation prompt")
 
+        # Confirmed live as a real gap: nothing published a "listening"
+        # state during this window, so the console gave no visual cue
+        # Argus was actually waiting on a spoken yes/no -- reported live as
+        # "didn't go to 'listening' to hear my response."
+        ui_events.publish({"type": "state", "value": "listening", "mode": "confirming"})
         try:
             samples = record_followup(7.0)
             if samples is None:
@@ -54,6 +60,8 @@ def make_voice_confirmer(speaker, transcriber):
         except Exception:
             log.exception("Voice confirmation failed")
             return None
+        finally:
+            ui_events.publish({"type": "state", "value": "thinking"})
 
     def confirmer(tool_name: str, tool_input: dict) -> bool:
         from argus.ui import commands as ui_commands

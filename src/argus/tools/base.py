@@ -23,6 +23,14 @@ class Tool:
     # repeatedly elsewhere), and these are exactly the actions where that's
     # most costly. ToolRegistry.execute() asks twice for these, not once.
     high_risk: bool = False
+    # CONFIRM-tier tools that are cheap, reversible, and typically called
+    # many times back-to-back within one task (click, type_text, press_key)
+    # -- confirmed live that asking every single time made multi-step
+    # desktop automation unusable ("asking for confirmation for every
+    # click"). Approving one call of a repeatable tool auto-approves the
+    # rest of that same tool for the rest of the current task; the slate
+    # is wiped at the start of each new user-initiated turn.
+    repeatable: bool = False
 
     def to_anthropic_schema(self) -> dict:
         return {

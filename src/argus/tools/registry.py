@@ -26,6 +26,13 @@ class ToolRegistry:
     def __init__(self, confirmer: Confirmer = console_confirmer):
         self._tools: dict[str, Tool] = {}
         self.confirmer = confirmer
+        self._task_approved: set[str] = set()
+
+    def reset_task_autonomy(self) -> None:
+        """Call at the start of each new user-initiated turn -- approval for
+        a repeatable tool only carries across the rest of ONE task, not the
+        whole session."""
+        self._task_approved.clear()
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -42,6 +49,9 @@ class ToolRegistry:
             return f"error: tool '{name}' is registered but disabled (deny tier)"
 
         if tool.tier is PermissionTier.CONFIRM:
+            if getattr(tool, "repeatable", False) and name in self._task_approved:
+                log.info("Executing tool: %s(%s) [tier=%s, auto-approved for this task]", name, tool_input, tool.tier.value)
+                return tool.handler(tool_input)
             if not self.confirmer(name, tool_input):
                 log.info("Tool call denied by user: %s(%s)", name, tool_input)
                 raise ToolDenied(f"user declined to run '{name}'")
@@ -52,6 +62,8 @@ class ToolRegistry:
             if getattr(tool, "high_risk", False) and not self.confirmer(name, tool_input):
                 log.info("Tool call denied by user on second confirmation: %s(%s)", name, tool_input)
                 raise ToolDenied(f"user declined to run '{name}' on second confirmation")
+            if getattr(tool, "repeatable", False):
+                self._task_approved.add(name)
 
         log.info("Executing tool: %s(%s) [tier=%s]", name, tool_input, tool.tier.value)
         return tool.handler(tool_input)
