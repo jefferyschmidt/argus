@@ -139,9 +139,13 @@ calls (with real generated images), memory, and routing/spend.
     is_available()==True followed by an actual failure would also crash;
     that path now escalates to the frontier (and from there to the same
     degraded fallback) instead.
-19. Voice journaling -- a lightweight "take a note" mode that captures
-    freeform spoken thoughts to a running, later-searchable log. Natural
-    fit given the voice-first design and existing memory system.
+19. ~~Voice journaling~~ -- "note to self: ..." / "journal this" / "take a
+    note" (inline content, or say the trigger alone and Argus listens for
+    the entry next) logs a freeform spoken thought, bypassing the LLM
+    entirely for a fast, deterministic capture-and-confirm. Searchable via
+    `argus journal [query]` or in conversation (search_journal tool).
+    Separate from episodic memory (conversation) and core memory (standing
+    facts) -- this is freeform thinking-out-loud with Argus as scribe.
 20. Multi-language support -- on-the-fly translation, useful for travel or
     reading/responding to non-English content.
 21. Meeting assistant -- join/transcribe/summarize calls and extract action

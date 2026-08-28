@@ -9,6 +9,7 @@ from argus.tools.desktop import (
     type_text_tool,
 )
 from argus.tools.filesystem import list_dir_tool, read_file_tool, run_shell_tool, write_file_tool
+from argus.tools.journal import search_journal_tool
 from argus.tools.registry import ToolRegistry, console_confirmer
 from argus.tools.reminders import cancel_reminder_tool, list_reminders_tool, set_reminder_tool
 from argus.tools.web_content import fetch_image_tool
@@ -32,6 +33,7 @@ def build_default_registry() -> ToolRegistry:
         set_reminder_tool,
         list_reminders_tool,
         cancel_reminder_tool,
+        search_journal_tool,
     ):
         registry.register(tool)
     return registry

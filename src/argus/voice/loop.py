@@ -25,6 +25,9 @@ _QUIET_MODE_OFF_PHRASES = ("unmute", "you can talk again", "quiet mode off", "ta
 _SUPPRESS_CONTEXT_PHRASES = ("don't ask me about this", "don't bring that up", "stop asking about this")
 _PROACTIVE_CONTEXT_OFF_PHRASES = ("stop watching my screen", "proactive mode off", "stop checking in")
 _PROACTIVE_CONTEXT_ON_PHRASES = ("proactive mode on", "start checking in", "you can check in again")
+_JOURNAL_TRIGGER = re.compile(
+    r"^(note to self|journal this|take a note|log this thought)\s*[:,-]?\s*(.*)$", re.IGNORECASE
+)
 _BARGE_IN_HOLD_FRAMES = 3  # ~240ms of sustained energy (at 80ms/chunk) before hot-mic barge-in fires
 _LIKELY_ADDRESSED = re.compile(
     r"^(argus|hey\s+argus|can|could|would|will|are|do|does|did|is|"
@@ -357,6 +360,10 @@ class VoiceLoop:
             self._speak_with_barge_in(confirmation)
             return True
 
+        journal_match = _JOURNAL_TRIGGER.match(text.strip())
+        if journal_match:
+            return self._handle_journal_trigger(journal_match.group(2).strip())
+
         self._refresh_hot_mic()
 
         sentence_queue: queue.Queue[str | None] = queue.Queue()
@@ -455,6 +462,52 @@ class VoiceLoop:
             tag = f"[dim]({self.orchestrator.last_tier.value}: {self.orchestrator.last_model})[/dim]"
             console.print(f"{tag}\n")
         return True
+
+    def _handle_journal_trigger(self, inline_content: str) -> bool:
+        """"Note to self" / "journal this" / "take a note", optionally with
+        the entry inline in the same breath ("note to self: call the
+        dentist tomorrow"). Bypasses the LLM entirely -- this is a
+        deterministic capture-and-confirm, not something that needs
+        reasoning, and skipping the model keeps it fast and free. If the
+        trigger phrase was said alone, does one extra listen for the
+        entry rather than requiring it be crammed into one breath."""
+        if inline_content:
+            self._save_journal_entry(inline_content)
+            return True
+
+        console.print("[dim](listening for your journal entry...)[/dim]")
+        prompt_text = "Go ahead, I'm listening."
+        ui_events.publish({"type": "transcript", "role": "argus", "text": prompt_text})
+        ui_events.publish({"type": "caption", "text": prompt_text})
+        self._speak_with_barge_in(prompt_text)
+
+        entry_audio = record_followup(20.0)
+        entry_text = self.transcriber.transcribe(entry_audio) if entry_audio is not None else ""
+        if entry_text:
+            self._save_journal_entry(entry_text)
+        else:
+            console.print("[dim](didn't catch a journal entry)[/dim]\n")
+            confirmation = "Didn't catch that -- say 'note to self' again whenever you're ready."
+            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
+            ui_events.publish({"type": "caption", "text": confirmation})
+            self._speak_with_barge_in(confirmation)
+        return True
+
+    def _save_journal_entry(self, text: str) -> None:
+        from argus.memory.journal import JournalStore
+        from argus.memory.store import get_connection
+
+        conn = get_connection()
+        try:
+            JournalStore(conn).add(text)
+        finally:
+            conn.close()
+
+        console.print(f"[dim](journal entry saved: {text})[/dim]\n")
+        confirmation = "Got it, logged."
+        ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
+        ui_events.publish({"type": "caption", "text": confirmation})
+        self._speak_with_barge_in(confirmation)
 
     def _speak_with_barge_in(self, text: str) -> bool:
         """Synthesizes and plays one sentence. Returns True if barge-in

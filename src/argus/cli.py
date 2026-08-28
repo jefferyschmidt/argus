@@ -141,6 +141,24 @@ def memory_forget() -> None:
     )
 
 
+def journal_list(query: str | None) -> None:
+    from argus.memory.journal import JournalStore
+    from argus.memory.store import get_connection
+
+    conn = get_connection()
+    try:
+        store = JournalStore(conn)
+        rows = store.search(query, limit=50) if query else store.list_recent(limit=50)
+    finally:
+        conn.close()
+
+    if not rows:
+        console.print("No matching journal entries." if query else "No journal entries yet.")
+        return
+    for row in rows:
+        console.print(f"[dim]{row['ts']}[/dim]  {row['text']}")
+
+
 def main() -> None:
     setup_logging()
     parser = argparse.ArgumentParser(prog="argus")
@@ -159,6 +177,9 @@ def main() -> None:
     export_parser.add_argument("path", help="Output file path")
     memory_sub.add_parser("forget", help="Permanently delete all episodic + semantic memory (core memory untouched)")
 
+    journal_parser = sub.add_parser("journal", help="View voice-journal entries")
+    journal_parser.add_argument("query", nargs="?", default=None, help="Optional search text")
+
     args = parser.parse_args()
 
     if args.command == "memory" and args.memory_command == "review":
@@ -169,6 +190,8 @@ def main() -> None:
         memory_forget()
     elif args.command == "memory":
         memory_parser.print_help()
+    elif args.command == "journal":
+        journal_list(args.query)
     elif args.command == "voice":
         voice()
     elif args.command == "agent":
