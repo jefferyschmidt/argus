@@ -42,3 +42,21 @@ def test_invalid_expression_name_ignored():
     body, core, expr = _extract_markers("Sure.\nEXPRESSION: bananas")
     assert body == "Sure."
     assert expr is None
+
+
+def test_marker_embedded_mid_reply_is_still_stripped():
+    """A trailing-only stripper misses this -- observed live: the model put
+    an EXPRESSION line followed by more spoken text, and the raw tag leaked
+    out as visible/spoken content instead of being removed."""
+    body, core, expr = _extract_markers(
+        "Here's angry.\nEXPRESSION: angry\n\nThere's sad and scared too if you want to see those."
+    )
+    assert "EXPRESSION" not in body
+    assert body == "Here's angry.\n\nThere's sad and scared too if you want to see those."
+    assert expr == "angry"
+
+
+def test_multiple_expression_markers_last_valid_one_wins():
+    body, core, expr = _extract_markers("Watch this.\nEXPRESSION: happy\nEXPRESSION: angry")
+    assert body == "Watch this."
+    assert expr == "angry"

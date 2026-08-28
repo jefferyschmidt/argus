@@ -241,14 +241,20 @@ class Orchestrator:
 
         buffer = SentenceBuffer()
 
-        def _is_marker_line(sentence: str) -> bool:
-            s = sentence.strip().upper()
-            return s.startswith("CORE_MEMORY:") or s.startswith("EXPRESSION:")
+        def _strip_marker_lines(sentence: str) -> str:
+            # Strips a marker even if it's not the sentence's ENTIRE
+            # content -- the sentence splitter can bundle a marker together
+            # with surrounding text when the model doesn't cleanly newline-
+            # separate it (observed live: "EXPRESSION: angry" got spoken
+            # aloud because it arrived glued to other text as one chunk).
+            kept = [line for line in sentence.splitlines() if not _MARKER_LINE.match(line)]
+            return "\n".join(kept).strip()
 
         def on_text(delta: str) -> None:
             for sentence in buffer.add(delta):
-                if not _is_marker_line(sentence):
-                    on_sentence(sentence)
+                cleaned = _strip_marker_lines(sentence)
+                if cleaned:
+                    on_sentence(cleaned)
 
         result = self.router.complete_with_tools_streaming(
             user_text, system=system, tool_registry=self.tools, on_text=on_text, on_tool_call=self._on_tool_call
@@ -256,8 +262,8 @@ class Orchestrator:
         self.last_tier = result.tier
         self.last_model = result.model
 
-        tail = buffer.flush()
-        if tail and not _is_marker_line(tail):
+        tail = _strip_marker_lines(buffer.flush())
+        if tail:
             on_sentence(tail)
 
         reply, proposed, expression = _extract_markers(result.text)
@@ -299,26 +305,32 @@ def _detect_requested_expression(text: str, last_shown: str | None) -> str | Non
     return None
 
 
+_MARKER_LINE = re.compile(r"^\s*(CORE_MEMORY|EXPRESSION)\s*:\s*(.*)$", re.IGNORECASE)
+
+
 def _extract_markers(text: str) -> tuple[str, str | None, str | None]:
-    """Strips trailing CORE_MEMORY:/EXPRESSION: lines the model may emit in
-    either order, returning (spoken/displayed body, core memory text or
-    None, expression name or None)."""
+    """Strips CORE_MEMORY:/EXPRESSION: lines wherever they appear in the
+    reply, not just at the very end -- the prompt asks the model to only
+    ever put them last, but a fast/small model doesn't reliably follow
+    that (observed live: it kept talking after an EXPRESSION: line, which
+    a trailing-only stripper never reaches, so the raw tag leaked out as
+    visible/spoken text). Returns (body with all marker lines removed,
+    core memory text or None, expression name or None -- last valid match
+    wins if the model emits more than one of either)."""
     core_memory: str | None = None
     expression: str | None = None
-    lines = text.rstrip().splitlines()
-    while lines:
-        stripped = lines[-1].strip()
-        if stripped.upper().startswith("CORE_MEMORY:"):
-            core_memory = stripped.split(":", 1)[1].strip()
-            lines.pop()
-        elif stripped.upper().startswith("EXPRESSION:"):
-            candidate = stripped.split(":", 1)[1].strip().lower()
-            if candidate in _VALID_EXPRESSIONS and expression is None:
-                expression = candidate  # closest-to-the-end marker wins if the model emits more than one
-            lines.pop()
-        else:
-            break
-    return "\n".join(lines).strip(), core_memory, expression
+    body_lines: list[str] = []
+    for line in text.splitlines():
+        match = _MARKER_LINE.match(line)
+        if not match:
+            body_lines.append(line)
+            continue
+        kind, value = match.group(1).upper(), match.group(2).strip()
+        if kind == "CORE_MEMORY" and value:
+            core_memory = value
+        elif kind == "EXPRESSION" and value.lower() in _VALID_EXPRESSIONS:
+            expression = value.lower()
+    return "\n".join(body_lines).strip(), core_memory, expression
 
 
 def _extract_core_memory(text: str) -> tuple[str, str | None]:

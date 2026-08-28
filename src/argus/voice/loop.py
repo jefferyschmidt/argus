@@ -1,5 +1,6 @@
 import logging
 import queue
+import re
 import threading
 import time
 
@@ -20,6 +21,11 @@ console = Console()
 
 _STOP_LISTENING_PHRASES = ("stop listening", "stop barging in", "quit interrupting")
 _BARGE_IN_HOLD_FRAMES = 3  # ~240ms of sustained energy (at 80ms/chunk) before hot-mic barge-in fires
+_LIKELY_ADDRESSED = re.compile(
+    r"^(argus|hey\s+argus|can|could|would|will|are|do|does|did|is|"
+    r"what|why|how|when|where|who|please)\b",
+    re.IGNORECASE,
+)
 
 
 class _BargeInInterrupt(Exception):
@@ -187,10 +193,23 @@ class VoiceLoop:
     def _seems_addressed_to_argus(self, text: str) -> bool:
         """Cheap gate for follow-up-window utterances: is this actually
         meant for Argus, or is the open mic picking up stray conversation
-        (e.g. talking to someone else in the room)? Uses the local model
-        since it's already warm and this doesn't need frontier reasoning --
-        real addressee detection is a harder, deferred problem (see
-        README roadmap); this is a cheap first line of defense, not that."""
+        (e.g. talking to someone else in the room)? Real addressee
+        detection is a harder, deferred problem (see README roadmap); this
+        is a cheap first line of defense, not that.
+
+        A clean question mark or a direct-address opener ("can you...",
+        "argus...") is caught here without even asking the model -- live
+        testing showed the local 3B classifier dropping obviously-addressed
+        questions ("Can you still hear me?") as STRAY, which is far more
+        disruptive than the rare bit of stray chatter it's meant to filter.
+        Only genuinely ambiguous statements (no "?", no direct opener) fall
+        through to the model, and its own prompt is now biased the same
+        way: uncertain defaults to ADDRESSED, since wrongly continuing to
+        listen for one more turn costs nothing but wrongly dropping a real
+        question breaks the conversation."""
+        if "?" in text or _LIKELY_ADDRESSED.match(text.strip()):
+            return True
+
         from argus.llm.base import Message
 
         try:
@@ -199,6 +218,11 @@ class VoiceLoop:
                 "voice assistant -- a question, request, or command -- or "
                 "is it more likely stray conversation/background talk not "
                 f'meant for the assistant?\nUtterance: "{text}"\n'
+                "If genuinely uncertain, answer ADDRESSED -- only answer "
+                "STRAY when it clearly sounds like a comment to someone "
+                "else in the room (uses another person's name, or reads as "
+                "one half of a conversation not involving the assistant) "
+                "or an unrelated snippet like TV/media audio.\n"
                 "Reply with exactly one word: ADDRESSED or STRAY."
             )
             result = self.orchestrator.router.local.complete([Message(role="user", content=prompt)])
