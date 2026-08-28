@@ -60,6 +60,8 @@ class VoiceLoop:
         self.wake_word = WakeWordListener()
         self.transcriber = Transcriber()
         self.speaker = build_speaker()
+        from argus.voice.speech_detector import SpeechDetector
+        self.speech_detector = SpeechDetector()
         self._hot_mic_until = 0.0
         # Held for the full duration of processing one utterance (voice,
         # typed, or push-to-talk) so two never run concurrently against the
@@ -436,7 +438,11 @@ class VoiceLoop:
 
                 if hot_mic:
                     rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
-                    if rms > settings.voice_silence_rms_threshold:
+                    # RMS gates first (cheap, skips VAD on near-silence);
+                    # WebRTC VAD then rejects loud-but-not-speech transients
+                    # (coughs, clicks, echo bleed) that RMS alone can't tell
+                    # apart from someone actually talking.
+                    if rms > settings.voice_silence_rms_threshold and self.speech_detector.is_speech(frame):
                         hot_mic_speech_run += 1
                         if hot_mic_speech_run >= _BARGE_IN_HOLD_FRAMES:
                             console.print("[yellow](barge-in: hot mic heard you)[/yellow]")
