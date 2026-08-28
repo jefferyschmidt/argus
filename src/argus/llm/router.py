@@ -139,6 +139,20 @@ class ModelRouter:
         self.cost_governor.record(cost)
         return result
 
+    def complete_with_image(
+        self, image_bytes: bytes, prompt: str, tier: Tier = Tier.FAST, media_type: str = "image/jpeg"
+    ) -> CompletionResult:
+        """No local/offline path -- vision needs the frontier model, so this
+        always costs real money and always needs internet, unlike complete()
+        which degrades gracefully. Callers (e.g. scan_document) should
+        already be behind a CONFIRM-tier tool for the same reason
+        capture_camera is."""
+        self.cost_governor.check()
+        result = self.frontier.complete_with_image(image_bytes, prompt, tier=tier, media_type=media_type)
+        cost = estimate_cost(tier, result.input_tokens, result.output_tokens)
+        self.cost_governor.record(cost)
+        return result
+
     def complete_with_tools(
         self,
         user_text: str,

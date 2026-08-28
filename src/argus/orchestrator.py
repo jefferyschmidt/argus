@@ -152,6 +152,11 @@ synthesizes one recommendation, which costs real time and money, so reach
 for it when the user explicitly wants a second opinion or the stakes
 clearly call for that depth, never as your default way of answering.
 
+scan_document captures a photo of a document/receipt the user is holding
+up, reads what it says, and stores it into long-term memory -- use it when
+they say something like "scan this" or hold up a receipt/bill, not
+capture_camera (that's for looking at the room/a person generally).
+
 track_research_topic/list_research_topics/untrack_research_topic manage
 proactive research digests -- when the user says something like "keep an
 eye on X" or "let me know if anything happens with Y", track it; a

@@ -27,6 +27,7 @@ from argus.tools.routines import (
     create_scheduled_routine_tool,
     list_scheduled_routines_tool,
 )
+from argus.tools.scan_document import _build_scan_document
 from argus.tools.second_opinion import _build_second_opinion
 from argus.tools.self_improve import (
     commit_own_changes_tool,
@@ -83,13 +84,14 @@ def build_default_registry(router=None) -> ToolRegistry:
     ):
         registry.register(tool)
 
-    # second_opinion needs live access to a ModelRouter (for the frontier
-    # tier and, just as importantly, the SAME cost governor/daily cap the
-    # rest of the conversation uses -- a second, separate ModelRouter would
-    # make four LLM calls per invocation that silently bypass that cap).
-    # Only registered when a router is actually supplied.
+    # second_opinion and scan_document both need live access to a
+    # ModelRouter (for the frontier tier and, just as importantly, the SAME
+    # cost governor/daily cap the rest of the conversation uses -- a
+    # second, separate ModelRouter would let their LLM calls silently
+    # bypass that cap). Only registered when a router is actually supplied.
     if router is not None:
         registry.register(_build_second_opinion(router))
+        registry.register(_build_scan_document(router))
 
     # Plugin tools (README item 13): auto-discovered from argus/plugins/,
     # no core-code changes needed to add a new one. A plugin can't

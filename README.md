@@ -227,7 +227,19 @@ calls (with real generated images), memory, and routing/spend.
 
 - Speaker recognition (know *who's* talking -- useful once more than one
   person interacts with Argus).
-- Document/receipt scanning via camera.
+- ~~Document/receipt scanning via camera.~~ Done: the `scan_document` tool
+  (argus/tools/scan_document.py) captures a webcam frame (same capture
+  logic as capture_camera), sends it through a new one-shot vision call
+  (AnthropicClient.complete_with_image / ModelRouter.complete_with_image --
+  no tool loop, just an image + prompt in a single message) that extracts
+  vendor/date/total/key details as a searchable paragraph, then stores it
+  into semantic memory (same store second-brain ingestion uses) so
+  questions like "how much did I spend at X" are answerable later.
+  CONFIRM-tier, same sensitivity reasoning as capture_camera. Live-verified
+  against the real Anthropic API: a synthetic receipt image (Trader Joe's,
+  itemized, dated) produced a correct extraction -- right vendor, right
+  total, right items, right date -- with real spend recorded through the
+  shared cost governor.
 - ~~Voice-gated confirmation for the riskiest actions (an extra layer beyond
   a typed/spoken "yes").~~ Done: a `high_risk` flag on `Tool` (send_email,
   write_own_source, commit_own_changes, restart_argus) makes

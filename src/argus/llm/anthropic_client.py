@@ -62,6 +62,33 @@ class AnthropicClient:
             output_tokens=response.usage.output_tokens,
         )
 
+    def complete_with_image(
+        self, image_bytes: bytes, prompt: str, tier: Tier = Tier.FAST, media_type: str = "image/jpeg"
+    ) -> CompletionResult:
+        """One-shot vision call, no tool loop -- for tools that already have
+        an image in hand (e.g. scan_document) and just need it looked at
+        and described/extracted, not a multi-turn conversation."""
+        model = _TIER_MODEL[tier]()
+        response = self._client.messages.create(
+            model=model,
+            max_tokens=1024,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": media_type, "data": base64.b64encode(image_bytes).decode("ascii")},
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
+        text = "".join(b.text for b in response.content if b.type == "text")
+        return CompletionResult(
+            text=text, tier=tier, model=model,
+            input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens,
+        )
+
     def complete_with_tools(
         self,
         user_text: str,
