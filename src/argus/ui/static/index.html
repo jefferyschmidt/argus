@@ -101,6 +101,12 @@
     display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
   }
   .caption-box .caption-text.placeholder { color: var(--ink-dim); font-style: italic; font-size: 14px; }
+  .hearing-line {
+    font-size: 13px; color: var(--ink-dim); min-height: 18px; max-width: 480px;
+    text-align: center; padding: 0 16px; font-style: italic; opacity: 0;
+    transition: opacity .15s ease;
+  }
+  .hearing-line.active { opacity: 1; }
   .head-frame::after {
     content: ""; position: absolute; inset: 0; pointer-events: none;
     background: linear-gradient(180deg, rgba(255,255,255,.05), transparent 12%, transparent 88%, rgba(0,0,0,.4));
@@ -238,6 +244,7 @@
     </div>
     <div class="state-label" id="stateLabel">Idle</div>
     <div class="state-sub" id="stateSub">Waiting for Argus to connect.</div>
+    <div class="hearing-line" id="hearingLine"></div>
 
     <div class="input-row">
       <button class="ptt-btn" id="pttBtn" title="Hold to talk">Hold to talk</button>
@@ -419,6 +426,46 @@
     return moodBoost * Math.min(1, remaining);
   }
 
+  // ---------- named expressions (angry/happy/sad/scared/curious/surprised) ----------
+  // Driven by an EXPRESSION: marker the model can emit (see orchestrator.py),
+  // either from a direct user request ("show me an angry face") or a strong
+  // emotional beat. Distinct from the cheap punctuation-based moodBoost
+  // above -- this is an explicit, named state with its own brow geometry
+  // and color tint, held for a few seconds then decaying back to neutral.
+  var EXPRESSIONS = {
+    angry:     { browAngle:  0.34, browRaise: -0.10, eyeScaleX: 0.85, eyeScaleY: 0.70, tint: "rgba(255,90,90,0.9)" },
+    happy:     { browAngle: -0.12, browRaise:  0.08, eyeScaleX: 1.05, eyeScaleY: 0.85, tint: "rgba(255,214,120,0.9)" },
+    sad:       { browAngle:  0.20, browRaise:  0.02, eyeScaleX: 0.90, eyeScaleY: 0.75, tint: "rgba(140,170,255,0.9)" },
+    scared:    { browAngle: -0.05, browRaise:  0.16, eyeScaleX: 1.15, eyeScaleY: 1.35, tint: "rgba(210,240,255,0.95)" },
+    curious:   { browAngle: -0.22, browRaise:  0.10, eyeScaleX: 1.05, eyeScaleY: 1.0,  tint: "rgba(180,255,220,0.9)", asymmetric: true },
+    surprised: { browAngle: -0.08, browRaise:  0.20, eyeScaleX: 1.15, eyeScaleY: 1.25, tint: "rgba(255,255,255,0.95)" },
+    neutral:   { browAngle:  0,    browRaise:  0,    eyeScaleX: 1.0,  eyeScaleY: 1.0,  tint: "rgba(234,243,255,0.95)" }
+  };
+  var namedExpression = null, namedExpressionUntil = 0;
+  function setExpression(value, durationMs) {
+    if (!EXPRESSIONS[value]) return;
+    namedExpression = value;
+    namedExpressionUntil = performance.now() + (durationMs || 4500);
+  }
+  function currentExpressionParams() {
+    if (!namedExpression || performance.now() > namedExpressionUntil) {
+      namedExpression = null;
+      return EXPRESSIONS.neutral;
+    }
+    var remaining = namedExpressionUntil - performance.now();
+    var fade = remaining < 500 ? remaining / 500 : 1; // ease out over the last 500ms
+    var base = EXPRESSIONS[namedExpression], neutral = EXPRESSIONS.neutral;
+    var lerp = function (a, b, f) { return a + (b - a) * f; };
+    return {
+      browAngle: lerp(neutral.browAngle, base.browAngle, fade),
+      browRaise: lerp(neutral.browRaise, base.browRaise, fade),
+      eyeScaleX: lerp(neutral.eyeScaleX, base.eyeScaleX, fade),
+      eyeScaleY: lerp(neutral.eyeScaleY, base.eyeScaleY, fade),
+      tint: base.tint,
+      asymmetric: base.asymmetric && fade > 0.5
+    };
+  }
+
   // ---------- blink cycle ----------
   var BLINK_DURATION_MS = 140;
   var nextBlinkAt = performance.now() + 1500 + Math.random() * 3000;
@@ -436,6 +483,18 @@
       return Math.abs(phase - 0.5) * 2;
     }
     return 1;
+  }
+
+  // ---------- live hearing caption (what the mic is picking up, pre-transcript) ----------
+  var hearingLineEl = document.getElementById("hearingLine");
+  function setHearingLine(text) {
+    if (!text) {
+      hearingLineEl.textContent = "";
+      hearingLineEl.classList.remove("active");
+      return;
+    }
+    hearingLineEl.textContent = "“" + text + "”";
+    hearingLineEl.classList.add("active");
   }
 
   // ---------- live caption ----------
@@ -552,7 +611,11 @@
 
       if (event.type === "state") setState(event.value, event);
       else if (event.type === "caption") addCaption(event.text);
-      else if (event.type === "transcript") addTranscriptLine(event.role, event.text, event.tier, event.model);
+      else if (event.type === "hearing") setHearingLine(event.text);
+      else if (event.type === "transcript") {
+        if (event.role === "you") setHearingLine("");
+        addTranscriptLine(event.role, event.text, event.tier, event.model);
+      }
       else if (event.type === "tool_call") {
         addToolCall(event.name, event.tier);
         if (event.image) showImage(event.name, "data:image/png;base64," + event.image);
@@ -772,19 +835,42 @@
     // legible feedback.
     var mood = currentMoodFactor();
     var blink = blinkFactor();
+    var expr = currentExpressionParams();
     var eyeY = cy + bob - 0.40 * s;
     var eyeDX = 0.30 * s;
-    var eyeBaseR = 0.045 * s * (1 + mood * 0.35);
-    var eyeH = Math.max(0.6, blink) * eyeBaseR;
-    hctx.fillStyle = "#EAF3FF";
-    hctx.shadowColor = "#8FD4FF";
+    var eyeRX = 0.045 * s * (1 + mood * 0.35) * expr.eyeScaleX;
+    var eyeRY = 0.045 * s * (1 + mood * 0.35) * expr.eyeScaleY;
+    var eyeH = Math.max(0.6, blink) * eyeRY;
+    hctx.fillStyle = expr.tint;
+    hctx.shadowColor = expr.tint;
     hctx.shadowBlur = 4;
     [-1, 1].forEach(function (side) {
       hctx.beginPath();
-      hctx.ellipse(cx + side * eyeDX + jx, eyeY + jy, eyeBaseR, eyeH, 0, 0, Math.PI * 2);
+      hctx.ellipse(cx + side * eyeDX + jx, eyeY + jy, eyeRX, eyeH, 0, 0, Math.PI * 2);
       hctx.fill();
     });
     hctx.shadowBlur = 0;
+
+    // Brows: two independently-tiltable segments above each eye, driven by
+    // the same named-expression params -- angry pinches them down toward
+    // center, scared/surprised raise them, curious raises only one side.
+    var browY = eyeY - 0.16 * s;
+    var browLen = 0.16 * s;
+    hctx.strokeStyle = expr.tint;
+    hctx.lineWidth = 2;
+    hctx.lineCap = "round";
+    [-1, 1].forEach(function (side, i) {
+      var angle = expr.browAngle * side * (expr.asymmetric && i === 0 ? -1 : 1);
+      var raise = expr.browRaise * s * (expr.asymmetric && i === 0 ? 0.2 : 1);
+      var bx = cx + side * eyeDX + jx;
+      var by = browY + jy - raise;
+      var innerX = bx - side * browLen / 2, innerY = by + Math.sin(angle) * browLen / 2;
+      var outerX = bx + side * browLen / 2, outerY = by - Math.sin(angle) * browLen / 2;
+      hctx.beginPath();
+      hctx.moveTo(innerX, innerY);
+      hctx.lineTo(outerX, outerY);
+      hctx.stroke();
+    });
 
     hctx.globalAlpha = 1;
     var lineGap = 3;

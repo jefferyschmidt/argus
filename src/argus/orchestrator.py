@@ -91,7 +91,15 @@ If you learn something about the user that should persist long-term (a
 standing preference, an ongoing project, a fact about their life), say so
 explicitly by ending your reply with a line: CORE_MEMORY: <the fact>
 That line will be stripped before the user sees it and queued for their
-confirmation."""
+confirmation.
+
+You also have an animated face in the console with real named expressions.
+When the user directly asks you to show a specific expression (angry, happy,
+sad, scared, curious, surprised, neutral), or when what you're saying calls
+for a strong, obvious emotional beat, end your reply with a line:
+EXPRESSION: <one of angry, happy, sad, scared, curious, surprised, neutral>
+Only include this line when there's a real reason to -- most replies don't
+need one. That line will also be stripped before the user sees it."""
 
 
 class Orchestrator:
@@ -170,9 +178,11 @@ class Orchestrator:
         self.last_tier = result.tier
         self.last_model = result.model
 
-        reply, proposed = _extract_core_memory(result.text)
+        reply, proposed, expression = _extract_markers(result.text)
         if proposed:
             self._propose_core_memory(proposed)
+        if expression:
+            ui_events.publish({"type": "expression", "value": expression})
 
         self.memory.remember_turn("assistant", reply)
         ui_events.publish({"type": "transcript", "role": "argus", "text": reply, "tier": result.tier.value, "model": result.model})
@@ -195,9 +205,11 @@ class Orchestrator:
             result = self.router.complete([Message(role="user", content=user_text)], system=system)
             self.last_tier = result.tier
             self.last_model = result.model
-            reply, proposed = _extract_core_memory(result.text)
+            reply, proposed, expression = _extract_markers(result.text)
             if proposed:
                 self.memory.core.propose(proposed)
+            if expression:
+                ui_events.publish({"type": "expression", "value": expression})
             if reply:
                 on_sentence(reply)
             self.memory.remember_turn("assistant", reply)
@@ -206,11 +218,14 @@ class Orchestrator:
             return reply
 
         buffer = SentenceBuffer()
-        marker = "CORE_MEMORY:"
+
+        def _is_marker_line(sentence: str) -> bool:
+            s = sentence.strip().upper()
+            return s.startswith("CORE_MEMORY:") or s.startswith("EXPRESSION:")
 
         def on_text(delta: str) -> None:
             for sentence in buffer.add(delta):
-                if marker not in sentence:
+                if not _is_marker_line(sentence):
                     on_sentence(sentence)
 
         result = self.router.complete_with_tools_streaming(
@@ -220,12 +235,14 @@ class Orchestrator:
         self.last_model = result.model
 
         tail = buffer.flush()
-        if tail and marker not in tail:
+        if tail and not _is_marker_line(tail):
             on_sentence(tail)
 
-        reply, proposed = _extract_core_memory(result.text)
+        reply, proposed, expression = _extract_markers(result.text)
         if proposed:
             self._propose_core_memory(proposed)
+        if expression:
+            ui_events.publish({"type": "expression", "value": expression})
 
         self.memory.remember_turn("assistant", reply)
         ui_events.publish({"type": "transcript", "role": "argus", "text": reply, "tier": result.tier.value, "model": result.model})
@@ -233,9 +250,31 @@ class Orchestrator:
         return reply
 
 
+_VALID_EXPRESSIONS = {"angry", "happy", "sad", "scared", "curious", "surprised", "neutral"}
+
+
+def _extract_markers(text: str) -> tuple[str, str | None, str | None]:
+    """Strips trailing CORE_MEMORY:/EXPRESSION: lines the model may emit in
+    either order, returning (spoken/displayed body, core memory text or
+    None, expression name or None)."""
+    core_memory: str | None = None
+    expression: str | None = None
+    lines = text.rstrip().splitlines()
+    while lines:
+        stripped = lines[-1].strip()
+        if stripped.upper().startswith("CORE_MEMORY:"):
+            core_memory = stripped.split(":", 1)[1].strip()
+            lines.pop()
+        elif stripped.upper().startswith("EXPRESSION:"):
+            candidate = stripped.split(":", 1)[1].strip().lower()
+            if candidate in _VALID_EXPRESSIONS:
+                expression = candidate
+            lines.pop()
+        else:
+            break
+    return "\n".join(lines).strip(), core_memory, expression
+
+
 def _extract_core_memory(text: str) -> tuple[str, str | None]:
-    marker = "CORE_MEMORY:"
-    if marker not in text:
-        return text, None
-    body, _, tail = text.partition(marker)
-    return body.strip(), tail.strip()
+    body, core_memory, _ = _extract_markers(text)
+    return body, core_memory

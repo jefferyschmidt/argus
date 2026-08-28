@@ -9,10 +9,15 @@ _MAX_RECORD_SECONDS = 20
 _MAX_PTT_SECONDS = 45  # safety cap in case a stop signal is somehow missed
 
 
-def record_while(should_continue) -> np.ndarray:
+def record_while(should_continue, chunks_out: list | None = None) -> np.ndarray:
     """Records for as long as should_continue() returns True, checked once
     per frame -- externally controlled (push-to-talk button held), not
-    VAD-gated like the other record_* functions here."""
+    VAD-gated like the other record_* functions here.
+
+    chunks_out: optional list that frames are appended into as they're
+    captured (in addition to the internal buffer), so a caller running on
+    another thread can read the in-progress audio for live captioning
+    without waiting for this call to return."""
     sr = settings.audio_sample_rate
     frame_len = int(sr * FRAME_MS / 1000)
     max_frames = (_MAX_PTT_SECONDS * 1000) // FRAME_MS
@@ -23,15 +28,20 @@ def record_while(should_continue) -> np.ndarray:
             if not should_continue():
                 break
             frame, _ = stream.read(frame_len)
-            chunks.append(frame.reshape(-1))
+            frame = frame.reshape(-1)
+            chunks.append(frame)
+            if chunks_out is not None:
+                chunks_out.append(frame)
 
     return np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)
 
 
-def record_until_silence() -> np.ndarray:
+def record_until_silence(chunks_out: list | None = None) -> np.ndarray:
     """Records from the default mic until the user stops talking (simple
     energy-based VAD -- good enough for a quiet room, not robust to constant
-    background noise). Returns int16 mono samples at settings.audio_sample_rate."""
+    background noise). Returns int16 mono samples at settings.audio_sample_rate.
+
+    chunks_out: see record_while."""
     sr = settings.audio_sample_rate
     frame_len = int(sr * FRAME_MS / 1000)
     silence_hang_frames = _SILENCE_HANG_MS // FRAME_MS
@@ -46,6 +56,8 @@ def record_until_silence() -> np.ndarray:
             frame, _ = stream.read(frame_len)
             frame = frame.reshape(-1)
             chunks.append(frame)
+            if chunks_out is not None:
+                chunks_out.append(frame)
 
             rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
             if rms > settings.voice_silence_rms_threshold:
@@ -59,12 +71,14 @@ def record_until_silence() -> np.ndarray:
     return np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)
 
 
-def record_followup(timeout_seconds: float) -> np.ndarray | None:
+def record_followup(timeout_seconds: float, chunks_out: list | None = None) -> np.ndarray | None:
     """Listens (no wake word needed) for up to timeout_seconds for the user
     to start talking. Returns None if nothing was said in time -- caller
     should fall back to requiring the wake word again. If speech starts,
     records until silence same as record_until_silence, with no separate
-    timeout on the rest of the utterance."""
+    timeout on the rest of the utterance.
+
+    chunks_out: see record_while."""
     sr = settings.audio_sample_rate
     frame_len = int(sr * FRAME_MS / 1000)
     silence_hang_frames = _SILENCE_HANG_MS // FRAME_MS
@@ -86,9 +100,13 @@ def record_followup(timeout_seconds: float) -> np.ndarray | None:
                 if not heard_speech:
                     heard_speech = True
                 chunks.append(frame)
+                if chunks_out is not None:
+                    chunks_out.append(frame)
                 silence_run = 0
             elif heard_speech:
                 chunks.append(frame)
+                if chunks_out is not None:
+                    chunks_out.append(frame)
                 silence_run += 1
                 if silence_run >= silence_hang_frames:
                     break

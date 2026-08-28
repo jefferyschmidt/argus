@@ -3,6 +3,7 @@ import queue
 import threading
 import time
 
+import numpy as np
 from rich.console import Console
 
 from argus.config import settings
@@ -88,8 +89,41 @@ class VoiceLoop:
             if ui_commands.is_push_to_talk_active():
                 with self._interaction_lock:
                     ui_events.publish({"type": "state", "value": "listening"})
-                    samples = record_while(ui_commands.is_push_to_talk_active)
+                    chunks_out: list = []
+                    stop_watcher = self._start_hearing_watcher(chunks_out)
+                    samples = record_while(ui_commands.is_push_to_talk_active, chunks_out=chunks_out)
+                    stop_watcher.set()
                     self._process_utterance(samples)
+
+    def _start_hearing_watcher(self, chunks_out: list) -> threading.Event:
+        """Runs alongside a recording call, periodically re-transcribing the
+        audio captured so far and publishing it as a 'hearing' UI event --
+        gives the console a near-real-time caption of what the mic is
+        picking up while the user is still talking, rather than only
+        showing the transcript once recording finishes. Cheap approximation
+        of streaming STT: faster-whisper doesn't do incremental decoding,
+        so this just re-runs it on the growing buffer every ~600ms."""
+        stop_event = threading.Event()
+
+        def watch() -> None:
+            last_len = 0
+            while not stop_event.is_set():
+                time.sleep(0.6)
+                if len(chunks_out) <= last_len:
+                    continue
+                last_len = len(chunks_out)
+                samples = np.concatenate(chunks_out)
+                if samples.size < 16000 * 0.5:  # skip until at least ~0.5s captured
+                    continue
+                try:
+                    text = self.transcriber.transcribe(samples)
+                except Exception:
+                    continue
+                if text:
+                    ui_events.publish({"type": "hearing", "text": text})
+
+        threading.Thread(target=watch, daemon=True).start()
+        return stop_event
 
     def _refresh_hot_mic(self) -> None:
         if settings.open_barge_in_seconds > 0:
@@ -111,7 +145,10 @@ class VoiceLoop:
                     ui_events.publish({"type": "state", "value": "listening"})
                     self._refresh_hot_mic()
 
-                samples = self.wake_word.listen_for_wake_and_command(on_wake=_on_wake)
+                wake_chunks: list = []
+                stop_watcher = self._start_hearing_watcher(wake_chunks)
+                samples = self.wake_word.listen_for_wake_and_command(on_wake=_on_wake, chunks_out=wake_chunks)
+                stop_watcher.set()
             except KeyboardInterrupt:
                 break
 
@@ -131,7 +168,10 @@ class VoiceLoop:
             while True:
                 console.print(f"[dim](listening for follow-up, {settings.followup_window_seconds:.0f}s...)[/dim]")
                 ui_events.publish({"type": "state", "value": "listening"})
-                followup = record_followup(settings.followup_window_seconds)
+                followup_chunks: list = []
+                stop_watcher = self._start_hearing_watcher(followup_chunks)
+                followup = record_followup(settings.followup_window_seconds, chunks_out=followup_chunks)
+                stop_watcher.set()
                 if followup is None:
                     console.print("[dim](back to wake-word listening)[/dim]\n")
                     break

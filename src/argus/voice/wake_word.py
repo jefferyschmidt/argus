@@ -35,10 +35,14 @@ class WakeWordListener:
                 if any(score > settings.wake_word_threshold for score in scores.values()):
                     return
 
-    def listen_for_wake_and_command(self, on_wake=None) -> np.ndarray:
+    def listen_for_wake_and_command(self, on_wake=None, chunks_out: list | None = None) -> np.ndarray:
         """Blocks for the wake word, then records the command that follows
         on the SAME audio stream (no reopen gap, so nothing spoken right
-        after the wake word gets clipped). Returns int16 mono samples."""
+        after the wake word gets clipped). Returns int16 mono samples.
+
+        chunks_out: optional list that command-phase frames are appended
+        into as they're captured, so a caller running on another thread can
+        read the in-progress audio for live captioning."""
         from collections import deque
 
         self._model.reset()
@@ -72,6 +76,8 @@ class WakeWordListener:
                 frame, _ = stream.read(_CHUNK_SAMPLES)
                 frame = frame.reshape(-1)
                 chunks.append(frame)
+                if chunks_out is not None:
+                    chunks_out.append(frame)
 
                 rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
                 if rms > settings.voice_silence_rms_threshold:
