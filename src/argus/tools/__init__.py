@@ -1,3 +1,5 @@
+import logging
+
 from argus.tools.base import PermissionTier, Tool
 from argus.tools.desktop import (
     capture_camera_tool,
@@ -27,6 +29,8 @@ from argus.tools.self_improve import (
     write_own_source_tool,
 )
 from argus.tools.web_content import fetch_image_tool
+
+log = logging.getLogger(__name__)
 
 
 def build_default_registry() -> ToolRegistry:
@@ -61,6 +65,19 @@ def build_default_registry() -> ToolRegistry:
         restart_argus_tool,
     ):
         registry.register(tool)
+
+    # Plugin tools (README item 13): auto-discovered from argus/plugins/,
+    # no core-code changes needed to add a new one. A plugin can't
+    # override a built-in by name -- skip and warn rather than letting an
+    # unreviewed drop-in file silently replace a reviewed core tool.
+    from argus.plugin_loader import load_plugin_tools
+
+    for tool in load_plugin_tools():
+        if tool.name in registry._tools:
+            log.warning("Plugin tool '%s' has the same name as an existing tool -- skipping", tool.name)
+            continue
+        registry.register(tool)
+
     return registry
 
 

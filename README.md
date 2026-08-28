@@ -116,9 +116,13 @@ calls (with real generated images), memory, and routing/spend.
     your bot from anywhere. No inbound port opened -- it only long-polls
     Telegram's servers -- and messages route through the same text-input
     path the console uses, so full tool/memory/streaming-reply access.
-13. Plugin/skill system -- a clean pattern for adding new tools/capabilities
-    without touching core code, so the tool ecosystem can keep growing
-    without every addition being a bespoke change.
+13. ~~Plugin/skill system~~ -- drop a .py file defining module-level Tool
+    instances into src/argus/plugins/ and it's auto-registered on next
+    startup (argus/plugin_loader.py), zero core-file edits. A plugin
+    that fails to import is skipped with a warning, not a crash; a
+    plugin can't override a built-in tool's name. example_dice.py ships
+    as a real, working example (a roll_dice tool) -- delete it if you
+    don't want it, it's not load-bearing for anything else.
 14. Undo/rollback for risky actions -- especially file writes and desktop
     control: back up before overwriting, so a bad CONFIRM-tier action is
     recoverable, not just "confirmed and done."
