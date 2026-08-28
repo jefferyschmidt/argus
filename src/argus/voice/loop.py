@@ -97,7 +97,7 @@ class VoiceLoop:
                 continue
             if ui_commands.is_push_to_talk_active():
                 with self._interaction_lock:
-                    ui_events.publish({"type": "state", "value": "listening"})
+                    ui_events.publish({"type": "state", "value": "listening", "mode": "push_to_talk"})
                     chunks_out: list = []
                     stop_watcher = self._start_hearing_watcher(chunks_out)
                     samples = record_while(ui_commands.is_push_to_talk_active, chunks_out=chunks_out)
@@ -147,11 +147,11 @@ class VoiceLoop:
     def run(self) -> None:
         console.print("[bold cyan]Argus[/bold cyan] listening for wake word. Ctrl+C to quit.\n")
         while True:
-            ui_events.publish({"type": "state", "value": "listening"})
+            ui_events.publish({"type": "state", "value": "listening", "mode": "wake_word"})
             try:
                 def _on_wake():
                     console.print("[green](wake word heard, listening...)[/green]")
-                    ui_events.publish({"type": "state", "value": "listening"})
+                    ui_events.publish({"type": "state", "value": "listening", "mode": "command"})
                     self._refresh_hot_mic()
 
                 wake_chunks: list = []
@@ -176,7 +176,10 @@ class VoiceLoop:
             # gate it.
             while True:
                 console.print(f"[dim](listening for follow-up, {settings.followup_window_seconds:.0f}s...)[/dim]")
-                ui_events.publish({"type": "state", "value": "listening"})
+                ui_events.publish({
+                    "type": "state", "value": "listening", "mode": "follow_up",
+                    "window_seconds": settings.followup_window_seconds,
+                })
                 followup_chunks: list = []
                 stop_watcher = self._start_hearing_watcher(followup_chunks)
                 followup = record_followup(settings.followup_window_seconds, chunks_out=followup_chunks)
@@ -334,7 +337,7 @@ class VoiceLoop:
         if depth > 4:  # pathological repeated false-triggers; stop retrying
             return True
 
-        ui_events.publish({"type": "state", "value": "listening"})
+        ui_events.publish({"type": "state", "value": "listening", "mode": "confirming"})
         console.print("[dim](confirming interruption...)[/dim]")
         chunks_out: list = []
         stop_watcher = self._start_hearing_watcher(chunks_out)

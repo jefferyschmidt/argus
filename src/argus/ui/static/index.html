@@ -341,6 +341,17 @@
     thinking:  { label: "Thinking", sub: "Routing the request and generating a reply." },
     speaking:  { label: "Speaking", sub: "Say the wake word again at any time to interrupt." }
   };
+  // Distinguishes the sub-states that all map to the same "listening" name
+  // -- otherwise there's no way to tell "you must say the wake word" apart
+  // from "no wake word needed, just keep talking," which was confusing
+  // enough live to get reported directly.
+  var LISTENING_MODES = {
+    wake_word:     { label: "Listening",  sub: "Waiting for the wake word." },
+    command:       { label: "Listening",  sub: "Wake word heard — go ahead, no need to repeat it." },
+    follow_up:     { label: "Listening",  sub: "No wake word needed — keep talking, or it'll drop back to waiting for the wake word." },
+    confirming:    { label: "Listening",  sub: "Checking whether that was really meant for me." },
+    push_to_talk:  { label: "Listening",  sub: "Recording while the button is held." }
+  };
   var current = "idle";
   var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   var stateLabel = document.getElementById("stateLabel");
@@ -408,8 +419,9 @@
       speakVisemes = null;
     }
     if (name === "thinking") clearCaptions();
-    stateLabel.textContent = STATES[name].label;
-    stateSub.textContent = STATES[name].sub;
+    var mode = name === "listening" && event && LISTENING_MODES[event.mode];
+    stateLabel.textContent = mode ? mode.label : STATES[name].label;
+    stateSub.textContent = mode ? mode.sub : STATES[name].sub;
   }
 
   // ---------- lightweight expression from text ----------
