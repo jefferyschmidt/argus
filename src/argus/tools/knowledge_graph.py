@@ -15,6 +15,27 @@ def _remember_relationship(args: dict) -> str:
     return f'Noted: "{subject.strip()}" {predicate.strip()} "{object_.strip()}".'
 
 
+def _forget_relationship(args: dict) -> str:
+    subject, predicate, object_ = args["subject"], args["predicate"], args["object"]
+    conn = get_connection()
+    try:
+        store = KnowledgeGraphStore(conn)
+        matches = [
+            row
+            for row in store.list_all(limit=10000)
+            if row["subject"].lower() == subject.strip().lower()
+            and row["predicate"].lower() == predicate.strip().lower()
+            and row["object"].lower() == object_.strip().lower()
+        ]
+        for row in matches:
+            store.delete(row["id"])
+    finally:
+        conn.close()
+    if not matches:
+        return f'No stored fact exactly matching "{subject}" {predicate} "{object_}" -- nothing to forget.'
+    return f'Forgot: "{subject.strip()}" {predicate.strip()} "{object_.strip()}".'
+
+
 def _query_relationships(args: dict) -> str:
     entity = args.get("entity", "").strip()
     if not entity:
@@ -52,6 +73,28 @@ remember_relationship_tool = Tool(
     },
     tier=PermissionTier.ALLOW,
     handler=_remember_relationship,
+)
+
+forget_relationship_tool = Tool(
+    name="forget_relationship",
+    description=(
+        "Removes a previously stored relationship fact (from remember_relationship) that's "
+        "now wrong or outdated -- e.g. the user says someone's no longer on a project, or a "
+        "fact you stored turns out to be incorrect. Needs the exact subject/predicate/object "
+        "as originally stored (use query_relationships first if you're not sure of the exact "
+        "wording); a near-miss just reports nothing matched rather than guessing."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "subject": {"type": "string"},
+            "predicate": {"type": "string"},
+            "object": {"type": "string"},
+        },
+        "required": ["subject", "predicate", "object"],
+    },
+    tier=PermissionTier.ALLOW,
+    handler=_forget_relationship,
 )
 
 query_relationships_tool = Tool(

@@ -160,9 +160,11 @@ capture_camera (that's for looking at the room/a person generally).
 remember_relationship stores a structured subject-predicate-object fact
 (e.g. "Jason" "works on" "the Coshocton line") whenever the user tells you
 something relational worth remembering long-term; query_relationships
-looks facts like that back up by entity. Use these for "who's connected to
-what" questions specifically -- they're a structured complement to your
-normal memory, not a replacement for it.
+looks facts like that back up by entity; forget_relationship removes one
+that's now wrong or outdated (needs the exact original wording -- query
+first if unsure). Use these for "who's connected to what" questions
+specifically -- they're a structured complement to your normal memory, not
+a replacement for it.
 
 track_research_topic/list_research_topics/untrack_research_topic manage
 proactive research digests -- when the user says something like "keep an

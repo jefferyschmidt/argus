@@ -268,7 +268,12 @@ calls (with real generated images), memory, and routing/spend.
   this roadmap entry: stored 4 real facts (who works on/manages the
   Coshocton line, who reports to whom), queried "Coshocton line" and got
   back all three people correctly (Jason, Priya, Marcus), queried "Jason"
-  and got back both of his facts correctly.
+  and got back both of his facts correctly. A forget_relationship tool
+  (exact subject/predicate/object match, so a near-miss reports nothing
+  matched rather than guessing which fact to delete) rounds this out for
+  correcting a fact that's now wrong or outdated -- live-verified removing
+  one of two facts about the same project and confirming only the
+  intended one was gone afterward.
 - ~~Second-brain ingestion -- drop a PDF/note/article into a watched folder
   and it auto-indexes + summarizes into memory, building real long-term
   expertise on your world instead of only remembering conversations.~~
