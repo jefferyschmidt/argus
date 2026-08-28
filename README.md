@@ -10,6 +10,26 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Trimmed live, 2026-08-28 (system prompt conciseness)**: reported live --
+Argus's spoken replies were running too long. The user first asked Argus
+to trim its own SYSTEM_PROMPT via its self-improve tools; that attempt
+introduced a real encoding bug (a mojibake character replacing an em
+dash) and was undone before being committed. Did the trim directly
+instead: SYSTEM_PROMPT cut from ~13,600 characters (~3400 tokens) to
+~6,200 (~1550 tokens) -- roughly halved -- reorganizing the tool-guidance
+section from one long run-on paragraph into short bulleted entries (the
+system prompt itself isn't spoken, so markdown there is fine even though
+Argus's own replies must never use it) and cutting explanatory padding
+throughout, while keeping every actual instruction: every tool's real
+guidance, the Amazon purchase boundary, the CORE_MEMORY/EXPRESSION marker
+formats exactly, multilingual support, STT-mishearing handling, and the
+"be concise" rule itself, which was moved earlier and given its own
+short, direct paragraph rather than staying buried in a longer one.
+Live-verified against the real Anthropic API through the actual
+production call path (complete_with_tools, not a shortcut): "What's the
+capital of France?" got back "Paris." -- one word, no padding -- and
+casual replies stayed warm and on-brand, not clipped.
+
 **Fixed live, 2026-08-28 (Whisper hallucination feedback loop)**: reported
 live -- after a normal exchange ended, the transcript showed "You: Thank
 you." / "Argus: You're welcome!" repeating for over a dozen exchanges,
