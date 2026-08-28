@@ -10,6 +10,78 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Code review pass, 2026-08-28 (bugs, orphaned code, conversation-flow
+optimization, internal thoughts)**: a full read-through of the codebase
+looking for bugs, dead code and optimizations, plus two requested
+features.
+
+*Bugs found and fixed:*
+- `voice/loop.py` leaked a hearing-watcher daemon thread on every
+  `sd.PortAudioError` -- that branch was the one exit path that never
+  called `stop_watcher.set()`, so an abandoned thread kept re-transcribing
+  the stale buffer every ~600ms (publishing bogus captions off it) for
+  the rest of the process's life, one more leaked per device hiccup.
+- `_resume_after_interruption` and `_handle_journal_trigger` called
+  `record_followup` unprotected. Both run under `_process_utterance`,
+  which `run()` invokes *outside* its own `sd.PortAudioError` handler, so
+  a device hiccup during either listen crashed the whole process. Both
+  now go through `_listen_briefly`, which also makes them honor "Stop
+  listening" mid-capture -- they were the last two call sites that
+  didn't.
+- `SentenceBuffer.flush()` returns `None` (not `""`) when a reply ends
+  exactly on a sentence boundary. `handle_streaming` passed that straight
+  into the marker stripper -> `AttributeError` -> the entire turn died
+  into the voice loop's "Something went wrong on that one" handler, a
+  message that appears repeatedly in the day's event log.
+- `EmailWatcher` marked a UID triaged *before* delivering it, but
+  `_deliver` silently no-ops while Argus is mid-conversation -- so an
+  important email arriving at a busy moment was marked handled and never
+  announced. `ResearchDigestWorker` had the same bug, worse: it records
+  the finding as the topic's `last_digest` first, so a drop meant the
+  next check treated it as already-told and it was lost permanently. Both
+  now queue undelivered items and retry on the next poll.
+
+*Removed (all verified unreferenced repo-wide):* `_extract_core_memory`,
+`ui/events.has_subscribers`, `audio_io.record_until_silence`,
+`WakeWordListener.wait_for_wake`, and redundant function-local
+numpy/sounddevice imports shadowing the module-level ones. Seven
+near-identical acknowledgement blocks in `_process_utterance` collapsed
+into `_acknowledge()`, which routes through `_speak_and_open_mic` so
+built-in command replies are now recorded in memory and open the
+hands-free follow-up window like everything else Argus says.
+
+*Conversation-flow optimization:* two real wins, both measured.
+- The wake-word engine ran its local Whisper pass (~3.2s warm, ~8.2s
+  cold) *before* checking the hot mic -- but inside an open hot-mic
+  window the utterance is accepted regardless of the wake word, so
+  nothing ever read that transcript. Every hands-free follow-up paid ~3s
+  for a discarded result, as did every piece of background chatter.
+  The check now comes first and the raw samples are handed back, so the
+  caller transcribes once (hosted, faster and more accurate) and only if
+  the utterance clears the addressee gate.
+- The live "hearing" caption re-transcribed the whole growing buffer on
+  any change every 0.6s, via hosted STT: 1766 transcription calls in one
+  real day, 147 of them (8.3%) rate-limited -- and that 3-13s backoff
+  lands on the actual command transcription too, which is exactly what
+  "he's slow / stuck" looks like from the outside. The first pass of an
+  utterance still fires promptly so the caption stays responsive;
+  refreshes now need a real chunk of new speech
+  (`hearing_preview_min_new_seconds`, default 1.5s).
+
+*Internal thoughts (requested):* a reply sentence written entirely in
+parentheses is a thought -- shown in the console, never spoken -- so
+Argus can put the play-by-play on screen instead of narrating every step
+aloud. Rendered dimmed and italic so it's obvious what was actually said
+out loud. `_is_thought` requires the opening paren to close on the very
+last character, so an ordinary sentence like "(a) and (b) are both fine."
+isn't silently swallowed. This also needed a sentence-splitter fix: it
+only broke on whitespace directly after `.!?`, so `(A thought.) Then
+speech.` never split at that boundary and arrived as one sentence. It now
+also breaks after a closing bracket or quote, which fixes the same
+long-standing miss for quoted sentences.
+
+491 tests pass; pyflakes clean across `src` and `tests`.
+
 **Fixed live, 2026-08-28 (self-editing path resolution refused an
 unambiguous relative path, and a directory read leaked a raw OS error)**:
 reported live -- Argus had already found and diagnosed the mouth-
