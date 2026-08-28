@@ -10,6 +10,20 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (a transient audio-device error crashed the
+whole process)**: reported live -- a `sounddevice.PortAudioError:
+Unanticipated host error [PaErrorCode -9999]: 'There is no driver
+installed on your system.'` raised out of `stream.read()` mid-listen and
+killed the entire Argus process, full traceback to the terminal. This
+class of error is inherently transient (a Bluetooth mic dropping out,
+another app briefly grabbing exclusive access, a sleep/resume cycle) --
+the fix isn't to prevent it, it's to not let one bad read kill the whole
+session. Both places in `voice/loop.py` that block on live mic reads
+(the wake-word listen and the follow-up-window listen) now catch
+`sd.PortAudioError` specifically, log it, wait 3s, and loop back to try
+again with a fresh `InputStream` -- the same "worth a beat, not a crash"
+philosophy as the existing barge-in-watcher and restart-flush fixes.
+
 **Added, 2026-08-28 (skip embedding filler turns -- second piece of the
 memory system's "stay cheap and relevant" goal)**: `remember_turn` used to
 embed every single turn indiscriminately, confirmed by an earlier live

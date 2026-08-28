@@ -5,6 +5,7 @@ import threading
 import time
 
 import numpy as np
+import sounddevice as sd
 from rich.console import Console
 
 from argus.config import settings
@@ -355,6 +356,20 @@ class VoiceLoop:
                 stop_watcher.set()
             except KeyboardInterrupt:
                 break
+            except sd.PortAudioError:
+                # Confirmed live as a real crash: a transient audio-device
+                # hiccup (Bluetooth mic dropping out, another app grabbing
+                # exclusive access, a sleep/resume cycle) raised all the way
+                # out of stream.read() and killed the whole process instead
+                # of just this one listen attempt. The InputStream context
+                # manager inside listen_for_wake_and_command has already
+                # closed the broken stream by the time this is caught --
+                # opening a fresh one next iteration is enough to recover
+                # once the device is available again.
+                log.exception("Audio device error while listening for the wake word -- retrying")
+                console.print("[red](audio device error -- retrying in a few seconds)[/red]\n")
+                time.sleep(3.0)
+                continue
 
             # The wake-word-triggered command is always explicit intent --
             # no addressee check needed. wake_command_text is only ever set
@@ -390,7 +405,16 @@ class VoiceLoop:
                 })
                 followup_chunks: list = []
                 stop_watcher = self._start_hearing_watcher(followup_chunks)
-                followup = record_followup(settings.followup_window_seconds, chunks_out=followup_chunks)
+                try:
+                    followup = record_followup(settings.followup_window_seconds, chunks_out=followup_chunks)
+                except sd.PortAudioError:
+                    # Same transient audio-device recovery as the wake-word
+                    # listen above -- don't let it crash the whole process.
+                    stop_watcher.set()
+                    log.exception("Audio device error during follow-up listening -- retrying")
+                    console.print("[red](audio device error -- retrying in a few seconds)[/red]\n")
+                    time.sleep(3.0)
+                    break
                 stop_watcher.set()
                 if followup is None:
                     console.print("[dim](back to wake-word listening)[/dim]\n")
