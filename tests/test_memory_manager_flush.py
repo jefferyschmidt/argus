@@ -1,5 +1,5 @@
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 
 from argus.memory.manager import MemoryManager
 

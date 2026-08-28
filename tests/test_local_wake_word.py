@@ -1,7 +1,6 @@
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
 
 from argus.voice.local_wake_word import _FRAME_SAMPLES, LocalWakeWordListener, _WAKE_PATTERN
 

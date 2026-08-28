@@ -66,8 +66,3 @@ def unsubscribe(q: queue.Queue) -> None:
     with _lock:
         if q in _subscribers:
             _subscribers.remove(q)
-
-
-def has_subscribers() -> bool:
-    with _lock:
-        return len(_subscribers) > 0

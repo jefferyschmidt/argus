@@ -1,4 +1,3 @@
-import threading
 from unittest.mock import MagicMock
 
 from argus.ui import commands as ui_commands

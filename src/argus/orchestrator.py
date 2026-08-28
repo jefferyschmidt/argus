@@ -415,8 +415,3 @@ def _extract_markers(text: str) -> tuple[str, str | None, str | None]:
         elif kind == "EXPRESSION" and value.lower() in _VALID_EXPRESSIONS:
             expression = value.lower()
     return "\n".join(body_lines).strip(), core_memory, expression
-
-
-def _extract_core_memory(text: str) -> tuple[str, str | None]:
-    body, core_memory, _ = _extract_markers(text)
-    return body, core_memory

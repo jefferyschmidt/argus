@@ -1,6 +1,6 @@
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from argus.ui import commands as ui_commands
 from argus.voice.loop import VoiceLoop

@@ -46,48 +46,13 @@ def record_while(should_continue, chunks_out: list | None = None) -> np.ndarray:
     return np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)
 
 
-def record_until_silence(chunks_out: list | None = None) -> np.ndarray:
-    """Records from the default mic until the user stops talking (simple
-    energy-based VAD -- good enough for a quiet room, not robust to constant
-    background noise). Returns int16 mono samples at settings.audio_sample_rate.
-
-    chunks_out: see record_while."""
-    sr = settings.audio_sample_rate
-    frame_len = int(sr * FRAME_MS / 1000)
-    silence_hang_frames = _SILENCE_HANG_MS // FRAME_MS
-    max_frames = (_MAX_RECORD_SECONDS * 1000) // FRAME_MS
-
-    chunks: list[np.ndarray] = []
-    silence_run = 0
-    heard_speech = False
-
-    with sd.InputStream(samplerate=sr, channels=1, dtype="int16", blocksize=frame_len) as stream:
-        for _ in range(int(max_frames)):
-            frame, _ = stream.read(frame_len)
-            frame = frame.reshape(-1)
-            chunks.append(frame)
-            if chunks_out is not None:
-                chunks_out.append(frame)
-
-            rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
-            if rms > settings.voice_silence_rms_threshold:
-                heard_speech = True
-                silence_run = 0
-            elif heard_speech:
-                silence_run += 1
-                if silence_run >= silence_hang_frames:
-                    break
-
-    return np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)
-
-
 def record_followup(
     timeout_seconds: float, chunks_out: list | None = None, should_stop=None
 ) -> np.ndarray | None:
     """Listens (no wake word needed) for up to timeout_seconds for the user
     to start talking. Returns None if nothing was said in time -- caller
     should fall back to requiring the wake word again. If speech starts,
-    records until silence same as record_until_silence, with no separate
+    then keeps recording until a sustained silence, with no separate
     timeout on the rest of the utterance.
 
     chunks_out: see record_while.

@@ -165,10 +165,10 @@ def test_uid_below_baseline_is_skipped_even_if_unseen():
     speak_fn.assert_not_called()
 
 
-def test_already_announced_uid_is_not_reprocessed():
+def test_already_triaged_uid_is_not_reprocessed():
     worker, speak_fn = _worker(["IMPORTANT"])
     worker._baseline_uid["Gmail"] = 1
-    worker._announced_uids.add(("Gmail", b"5"))
+    worker._triaged_uids.add(("Gmail", b"5"))
 
     fake_conn = MagicMock()
     fake_conn.uid.return_value = ("OK", [b"5"])
@@ -202,5 +202,83 @@ def test_new_uid_above_baseline_is_fetched_and_triaged():
         worker._check_account({"name": "Gmail", "host": "imap.gmail.com"}, "user@gmail.com", "app-password")
 
     fake_conn.logout.assert_called_once()
-    assert ("Gmail", b"9") in worker._announced_uids
+    assert ("Gmail", b"9") in worker._triaged_uids
     speak_fn.assert_not_called()  # IGNORE verdict
+
+
+def test_important_mail_arriving_while_busy_is_retried_not_dropped():
+    """The UID is marked triaged before delivery (triage costs real LLM
+    calls and must never re-run for the same message) -- so an important
+    email that landed while Argus was mid-conversation used to be marked
+    handled and then never announced at all. It must be held and retried."""
+    worker, speak_fn = _worker(["IMPORTANT"])
+    worker._baseline_uid["Gmail"] = 1
+    worker._interaction_lock.acquire()  # Argus is busy talking
+
+    msg = MIMEText("please review the contract", "plain")
+    msg["From"] = "boss@company.com"
+    msg["Subject"] = "Need this today"
+    raw = msg.as_bytes()
+
+    fake_conn = MagicMock()
+    def uid_side_effect(command, *args):
+        if command == "search":
+            return ("OK", [b"9"])
+        if command == "fetch":
+            return ("OK", [(b"9 (BODY[])", raw)])
+        raise AssertionError(f"unexpected uid command: {command}")
+    fake_conn.uid.side_effect = uid_side_effect
+
+    with patch("argus.email_watcher.imaplib.IMAP4_SSL", return_value=fake_conn):
+        worker._check_account({"name": "Gmail", "host": "imap.gmail.com"}, "user@gmail.com", "app-password")
+
+    speak_fn.assert_not_called()             # couldn't announce -- Argus was busy
+    assert len(worker._pending_delivery) == 1  # but it was kept, not dropped
+
+    # Argus frees up; the next poll announces it without re-triaging.
+    worker._interaction_lock.release()
+    worker._flush_pending_delivery()
+
+    speak_fn.assert_called_once()
+    assert "boss@company.com" in speak_fn.call_args[0][0]
+    assert worker._pending_delivery == []
+    # Triage ran exactly once across both attempts.
+    assert worker.orchestrator.router.local.complete.call_count == 1
+
+
+def test_pending_delivery_stays_queued_while_argus_remains_busy():
+    worker, speak_fn = _worker([])
+    worker._interaction_lock.acquire()
+    worker._pending_delivery.append(
+        _EmailSummary(account="Gmail", sender="x@y.com", subject="s", body="b")
+    )
+
+    worker._flush_pending_delivery()
+
+    speak_fn.assert_not_called()
+    assert len(worker._pending_delivery) == 1
+
+
+def test_unimportant_mail_is_never_queued_for_delivery():
+    worker, speak_fn = _worker(["IGNORE"])
+    worker._baseline_uid["Gmail"] = 1
+
+    msg = MIMEText("just a newsletter", "plain")
+    msg["From"] = "news@example.com"
+    msg["Subject"] = "This week's digest"
+    raw = msg.as_bytes()
+
+    fake_conn = MagicMock()
+    def uid_side_effect(command, *args):
+        if command == "search":
+            return ("OK", [b"9"])
+        if command == "fetch":
+            return ("OK", [(b"9 (BODY[])", raw)])
+        raise AssertionError(f"unexpected uid command: {command}")
+    fake_conn.uid.side_effect = uid_side_effect
+
+    with patch("argus.email_watcher.imaplib.IMAP4_SSL", return_value=fake_conn):
+        worker._check_account({"name": "Gmail", "host": "imap.gmail.com"}, "user@gmail.com", "app-password")
+
+    assert worker._pending_delivery == []
+    speak_fn.assert_not_called()

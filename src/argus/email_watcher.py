@@ -153,7 +153,7 @@ class EmailWatcher:
     old messages, not new arrivals, and triaging that backlog on first
     connect would be slow, expensive, and not what "tell me about new
     mail" means. Only mail that arrives at or after that baseline is ever
-    considered. Also tracks which UIDs it has already announced in memory
+    considered. Also tracks which UIDs it has already triaged in memory
     (not persisted) so a restart re-triages recent unseen mail once, not
     the same message forever, but also won't remember across restarts --
     acceptable for a first pass; not a guarantee against ever repeating."""
@@ -162,8 +162,13 @@ class EmailWatcher:
         self.orchestrator = orchestrator
         self._speak_fn = speak_fn
         self._interaction_lock = interaction_lock
-        self._announced_uids: set[tuple[str, bytes]] = set()
+        self._triaged_uids: set[tuple[str, bytes]] = set()
         self._baseline_uid: dict[str, int] = {}
+        # Triaged as important but not actually announced yet, because
+        # Argus was mid-conversation at the time (_deliver takes the
+        # interaction lock non-blocking and gives up rather than barging
+        # in). Retried at the top of every poll -- see check_now.
+        self._pending_delivery: list[_EmailSummary] = []
 
     def run(self) -> None:
         while True:
@@ -172,7 +177,16 @@ class EmailWatcher:
                 continue
             self.check_now()
 
+    def _flush_pending_delivery(self) -> None:
+        if not self._pending_delivery:
+            return
+        self._pending_delivery = [s for s in self._pending_delivery if not self._deliver(s)]
+
     def check_now(self) -> None:
+        # Anything important we couldn't announce last time goes first --
+        # its UID is already marked triaged and will never be looked at
+        # again, so without this it would be dropped outright.
+        self._flush_pending_delivery()
         for account in _ACCOUNTS:
             user = getattr(settings, account["user_setting"])
             password = getattr(settings, account["password_setting"])
@@ -209,14 +223,21 @@ class EmailWatcher:
                 if int(uid) < baseline:
                     continue
                 key = (account["name"], uid)
-                if key in self._announced_uids:
+                if key in self._triaged_uids:
                     continue
-                self._announced_uids.add(key)
                 summary = self._fetch_summary(conn, account["name"], uid)
                 if summary is None:
                     continue
-                if self._is_important(summary):
-                    self._deliver(summary)
+                # Marked before delivery, deliberately: triage costs one or
+                # two LLM calls, so it must never re-run for this UID. But
+                # marking it was ALSO the old bug -- _deliver silently
+                # no-ops when Argus is mid-conversation, so an important
+                # email that landed at a busy moment was marked handled and
+                # then never announced at all. Undelivered ones are queued
+                # for the next poll instead of being dropped.
+                self._triaged_uids.add(key)
+                if self._is_important(summary) and not self._deliver(summary):
+                    self._pending_delivery.append(summary)
         finally:
             try:
                 conn.logout()
@@ -260,13 +281,17 @@ class EmailWatcher:
             return "UNSURE"
         return "IGNORE"
 
-    def _deliver(self, summary: _EmailSummary) -> None:
+    def _deliver(self, summary: _EmailSummary) -> bool:
+        """Returns whether it actually got announced -- False means Argus
+        was mid-conversation and the caller should hold onto this summary
+        and try again later rather than treating it as handled."""
         text = f"You've got an email from {summary.sender} about \"{summary.subject}\" that looks like it needs attention."
         if not self._interaction_lock.acquire(blocking=False):
-            return
+            return False
         try:
             ui_events.publish({"type": "transcript", "role": "argus", "text": text})
             ui_events.publish({"type": "caption", "text": text})
             self._speak_fn(text)
         finally:
             self._interaction_lock.release()
+        return True

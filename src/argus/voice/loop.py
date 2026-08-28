@@ -323,6 +323,27 @@ class VoiceLoop:
         self._refresh_hot_mic()
         return interrupted
 
+    def _acknowledge(self, note: str, confirmation: str) -> bool:
+        """One spoken acknowledgement for the built-in voice commands
+        handled directly in _process_utterance (quiet mode, email watch,
+        proactive check-ins, journaling) -- console line, transcript +
+        caption events, then the reply itself. Always returns True, the
+        "handled, keep the conversation open" result every one of those
+        branches wants.
+
+        Routed through _speak_and_open_mic, not _speak_with_barge_in, so
+        these behave like everything else Argus says out loud: recorded
+        into memory, and opening the same hands-free follow-up window. They
+        previously did neither -- so "quiet mode off" -> "Back with you"
+        still needed the wake word to reply to, and Argus kept no record of
+        having said it, the same gap already fixed for the background
+        workers' proactive speech."""
+        console.print(f"[dim]({note})[/dim]\n")
+        ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
+        ui_events.publish({"type": "caption", "text": confirmation})
+        self._speak_and_open_mic(confirmation)
+        return True
+
     def _wait_while_listening_paused(self) -> None:
         """Blocks here, doing no audio capture or transcription at all,
         for as long as "Stop listening" is active -- this is the real
@@ -349,36 +370,36 @@ class VoiceLoop:
                 break
 
             ui_events.publish({"type": "state", "value": "listening", "mode": "wake_word"})
+
+            def _on_wake():
+                console.print("[green](wake word heard, listening...)[/green]")
+                ui_events.publish({"type": "state", "value": "listening", "mode": "command"})
+                self._refresh_hot_mic()
+                from argus.voice.chime import play_listening_chime
+                play_listening_chime()
+
+            def _on_checking():
+                # The local engine only knows whether it heard the wake
+                # word AFTER transcribing the whole utterance -- a real,
+                # noticeable few seconds on CPU, longer the very first
+                # time (the model loads lazily). Without this, the
+                # console just kept showing "waiting for the wake word"
+                # the entire time real speech was already captured and
+                # being checked -- confirmed live, reported as "it heard
+                # me but isn't doing anything."
+                console.print("[dim](checking what was heard...)[/dim]")
+                ui_events.publish({"type": "state", "value": "listening", "mode": "confirming"})
+
+            wake_chunks: list = []
+            via_hot_mic: list = []
+            stop_watcher = self._start_hearing_watcher(wake_chunks)
             try:
-                def _on_wake():
-                    console.print("[green](wake word heard, listening...)[/green]")
-                    ui_events.publish({"type": "state", "value": "listening", "mode": "command"})
-                    self._refresh_hot_mic()
-                    from argus.voice.chime import play_listening_chime
-                    play_listening_chime()
-
-                def _on_checking():
-                    # The local engine only knows whether it heard the wake
-                    # word AFTER transcribing the whole utterance -- a real,
-                    # noticeable few seconds on CPU, longer the very first
-                    # time (the model loads lazily). Without this, the
-                    # console just kept showing "waiting for the wake word"
-                    # the entire time real speech was already captured and
-                    # being checked -- confirmed live, reported as "it heard
-                    # me but isn't doing anything."
-                    console.print("[dim](checking what was heard...)[/dim]")
-                    ui_events.publish({"type": "state", "value": "listening", "mode": "confirming"})
-
-                wake_chunks: list = []
-                via_hot_mic: list = []
-                stop_watcher = self._start_hearing_watcher(wake_chunks)
                 samples, wake_command_text = self.wake_word.listen_for_wake_and_command(
                     on_wake=_on_wake, chunks_out=wake_chunks, on_checking=_on_checking,
                     hot_mic_check=self._hot_mic_active,
                     should_stop=ui_commands.is_listening_paused,
                     via_hot_mic_out=via_hot_mic,
                 )
-                stop_watcher.set()
             except KeyboardInterrupt:
                 break
             except ListeningPaused:
@@ -391,7 +412,6 @@ class VoiceLoop:
                 # stream immediately; looping back to the top re-enters
                 # _wait_while_listening_paused(), which blocks with no
                 # stream open at all until resumed.
-                stop_watcher.set()
                 continue
             except sd.PortAudioError:
                 # Confirmed live as a real crash: a transient audio-device
@@ -407,6 +427,15 @@ class VoiceLoop:
                 console.print("[red](audio device error -- retrying in a few seconds)[/red]\n")
                 time.sleep(3.0)
                 continue
+            finally:
+                # Every exit path, not just the happy one -- this was a real
+                # thread leak: the PortAudioError branch above used to skip
+                # stopping the watcher, abandoning a live daemon thread that
+                # kept re-transcribing the stale wake_chunks buffer every
+                # ~600ms (publishing bogus "hearing" captions off it) for
+                # the rest of the process's life, one more leaked every time
+                # the audio device hiccuped.
+                stop_watcher.set()
 
             # A genuine wake-word match is always explicit intent -- no
             # addressee check needed. But a hot-mic-window capture (see
@@ -623,69 +652,46 @@ class VoiceLoop:
             return True
         if ui_commands.is_quiet_mode() and any(phrase in lowered for phrase in _QUIET_MODE_OFF_PHRASES):
             ui_commands.set_quiet_mode(False)
-            console.print("[dim](quiet mode off)[/dim]\n")
             ui_events.publish({"type": "quiet_mode", "value": False})
-            confirmation = "Back with you -- I can talk again."
-            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
-            ui_events.publish({"type": "caption", "text": confirmation})
-            self._speak_with_barge_in(confirmation)  # now actually audible -- proves quiet mode is really off
-            return True
+            # Spoken, not just printed -- being audible again is itself the
+            # proof that quiet mode really is off.
+            return self._acknowledge("quiet mode off", "Back with you -- I can talk again.")
 
         if any(phrase in lowered for phrase in _SUPPRESS_CONTEXT_PHRASES):
             self.context_awareness.suppress_current()
-            console.print("[dim](won't bring that up again for this window)[/dim]\n")
-            confirmation = "Got it, I won't bring that up again."
-            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
-            ui_events.publish({"type": "caption", "text": confirmation})
-            self._speak_with_barge_in(confirmation)
-            return True
+            return self._acknowledge(
+                "won't bring that up again for this window", "Got it, I won't bring that up again."
+            )
         if any(phrase in lowered for phrase in _PROACTIVE_CONTEXT_OFF_PHRASES):
             ui_commands.set_proactive_context_enabled(False)
-            console.print("[dim](proactive check-ins off)[/dim]\n")
-            confirmation = "Okay, I'll stay quiet unless you talk to me first."
-            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
-            ui_events.publish({"type": "caption", "text": confirmation})
-            self._speak_with_barge_in(confirmation)
-            return True
+            return self._acknowledge(
+                "proactive check-ins off", "Okay, I'll stay quiet unless you talk to me first."
+            )
         if any(phrase in lowered for phrase in _PROACTIVE_CONTEXT_ON_PHRASES):
             ui_commands.set_proactive_context_enabled(True)
-            console.print("[dim](proactive check-ins on)[/dim]\n")
-            confirmation = "Will do -- I'll speak up if something seems worth mentioning."
-            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
-            ui_events.publish({"type": "caption", "text": confirmation})
-            self._speak_with_barge_in(confirmation)
-            return True
+            return self._acknowledge(
+                "proactive check-ins on", "Will do -- I'll speak up if something seems worth mentioning."
+            )
 
         journal_match = _JOURNAL_TRIGGER.match(text.strip())
         if journal_match:
             return self._handle_journal_trigger(journal_match.group(2).strip())
 
         if any(phrase in lowered for phrase in _EMAIL_CHECK_PHRASES):
-            console.print("[dim](checking email...)[/dim]\n")
-            confirmation = "Checking now -- I'll let you know if anything looks important."
-            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
-            ui_events.publish({"type": "caption", "text": confirmation})
-            self._speak_with_barge_in(confirmation)
             # Runs in the background -- IMAP round-trips can take a few
             # seconds, no reason to hold the conversation open for it.
             threading.Thread(target=self.email_watcher.check_now, daemon=True).start()
-            return True
+            return self._acknowledge(
+                "checking email...", "Checking now -- I'll let you know if anything looks important."
+            )
         if any(phrase in lowered for phrase in _EMAIL_WATCH_OFF_PHRASES):
             ui_commands.set_email_watch_enabled(False)
-            console.print("[dim](email watch off)[/dim]\n")
-            confirmation = "Okay, I'll stop checking your email."
-            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
-            ui_events.publish({"type": "caption", "text": confirmation})
-            self._speak_with_barge_in(confirmation)
-            return True
+            return self._acknowledge("email watch off", "Okay, I'll stop checking your email.")
         if any(phrase in lowered for phrase in _EMAIL_WATCH_ON_PHRASES):
             ui_commands.set_email_watch_enabled(True)
-            console.print("[dim](email watch on)[/dim]\n")
-            confirmation = "Will do -- I'll keep an eye on your email again."
-            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
-            ui_events.publish({"type": "caption", "text": confirmation})
-            self._speak_with_barge_in(confirmation)
-            return True
+            return self._acknowledge(
+                "email watch on", "Will do -- I'll keep an eye on your email again."
+            )
 
         self._refresh_hot_mic()
 
@@ -752,6 +758,25 @@ class VoiceLoop:
             return self._resume_after_interruption(pending_unspoken)
         return True
 
+    def _listen_briefly(self, timeout: float, chunks_out: list | None = None):
+        """record_followup that never raises. Both callers below sit inside
+        _process_utterance, which run() invokes OUTSIDE its own
+        sd.PortAudioError handler -- so an audio-device hiccup during one
+        of these listens used to propagate all the way out of run() and
+        kill the process, the same crash already fixed for the wake-word
+        and follow-up listens. Also honors "Stop listening" mid-capture
+        (these two were the last record_followup call sites that didn't),
+        reporting either case the same way as genuine silence: None."""
+        try:
+            return record_followup(
+                timeout, chunks_out=chunks_out, should_stop=ui_commands.is_listening_paused
+            )
+        except ListeningPaused:
+            return None
+        except sd.PortAudioError:
+            log.exception("Audio device error while listening -- treating as nothing heard")
+            return None
+
     def _speak_sentences(self, sentences: list[str]) -> list[str]:
         """Speaks each sentence via the barge-in-aware player in order.
         Returns the sentences (the interrupted one plus anything after it,
@@ -780,8 +805,10 @@ class VoiceLoop:
         console.print("[dim](confirming interruption...)[/dim]")
         chunks_out: list = []
         stop_watcher = self._start_hearing_watcher(chunks_out)
-        heard = record_followup(min(settings.followup_window_seconds, 3.0), chunks_out=chunks_out)
-        stop_watcher.set()
+        try:
+            heard = self._listen_briefly(min(settings.followup_window_seconds, 3.0), chunks_out=chunks_out)
+        finally:
+            stop_watcher.set()
 
         if heard is not None:
             text = self.transcriber.transcribe(heard)
@@ -815,16 +842,15 @@ class VoiceLoop:
         ui_events.publish({"type": "caption", "text": prompt_text})
         self._speak_with_barge_in(prompt_text)
 
-        entry_audio = record_followup(20.0)
+        entry_audio = self._listen_briefly(20.0)
         entry_text = self.transcriber.transcribe(entry_audio) if entry_audio is not None else ""
         if entry_text:
             self._save_journal_entry(entry_text)
         else:
-            console.print("[dim](didn't catch a journal entry)[/dim]\n")
-            confirmation = "Didn't catch that -- say 'note to self' again whenever you're ready."
-            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
-            ui_events.publish({"type": "caption", "text": confirmation})
-            self._speak_with_barge_in(confirmation)
+            self._acknowledge(
+                "didn't catch a journal entry",
+                "Didn't catch that -- say 'note to self' again whenever you're ready.",
+            )
         return True
 
     def _save_journal_entry(self, text: str) -> None:
@@ -837,11 +863,7 @@ class VoiceLoop:
         finally:
             conn.close()
 
-        console.print(f"[dim](journal entry saved: {text})[/dim]\n")
-        confirmation = "Got it, logged."
-        ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
-        ui_events.publish({"type": "caption", "text": confirmation})
-        self._speak_with_barge_in(confirmation)
+        self._acknowledge(f"journal entry saved: {text}", "Got it, logged.")
 
     def _speak_with_barge_in(self, text: str) -> bool:
         """Synthesizes and plays one sentence. Returns True if barge-in
@@ -954,9 +976,6 @@ class VoiceLoop:
         return interrupted
 
     def _watch_for_barge_in(self, stop_event: threading.Event, play_thread: threading.Thread) -> bool:
-        import numpy as np
-        import sounddevice as sd
-
         hot_mic = self._hot_mic_active()
         # The local wake-word engine has no per-frame classifier at all
         # (see LocalWakeWordListener) -- it only ever knows the wake word

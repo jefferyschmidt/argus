@@ -22,20 +22,6 @@ class WakeWordListener:
         openwakeword.utils.download_models()
         self._model = Model(wakeword_models=[settings.openwakeword_model_name])
 
-    def wait_for_wake(self) -> None:
-        """Standalone wake-word wait, kept for tests/tools that only need
-        this. voice/loop.py uses listen_for_wake_and_command() instead so
-        there's no stream-reopen gap between wake detection and recording."""
-        self._model.reset()
-        with sd.InputStream(
-            samplerate=16000, channels=1, dtype="int16", blocksize=_CHUNK_SAMPLES
-        ) as stream:
-            while True:
-                frame, _ = stream.read(_CHUNK_SAMPLES)
-                scores = self._model.predict(frame.reshape(-1))
-                if any(score > settings.wake_word_threshold for score in scores.values()):
-                    return
-
     def listen_for_wake_and_command(
         self, on_wake=None, chunks_out: list | None = None, on_checking=None, hot_mic_check=None,
         should_stop=None, via_hot_mic_out: list | None = None,

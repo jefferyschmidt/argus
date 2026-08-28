@@ -111,7 +111,11 @@ def test_one_topic_failure_does_not_block_others(conn, db_path):
     assert router.complete_with_tools.call_count == 2
 
 
-def test_non_blocking_lock_drops_delivery_when_busy(conn, db_path):
+def test_delivery_is_deferred_not_dropped_when_busy(conn, db_path):
+    """Never barges into an in-progress conversation -- but the finding is
+    already recorded as the topic's last_digest by then, so the next check
+    treats it as prior context and won't re-report it. Dropping it here
+    meant losing it outright; it has to be queued and retried."""
     store = ResearchTopicStore(conn)
     store.add("topic a")
     worker, router, speak_fn = _worker("Something new.")
@@ -121,3 +125,35 @@ def test_non_blocking_lock_drops_delivery_when_busy(conn, db_path):
         worker.check_now()
 
     speak_fn.assert_not_called()
+    assert worker._pending_delivery == [("topic a", "Something new.")]
+
+    # Argus frees up -- the next poll announces it without re-searching.
+    worker._interaction_lock.release()
+    worker._flush_pending_delivery()
+
+    speak_fn.assert_called_once_with("Something new.")
+    assert worker._pending_delivery == []
+    assert router.complete_with_tools.call_count == 1
+
+
+def test_pending_finding_stays_queued_while_argus_remains_busy(conn, db_path):
+    worker, router, speak_fn = _worker("Something new.")
+    worker._interaction_lock.acquire()
+    worker._pending_delivery.append(("topic a", "Something new."))
+
+    worker._flush_pending_delivery()
+
+    speak_fn.assert_not_called()
+    assert worker._pending_delivery == [("topic a", "Something new.")]
+
+
+def test_none_reply_is_never_queued_for_delivery(conn, db_path):
+    store = ResearchTopicStore(conn)
+    store.add("topic a")
+    worker, router, speak_fn = _worker("NONE")
+
+    with _patched_get_connection(db_path):
+        worker.check_now()
+
+    speak_fn.assert_not_called()
+    assert worker._pending_delivery == []

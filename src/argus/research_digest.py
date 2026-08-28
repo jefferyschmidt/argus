@@ -47,6 +47,10 @@ class ResearchDigestWorker:
         self._speak_fn = speak_fn
         self._interaction_lock = interaction_lock
         self._empty_registry = ToolRegistry()
+        # (topic, text) findings already recorded as told but not actually
+        # announced yet, because Argus was mid-conversation at the time.
+        # Retried at the top of every poll -- see check_now.
+        self._pending_delivery: list[tuple[str, str]] = []
 
     def run(self) -> None:
         while True:
@@ -58,9 +62,21 @@ class ResearchDigestWorker:
             except Exception:
                 log.exception("Research digest check failed")
 
+    def _flush_pending_delivery(self) -> None:
+        if not self._pending_delivery:
+            return
+        self._pending_delivery = [
+            (topic, text) for topic, text in self._pending_delivery if not self._deliver(topic, text)
+        ]
+
     def check_now(self) -> None:
         from argus.memory.research_topics import ResearchTopicStore
         from argus.memory.store import get_connection
+
+        # Findings we couldn't announce last time go first -- record_check
+        # below has already stored them as the topic's last_digest, so
+        # without this they'd be treated as already-told and never spoken.
+        self._flush_pending_delivery()
 
         conn = get_connection()
         try:
@@ -96,15 +112,26 @@ class ResearchDigestWorker:
         finally:
             conn.close()
 
-        if not is_none:
-            self._deliver(topic["topic"], text)
-
-    def _deliver(self, topic: str, text: str) -> None:
-        if not self._interaction_lock.acquire(blocking=False):
+        if is_none:
             return
+        # record_check above already stored this as the topic's last_digest
+        # (so the next check treats it as prior context and won't re-report
+        # it) -- if we couldn't announce it right now because Argus was
+        # mid-conversation, holding it for the next poll is the difference
+        # between "told a bit late" and "silently never told at all".
+        if not self._deliver(topic["topic"], text):
+            self._pending_delivery.append((topic["topic"], text))
+
+    def _deliver(self, topic: str, text: str) -> bool:
+        """Returns whether it actually got announced -- False means Argus
+        was mid-conversation and the caller should hold onto this finding
+        and retry rather than treating it as delivered."""
+        if not self._interaction_lock.acquire(blocking=False):
+            return False
         try:
             ui_events.publish({"type": "transcript", "role": "argus", "text": text})
             ui_events.publish({"type": "caption", "text": text})
             self._speak_fn(text)
         finally:
             self._interaction_lock.release()
+        return True
