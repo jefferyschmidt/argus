@@ -10,6 +10,20 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (two follow-ups on the "show me" window, caught
+during live testing right after it shipped)**: (1) "he doesn't seem to be
+able to close the show window when asked" -- true: closing was wired as
+purely a client-side interaction (X button, backdrop click, Escape), with
+no way for Argus himself to close it. Added `close_show_window` (new
+tool, publishes a `show_modal_close` event) and a matching front-end
+handler. (2) "show me what you see on the camera almost worked... it
+showed up as a thumbnail under visual output, but not anywhere else" --
+`capture_camera`'s stylized view was routed through the small incidental-
+capture strip instead of the large show window; "show me what you see on
+the camera" is unambiguously a "show me" request, same family as "show me
+a picture of X." Switched it to publish a `show_modal` event, same as
+fetch_image/show_website.
+
 **Added live, 2026-08-28 (loudness as an addressee signal, a "show me"
 window, and a computer-vision-style camera default)**: three separate
 live requests.

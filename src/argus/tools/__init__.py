@@ -49,7 +49,7 @@ from argus.tools.self_improve import (
     write_own_source_tool,
 )
 from argus.tools.undo import list_recent_writes_tool, undo_last_write_tool
-from argus.tools.web_content import fetch_image_tool, show_website_tool
+from argus.tools.web_content import close_show_window_tool, fetch_image_tool, show_website_tool
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +71,7 @@ def build_default_registry(router=None) -> ToolRegistry:
         open_app_tool,
         fetch_image_tool,
         show_website_tool,
+        close_show_window_tool,
         set_reminder_tool,
         list_reminders_tool,
         cancel_reminder_tool,

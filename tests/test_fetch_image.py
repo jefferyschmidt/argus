@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
-from argus.tools.web_content import _fetch_image, _show_website
+from argus.tools.web_content import _close_show_window, _fetch_image, _show_website
 
 
 def _fake_source_bytes(size=(4, 4)) -> bytes:
@@ -125,3 +125,13 @@ def test_network_failure_returns_error_string():
     with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
         result = _fetch_image({"url": "https://example.com/photo.jpg"})
     assert result.startswith("error:")
+
+
+def test_close_show_window_publishes_a_close_event():
+    """Confirmed live as a real gap: no way to close the show window
+    except a manual click in the console itself."""
+    with patch("argus.tools.web_content.ui_events.publish") as mock_publish:
+        result = _close_show_window({})
+
+    mock_publish.assert_called_once_with({"type": "show_modal_close"})
+    assert "Closed" in result

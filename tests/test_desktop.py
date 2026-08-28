@@ -99,7 +99,11 @@ def test_stylize_vision_returns_same_shape_black_canvas_with_edges():
 
 def test_capture_camera_publishes_stylized_view_by_default_not_raw():
     """Confirmed directly requested: show a computer-vision-style rendering
-    by default, never the literal photo unless specifically asked."""
+    by default, never the literal photo unless specifically asked. Also
+    confirmed live: this must use the large show window (same as
+    fetch_image/show_website), not the small incidental-capture strip --
+    "show me what you see on the camera" is unambiguously a "show me"
+    request."""
     import numpy as np
 
     mock_cap = MagicMock()
@@ -113,8 +117,9 @@ def test_capture_camera_publishes_stylized_view_by_default_not_raw():
 
     mock_publish.assert_called_once()
     event = mock_publish.call_args[0][0]
-    assert event["type"] == "tool_call"
-    assert event["name"] == "camera view (computer vision)"
+    assert event["type"] == "show_modal"
+    assert event["kind"] == "image"
+    assert "computer vision" in event["title"]
     assert "image" in event
 
 
@@ -131,7 +136,7 @@ def test_capture_camera_publishes_raw_view_when_explicitly_requested():
         _capture_camera({"raw": True})
 
     event = mock_publish.call_args[0][0]
-    assert event["name"] == "capture_camera"
+    assert "computer vision" not in event["title"]
 
 
 def test_capture_camera_returns_the_real_frame_to_the_model_even_when_stylized_for_display():

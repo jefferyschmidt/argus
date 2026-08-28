@@ -829,6 +829,7 @@
       else if (event.type === "confirm_request") addConfirmCard(event.id, event.tool_name, event.tool_input);
       else if (event.type === "confirm_resolved") removeConfirmCard(event.id);
       else if (event.type === "show_modal") openShowModal(event);
+      else if (event.type === "show_modal_close") closeShowModal();
     };
   }
 

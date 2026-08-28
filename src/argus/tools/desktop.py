@@ -49,10 +49,15 @@ def _capture_camera(args: dict) -> bytes | str:
     to a frontier model without the user explicitly saying yes each time.
 
     What's DISPLAYED in the console is a separate choice: publishes its
-    own image event here (stylized by default -- see _stylize_vision --
-    or the real frame when args["raw"] is true) instead of letting
-    Orchestrator._on_tool_call auto-display the raw bytes this returns,
-    which is deliberately skipped for this tool -- see its comment."""
+    own show_modal event here (stylized by default -- see _stylize_vision
+    -- or the real frame when args["raw"] is true), same large show
+    window fetch_image/show_website use -- confirmed live as a real gap:
+    a first version routed this to the small incidental-capture strip
+    instead, and "show me what you see on the camera" is unambiguously a
+    "show me" request, same family as "show me a picture of X." This is
+    instead of letting Orchestrator._on_tool_call auto-display the raw
+    bytes this returns, which is deliberately skipped for this tool --
+    see its comment."""
     import cv2
 
     cap = cv2.VideoCapture(0)
@@ -75,9 +80,9 @@ def _capture_camera(args: dict) -> bytes | str:
     ok, encoded_display = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
     if ok:
         ui_events.publish({
-            "type": "tool_call",
-            "name": "capture_camera" if raw else "camera view (computer vision)",
-            "tier": "confirm",
+            "type": "show_modal",
+            "kind": "image",
+            "title": "What Argus sees" if raw else "What Argus sees (computer vision)",
             "image": base64.b64encode(encoded_display.tobytes()).decode("ascii"),
         })
 

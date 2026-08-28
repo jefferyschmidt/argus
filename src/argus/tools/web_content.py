@@ -124,3 +124,22 @@ show_website_tool = Tool(
     tier=PermissionTier.ALLOW,
     handler=_show_website,
 )
+
+
+def _close_show_window(args: dict) -> str:
+    ui_events.publish({"type": "show_modal_close"})
+    return "Closed the show window."
+
+
+close_show_window_tool = Tool(
+    name="close_show_window",
+    description=(
+        "Closes the console's large show window (opened by fetch_image or show_website) -- "
+        "confirmed live as a real gap: there was previously no way to close it except a manual "
+        "click in the console itself. Use whenever the user asks to close it, or once its "
+        "content is no longer relevant to what's being discussed."
+    ),
+    input_schema={"type": "object", "properties": {}},
+    tier=PermissionTier.ALLOW,
+    handler=_close_show_window,
+)

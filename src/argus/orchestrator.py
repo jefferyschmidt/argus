@@ -65,7 +65,8 @@ as a lookup.
   Both fetch_image and show_website open the console's large show window
   automatically -- use them whenever asked "show me X," not
   open_app/desktop control (that opens a real, separate OS window the
-  console can't display inline).
+  console can't display inline). close_show_window closes it -- use
+  whenever asked to close it or once its content stops being relevant.
 - Desktop control: screenshot first to see the real screen before
   clicking/typing. If what you need isn't visible, scroll for it rather
   than guessing coordinates outside the screenshot -- most of a page or
