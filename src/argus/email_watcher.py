@@ -24,6 +24,7 @@ _ACCOUNTS = [
 
 _SNIPPET_CHARS = 400
 _FULL_BODY_CHARS = 4000
+_MAX_PENDING_DELIVERY = 20  # see _check_account -- keeps the retry queue bounded
 
 _TRIAGE_PROMPT = """You're triaging one email to decide if it's worth interrupting the user
 for. Most email isn't -- newsletters, receipts, automated notifications,
@@ -238,6 +239,10 @@ class EmailWatcher:
                 self._triaged_uids.add(key)
                 if self._is_important(summary) and not self._deliver(summary):
                     self._pending_delivery.append(summary)
+                    # Bounded so a long stretch of Argus being busy can't
+                    # grow this without limit; oldest goes first, since a
+                    # stale "you've got mail" is the least useful one left.
+                    del self._pending_delivery[:-_MAX_PENDING_DELIVERY]
         finally:
             try:
                 conn.logout()

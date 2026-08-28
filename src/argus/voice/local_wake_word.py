@@ -179,16 +179,28 @@ class LocalWakeWordListener:
                 if speech_ms < _MIN_SPEECH_MS_TO_TRANSCRIBE:
                     continue
 
-                if on_checking is not None:
-                    on_checking()
-                text = self._transcriber.transcribe_local(utterance)
-
+                # Checked BEFORE transcribing, deliberately. Inside an open
+                # hot-mic window this utterance is accepted regardless of
+                # whether it contains the wake word, so there is nothing the
+                # local transcript would be used for -- and transcribing
+                # locally is the single slowest step in the whole listening
+                # path (measured on this hardware: ~3.2s warm, ~8.2s on the
+                # first call while the model loads). Handing the raw samples
+                # back instead lets the caller transcribe once, hosted,
+                # which is both faster and more accurate -- and only if the
+                # utterance survives the addressee gate, so background
+                # chatter during a hot-mic window now costs nothing at all
+                # instead of a multi-second local transcription each time.
                 if hot_mic_check is not None and hot_mic_check():
                     if on_wake is not None:
                         on_wake()
                     if via_hot_mic_out is not None:
                         via_hot_mic_out.append(True)
-                    return utterance, (text.strip() or None)
+                    return utterance, None
+
+                if on_checking is not None:
+                    on_checking()
+                text = self._transcriber.transcribe_local(utterance)
 
                 end_idx = _find_wake_word(text)
                 if end_idx is None:
