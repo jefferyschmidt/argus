@@ -245,13 +245,23 @@ class Orchestrator:
         ui_events.publish({"type": "expression", "value": name})
 
     def _build_system(self, user_text: str) -> str:
+        return SYSTEM_PROMPT + self._build_dynamic_system(user_text)
+
+    def _build_dynamic_system(self, user_text: str) -> str:
+        """The part of the system prompt that changes every turn (current
+        time down to the minute, recalled memory context) -- split out from
+        SYSTEM_PROMPT so callers that support prompt caching (the frontier
+        tool-use path) can cache the large, genuinely-static instructions
+        block separately and only resend this small dynamic suffix fresh
+        each time. See AnthropicClient._system_param for why concatenating
+        them back into one string would defeat caching entirely."""
         context = self.memory.build_context(query=user_text)
         now = datetime.now().astimezone()
         now_str = now.strftime("%A, %B %d, %Y, %I:%M %p %Z")
         grounding = f"\n\nCurrent date/time: {now_str}"
         if settings.user_location:
             grounding += f"\nUser's location: {settings.user_location}"
-        return SYSTEM_PROMPT + grounding + ("\n\n" + context if context else "")
+        return grounding + ("\n\n" + context if context else "")
 
     def _on_tool_call(self, name: str, tool_input: dict, result) -> None:
         tool = self.tools._tools.get(name)
@@ -292,7 +302,6 @@ class Orchestrator:
         ui_events.publish({"type": "transcript", "role": "you", "text": user_text})
         ui_events.publish({"type": "state", "value": "thinking"})
         self.memory.remember_turn("user", user_text)
-        system = self._build_system(user_text)
 
         requested_expression = _detect_requested_expression(user_text, self.last_expression)
         if requested_expression:
@@ -302,10 +311,13 @@ class Orchestrator:
         # that would route local skip tools entirely; anything else gets
         # the full tool-use loop on the frontier tier.
         if classify(user_text) is Tier.LOCAL:
-            result = self.router.complete([Message(role="user", content=user_text)], system=system)
+            result = self.router.complete(
+                [Message(role="user", content=user_text)], system=self._build_system(user_text)
+            )
         else:
             result = self.router.complete_with_tools(
-                user_text, system=system, tool_registry=self.tools, on_tool_call=self._on_tool_call
+                user_text, system=self._build_dynamic_system(user_text), tool_registry=self.tools,
+                on_tool_call=self._on_tool_call, cacheable_system=SYSTEM_PROMPT,
             )
 
         self.last_tier = result.tier
@@ -330,7 +342,6 @@ class Orchestrator:
         ui_events.publish({"type": "transcript", "role": "you", "text": user_text})
         ui_events.publish({"type": "state", "value": "thinking"})
         self.memory.remember_turn("user", user_text)
-        system = self._build_system(user_text)
 
         requested_expression = _detect_requested_expression(user_text, self.last_expression)
         if requested_expression:
@@ -339,7 +350,9 @@ class Orchestrator:
         if classify(user_text) is Tier.LOCAL:
             # Ollama isn't streamed here -- local replies are short enough
             # that streaming wouldn't meaningfully reduce latency anyway.
-            result = self.router.complete([Message(role="user", content=user_text)], system=system)
+            result = self.router.complete(
+                [Message(role="user", content=user_text)], system=self._build_system(user_text)
+            )
             self.last_tier = result.tier
             self.last_model = result.model
             reply, proposed, expression = _extract_markers(result.text)
@@ -372,7 +385,8 @@ class Orchestrator:
                     on_sentence(cleaned)
 
         result = self.router.complete_with_tools_streaming(
-            user_text, system=system, tool_registry=self.tools, on_text=on_text, on_tool_call=self._on_tool_call
+            user_text, system=self._build_dynamic_system(user_text), tool_registry=self.tools,
+            on_text=on_text, on_tool_call=self._on_tool_call, cacheable_system=SYSTEM_PROMPT,
         )
         self.last_tier = result.tier
         self.last_model = result.model

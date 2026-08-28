@@ -21,6 +21,38 @@ _MAX_TOOL_ITERATIONS = 8
 _WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 3}
 
 
+def _system_param(system: str, cacheable_system: str):
+    """Builds the `system` kwarg for a messages.create call. When
+    cacheable_system is given, splits it into its own cached content block
+    (cache_control: ephemeral) ahead of the per-turn dynamic system text,
+    instead of sending one concatenated string -- caching requires an exact
+    prefix match, and the dynamic part (current date/time down to the
+    minute, recalled memory context) changes on essentially every call, so
+    caching the whole string together would never hit. The static
+    instructions (SYSTEM_PROMPT) are the same on every turn within a
+    session and, as of this codebase's tool count, comfortably over
+    Anthropic's minimum cacheable size -- splitting them out means only the
+    first call in a session pays full input-token processing for them."""
+    if not cacheable_system:
+        return system or anthropic.NOT_GIVEN
+    blocks = [{"type": "text", "text": cacheable_system, "cache_control": {"type": "ephemeral"}}]
+    if system:
+        blocks.append({"type": "text", "text": system})
+    return blocks
+
+
+def _cached_tools(tool_registry) -> list[dict]:
+    """Tool definitions are identical across calls within a run (the
+    registry doesn't change mid-session) and, with this codebase's current
+    tool count, add real bulk to every request -- worth its own cache
+    breakpoint on the last block, which caches everything up to and
+    including it (the whole tools array), separate from the system-prompt
+    breakpoint above."""
+    tools = tool_registry.schemas() + [_WEB_SEARCH_TOOL]
+    tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
+    return tools
+
+
 def _tool_result_content(result) -> str | list[dict]:
     """A tool handler returning raw PNG bytes (e.g. take_screenshot) becomes
     an actual image block the model can see, not just a text description."""
@@ -97,6 +129,7 @@ class AnthropicClient:
         tier: Tier = Tier.FAST,
         max_iterations: int = _MAX_TOOL_ITERATIONS,
         on_tool_call=None,
+        cacheable_system: str = "",
     ) -> CompletionResult:
         """Runs the full tool-use loop: send message, execute any tool calls
         the model asks for via the registry (which enforces permission
@@ -107,19 +140,25 @@ class AnthropicClient:
         execution -- used for audit logging in agent mode. If it raises, the
         exception propagates out of this call immediately (used to enforce
         a wall-clock budget mid-run rather than only checking between
-        top-level calls)."""
+        top-level calls).
+
+        cacheable_system, if given, is the stable part of the system prompt
+        (see _system_param) -- callers with a per-turn-varying system
+        string (current time, recalled memory) should pass that as `system`
+        and the static instructions separately here, or caching never hits."""
         from argus.tools.registry import ToolDenied
 
         model = _TIER_MODEL[tier]()
         history: list[dict] = [{"role": "user", "content": user_text}]
         total_in = total_out = 0
+        tools = _cached_tools(tool_registry)
 
         for _ in range(max_iterations):
             response = self._client.messages.create(
                 model=model,
                 max_tokens=4096,
-                system=system,
-                tools=tool_registry.schemas() + [_WEB_SEARCH_TOOL],
+                system=_system_param(system, cacheable_system),
+                tools=tools,
                 messages=history,
             )
             total_in += response.usage.input_tokens
@@ -170,23 +209,27 @@ class AnthropicClient:
         on_text,
         tier: Tier = Tier.FAST,
         on_tool_call=None,
+        cacheable_system: str = "",
     ) -> CompletionResult:
         """Same tool-use loop as complete_with_tools, but streams text
         deltas to on_text(chunk: str) as they arrive instead of returning
         only once the full response is done -- lets the caller start
-        speaking sentence 1 while sentence 3 is still being generated."""
+        speaking sentence 1 while sentence 3 is still being generated.
+
+        cacheable_system: see complete_with_tools."""
         from argus.tools.registry import ToolDenied
 
         model = _TIER_MODEL[tier]()
         history: list[dict] = [{"role": "user", "content": user_text}]
         total_in = total_out = 0
+        tools = _cached_tools(tool_registry)
 
         for _ in range(_MAX_TOOL_ITERATIONS):
             with self._client.messages.stream(
                 model=model,
                 max_tokens=4096,
-                system=system,
-                tools=tool_registry.schemas() + [_WEB_SEARCH_TOOL],
+                system=_system_param(system, cacheable_system),
+                tools=tools,
                 messages=history,
             ) as stream:
                 for text in stream.text_stream:

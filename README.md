@@ -359,6 +359,30 @@ calls (with real generated images), memory, and routing/spend.
 - Custom "Argus" wake-word model (currently using openWakeWord's bundled
   hey_jarvis_v0.1 as a placeholder) -- deferred; real chunk of work
   (synthetic training data, negative-audio dataset, slow CPU training).
-- Investigate why time-to-first-sentence in streaming mode is slower than
+- ~~Investigate why time-to-first-sentence in streaming mode is slower than
   expected (~13s in one live test) -- likely system-prompt size or API
-  latency, not a code regression, but worth profiling separately.
+  latency, not a code regression, but worth profiling separately.~~
+  Investigated and fixed the real contributor: SYSTEM_PROMPT had grown to
+  ~3400 tokens (41 tools' worth of schemas on top) by this point in the
+  roadmap, resent in full on every single turn with zero reuse -- that's
+  real input-token processing time paid fresh each call, not a fixed
+  cost. Added Anthropic prompt caching (argus/llm/anthropic_client.py:
+  `_system_param`/`_cached_tools`), but split deliberately: the static
+  instructions (SYSTEM_PROMPT) get their own cache_control breakpoint,
+  while the genuinely per-turn-varying part (current time down to the
+  minute, recalled memory context) stays uncached in a separate block --
+  caching requires an exact prefix match, so concatenating them back into
+  one string the old way would mean the dynamic suffix's constant change
+  breaks the cache on literally every call. A second breakpoint covers the
+  tool definitions array (also identical across turns, also real bulk).
+  Orchestrator._build_system split into a static/dynamic pair
+  (_build_dynamic_system) to thread this through; ModelRouter and
+  AnthropicClient's complete_with_tools/complete_with_tools_streaming
+  gained a cacheable_system param. Live-verified against the real
+  Anthropic API twice: once with synthetic text isolating the mechanism
+  (call 1: cache_creation_input_tokens=4526, cache_read=0; call 2 with a
+  DIFFERENT dynamic suffix: cache_creation=0, cache_read=4526 -- proof the
+  split actually works, not just that caching is turned on), and once at
+  real production scale with the actual SYSTEM_PROMPT + all 41 real tools,
+  where the second call's recorded spend was a small fraction of the
+  first's, consistent with a real cache hit discount.

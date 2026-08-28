@@ -161,10 +161,14 @@ class ModelRouter:
         force_tier: Tier | None = None,
         max_iterations: int | None = None,
         on_tool_call=None,
+        cacheable_system: str = "",
     ) -> CompletionResult:
         """Tool use always runs on the frontier tier -- the local 3B model
         isn't reliable at structured tool calling, and if it's escalating
-        to tools at all the task probably warranted the frontier anyway."""
+        to tools at all the task probably warranted the frontier anyway.
+
+        cacheable_system: the stable part of the system prompt, split out
+        for Anthropic prompt caching -- see AnthropicClient.complete_with_tools."""
         tier = force_tier or classify(user_text)
         if tier is Tier.LOCAL:
             tier = Tier.FAST
@@ -176,6 +180,8 @@ class ModelRouter:
             kwargs["max_iterations"] = max_iterations
         if on_tool_call is not None:
             kwargs["on_tool_call"] = on_tool_call
+        if cacheable_system:
+            kwargs["cacheable_system"] = cacheable_system
 
         try:
             result = self.frontier.complete_with_tools(user_text, system, tool_registry, tier=tier, **kwargs)
@@ -194,7 +200,9 @@ class ModelRouter:
         on_text,
         force_tier: Tier | None = None,
         on_tool_call=None,
+        cacheable_system: str = "",
     ) -> CompletionResult:
+        """cacheable_system: see complete_with_tools."""
         tier = force_tier or classify(user_text)
         if tier is Tier.LOCAL:
             tier = Tier.FAST
@@ -203,7 +211,8 @@ class ModelRouter:
 
         try:
             result = self.frontier.complete_with_tools_streaming(
-                user_text, system, tool_registry, on_text, tier=tier, on_tool_call=on_tool_call
+                user_text, system, tool_registry, on_text, tier=tier, on_tool_call=on_tool_call,
+                cacheable_system=cacheable_system,
             )
         except anthropic.APIConnectionError:
             log.warning("Anthropic API unreachable; degrading to offline fallback (no tools/web access)")
