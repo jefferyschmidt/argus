@@ -4,10 +4,10 @@ from argus.tools.base import PermissionTier, Tool
 from argus.tools.registry import ToolRegistry
 
 
-def _tool(name="click", repeatable=False):
+def _tool(name="click", repeatable=False, group=None):
     return Tool(
         name=name, description="d", input_schema={"type": "object", "properties": {}},
-        tier=PermissionTier.CONFIRM, handler=lambda args: "done", repeatable=repeatable,
+        tier=PermissionTier.CONFIRM, handler=lambda args: "done", repeatable=repeatable, group=group,
     )
 
 
@@ -47,7 +47,7 @@ def test_reset_task_autonomy_clears_approval_for_a_new_task():
     assert confirmer.call_count == 2
 
 
-def test_different_repeatable_tools_confirm_independently():
+def test_different_repeatable_tools_confirm_independently_when_ungrouped():
     confirmer = MagicMock(return_value=True)
     registry = ToolRegistry(confirmer=confirmer)
     registry.register(_tool(name="click", repeatable=True))
@@ -59,3 +59,50 @@ def test_different_repeatable_tools_confirm_independently():
     registry.execute("type_text", {})
 
     assert confirmer.call_count == 2
+
+
+def test_grouped_tools_share_one_approval():
+    """Confirmed live as a further gap even after per-tool repeatable
+    shipped: "open my calculator and add 4+4" is one explicit instruction
+    naming multiple actions (open_app, then several clicks), but each
+    distinct tool name still asked once on its own."""
+    confirmer = MagicMock(return_value=True)
+    registry = ToolRegistry(confirmer=confirmer)
+    registry.register(_tool(name="open_app", repeatable=True, group="desktop_control"))
+    registry.register(_tool(name="click", repeatable=True, group="desktop_control"))
+    registry.register(_tool(name="type_text", repeatable=True, group="desktop_control"))
+
+    registry.execute("open_app", {})
+    registry.execute("click", {})
+    registry.execute("click", {})
+    registry.execute("type_text", {})
+
+    assert confirmer.call_count == 1
+
+
+def test_grouped_approval_still_resets_per_task():
+    confirmer = MagicMock(return_value=True)
+    registry = ToolRegistry(confirmer=confirmer)
+    registry.register(_tool(name="open_app", repeatable=True, group="desktop_control"))
+    registry.register(_tool(name="click", repeatable=True, group="desktop_control"))
+
+    registry.execute("open_app", {})
+    registry.execute("click", {})
+    registry.reset_task_autonomy()
+    registry.execute("click", {})
+
+    assert confirmer.call_count == 2
+
+
+def test_ungrouped_and_grouped_tools_can_coexist():
+    confirmer = MagicMock(return_value=True)
+    registry = ToolRegistry(confirmer=confirmer)
+    registry.register(_tool(name="capture_camera", repeatable=False))  # deliberately not grouped
+    registry.register(_tool(name="click", repeatable=True, group="desktop_control"))
+
+    registry.execute("click", {})
+    registry.execute("click", {})
+    registry.execute("capture_camera", {})
+    registry.execute("capture_camera", {})
+
+    assert confirmer.call_count == 3  # 1 for the click group, 2 for camera (never grouped/repeatable)

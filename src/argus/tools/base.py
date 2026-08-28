@@ -31,6 +31,17 @@ class Tool:
     # rest of that same tool for the rest of the current task; the slate
     # is wiped at the start of each new user-initiated turn.
     repeatable: bool = False
+    # Groups several repeatable tools into ONE shared approval bucket --
+    # confirmed live as a further real gap even after `repeatable` shipped:
+    # "open my calculator and add 4+4" is one explicit instruction naming
+    # multiple actions (open_app, then several clicks), but each distinct
+    # tool NAME still asked once on its own -- one ask for opening the app,
+    # a separate first ask for the first click. Tools sharing the same
+    # non-empty `group` share ONE approval for the rest of the task: the
+    # first CONFIRM ask for ANY tool in the group covers the rest, not just
+    # repeats of that exact tool. None means "not grouped" (falls back to
+    # per-tool-name approval, same as before this existed).
+    group: str | None = None
 
     def to_anthropic_schema(self) -> dict:
         return {

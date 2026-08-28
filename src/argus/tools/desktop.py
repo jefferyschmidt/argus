@@ -159,6 +159,7 @@ click_tool = Tool(
     },
     tier=PermissionTier.CONFIRM,
     repeatable=True,
+    group="desktop_control",
     handler=_click,
 )
 
@@ -182,6 +183,7 @@ scroll_tool = Tool(
     },
     tier=PermissionTier.CONFIRM,
     repeatable=True,
+    group="desktop_control",
     handler=_scroll,
 )
 
@@ -195,6 +197,7 @@ type_text_tool = Tool(
     },
     tier=PermissionTier.CONFIRM,
     repeatable=True,
+    group="desktop_control",
     handler=_type_text,
 )
 
@@ -215,6 +218,7 @@ press_key_tool = Tool(
     },
     tier=PermissionTier.CONFIRM,
     repeatable=True,
+    group="desktop_control",
     handler=_press_key,
 )
 
@@ -230,5 +234,7 @@ open_app_tool = Tool(
         "required": ["app"],
     },
     tier=PermissionTier.CONFIRM,
+    repeatable=True,
+    group="desktop_control",
     handler=_open_app,
 )

@@ -49,7 +49,14 @@ class ToolRegistry:
             return f"error: tool '{name}' is registered but disabled (deny tier)"
 
         if tool.tier is PermissionTier.CONFIRM:
-            if getattr(tool, "repeatable", False) and name in self._task_approved:
+            # Tools sharing a `group` share one approval bucket -- e.g. all
+            # of desktop control, so "open my calculator and add 4+4"
+            # (open_app, then several clicks) asks once total, not once
+            # per distinct tool name. Ungrouped repeatable tools fall back
+            # to their own name as the bucket key, same as before groups
+            # existed.
+            approval_key = getattr(tool, "group", None) or name
+            if getattr(tool, "repeatable", False) and approval_key in self._task_approved:
                 log.info("Executing tool: %s(%s) [tier=%s, auto-approved for this task]", name, tool_input, tool.tier.value)
                 return tool.handler(tool_input)
             if not self.confirmer(name, tool_input):
@@ -63,7 +70,7 @@ class ToolRegistry:
                 log.info("Tool call denied by user on second confirmation: %s(%s)", name, tool_input)
                 raise ToolDenied(f"user declined to run '{name}' on second confirmation")
             if getattr(tool, "repeatable", False):
-                self._task_approved.add(name)
+                self._task_approved.add(approval_key)
 
         log.info("Executing tool: %s(%s) [tier=%s]", name, tool_input, tool.tier.value)
         return tool.handler(tool_input)

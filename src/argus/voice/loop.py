@@ -520,6 +520,14 @@ class VoiceLoop:
 
         if check_addressee and not self._seems_addressed_to_argus(text):
             console.print(f"[dim]you (ignored, seems unaddressed)> {text}[/dim]\n")
+            # Confirmed live as a real, recurring complaint -- "struggling
+            # to figure out when I'm talking to him and when I'm not."
+            # Nothing previously recorded WHICH utterances got silently
+            # dropped by the addressee gate or why -- this makes every
+            # drop reviewable after the fact (see ui/events.py's event
+            # log), not just guessable from console scrollback that's
+            # long gone by the time it's reported.
+            ui_events.publish({"type": "addressee_gate", "verdict": "stray", "text": text})
             return True  # keep the follow-up window open, just ignore this one
 
         console.print(f"[bold green]you>[/bold green] {text}")

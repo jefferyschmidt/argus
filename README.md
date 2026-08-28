@@ -10,6 +10,34 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Added, 2026-08-28 (a real session event log, and grouped desktop-control
+confirmation)**: asked live -- "is there a good way to let you review
+Argus's sessions... would we have to write transcripts as well as
+debugging/action info?" Answer: no new instrumentation needed -- every
+meaningful thing (conversation turns, state transitions, tool confirm
+requests/resolutions, memory events) already flows through the single
+`ui_events.publish()` choke point. It now also appends every event, with
+a timestamp, to `data/events/events-YYYY-MM-DD.jsonl` regardless of
+whether a UI is connected, so a session is fully reviewable afterward
+without needing to have been watching live. Also added an
+`addressee_gate` event published whenever a follow-up-window utterance
+gets silently dropped as "not meant for Argus," with the actual text and
+verdict -- directly targets the recurring "struggling to figure out when
+I'm talking to him" complaint, which was previously only guessable from
+console scrollback that's long gone by the time it's reported.
+
+Separately -- reported live: "if I say 'open my calculator and add 4+4,'
+that's explicit permission... I shouldn't also have to say yes to 'can I
+open the calculator' and 'can I click.'" The `repeatable` mechanism added
+earlier today only deduplicated repeat calls of the exact SAME tool --
+open_app still asked once, then the first click asked again separately.
+Added a `group` field on `Tool`: tools sharing a group (`click`,
+`type_text`, `press_key`, `scroll`, `open_app` all share
+`"desktop_control"`) now share ONE approval for the rest of the task --
+the first confirm ask for any of them covers the rest. `capture_camera`
+deliberately stays its own, ungrouped, always-ask tool (physical room,
+not screen -- a meaningfully different sensitivity).
+
 **Fixed, 2026-08-28 (log review -- local tier rate-limits escalated
 straight to the paid frontier, no retry)**: went looking through
 `data/argus.log` for anything worth fixing beyond live reports. Found
