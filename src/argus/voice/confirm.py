@@ -28,8 +28,17 @@ def make_voice_confirmer(speaker, transcriber):
 
     def _try_voice(prompt_text: str) -> bool | None:
         """Returns True/False on a clear answer, None if nothing usable
-        was heard (silence, unclear, or a transcription/audio error)."""
-        from argus.voice.audio_io import record_followup
+        was heard (silence, unclear, or a transcription/audio error).
+
+        Races a typed console answer against a spoken one -- confirmed
+        live as a real bug: typed text sent during this window used to be
+        silently queued behind _interaction_lock (already held by this
+        exact call stack) and never actually used as the answer, looking
+        exactly like "he's not processing it." should_stop below ends the
+        mic recording early the instant a typed answer arrives, instead
+        of making the user wait out the rest of the window for nothing."""
+        from argus.voice.audio_io import ListeningPaused, record_followup
+        from argus.ui import commands as ui_commands
         from argus.ui import events as ui_events
 
         try:
@@ -42,11 +51,27 @@ def make_voice_confirmer(speaker, transcriber):
         # Argus was actually waiting on a spoken yes/no -- reported live as
         # "didn't go to 'listening' to hear my response."
         ui_events.publish({"type": "state", "value": "listening", "mode": "confirming"})
+        ui_commands.set_voice_confirmation_active(True)
         try:
-            samples = record_followup(7.0)
-            if samples is None:
-                return None
-            heard = transcriber.transcribe(samples).strip()
+            typed = {"text": None}
+
+            def _typed_arrived() -> bool:
+                if typed["text"] is None:
+                    typed["text"] = ui_commands.get_confirmation_answer(timeout=0)
+                return typed["text"] is not None
+
+            try:
+                samples = record_followup(7.0, should_stop=_typed_arrived)
+            except ListeningPaused:
+                samples = None
+
+            if typed["text"] is not None:
+                heard = typed["text"].strip()
+            elif samples is not None:
+                heard = transcriber.transcribe(samples).strip()
+            else:
+                heard = ""
+
             if not heard:
                 return None
             console.print(f"[bold green]you>[/bold green] {heard}")
@@ -61,6 +86,7 @@ def make_voice_confirmer(speaker, transcriber):
             log.exception("Voice confirmation failed")
             return None
         finally:
+            ui_commands.set_voice_confirmation_active(False)
             ui_events.publish({"type": "state", "value": "thinking"})
 
     def confirmer(tool_name: str, tool_input: dict) -> bool:

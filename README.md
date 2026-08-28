@@ -10,6 +10,29 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (typed "yes" during a voice confirmation was
+never actually processed)**: reported live -- "he's asking 'may I run
+shell, say yes or no,' I'm saying yes but he's not picking it up... I
+even typed it and he's not processing it." The spoken case traced to
+ordinary STT unreliability (the log showed two earlier run_shell
+confirmations in the same session succeed by voice, then one fail twice
+in a row and correctly fall back to the console UI card -- working as
+designed). The typed case was a real, separate bug: `_external_input_worker`
+routes console text into the normal utterance path, which acquires
+`_interaction_lock` -- but that lock was already held by the exact call
+stack the pending confirmation was blocking inside of, so the typed "yes"
+just sat queued, unprocessed, until the turn finished some other way.
+Looked exactly like "not processing it" because, in the moment, it
+genuinely wasn't. Added a separate confirmation-answer channel
+(`ui_commands.submit_confirmation_answer`/`get_confirmation_answer`) that
+`_external_input_worker` routes into instead whenever
+`is_voice_confirmation_active()` is true; `make_voice_confirmer`'s
+`_try_voice` now races a typed answer against the mic recording,
+cutting the recording short the instant one arrives (reusing
+`record_followup`'s `should_stop`/`ListeningPaused` mechanism from
+earlier today's mute fix, repurposed here for "we already have an
+answer" instead of "the user muted the mic").
+
 **Fixed live, 2026-08-28 (calculator clicks kept missing the same
 coordinates, plus a second silent-drop path with no visibility)**: a
 follow-up session log showed `click({'x': 537, 'y': 315})` retried at

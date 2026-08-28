@@ -215,6 +215,15 @@ class VoiceLoop:
         while True:
             text = ui_commands.get_text_message(timeout=0.2)
             if text:
+                if ui_commands.is_voice_confirmation_active():
+                    # Confirmed live as a real bug: routing this into the
+                    # normal utterance path here would just queue it
+                    # behind _interaction_lock, which the pending
+                    # confirmation's own call stack is already holding --
+                    # it would sit unprocessed until that turn finished
+                    # some other way. See ui_commands.submit_confirmation_answer.
+                    ui_commands.submit_confirmation_answer(text)
+                    continue
                 with self._interaction_lock:
                     self._process_utterance(text=text)
                 continue

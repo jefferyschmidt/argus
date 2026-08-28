@@ -70,6 +70,48 @@ def get_text_message(timeout: float | None = None) -> str | None:
         return None
 
 
+# Confirmed live as a real bug: typed text sent while a voice confirmation
+# (make_voice_confirmer's "May I <tool>? Say yes or no.") was pending got
+# silently queued behind the SAME interaction lock the confirmation flow
+# was itself blocking on -- only processed as an ordinary new utterance
+# once the turn eventually finished some other way. Looked exactly like
+# "he's not processing it" because, in the moment, he genuinely wasn't.
+# This is a separate channel _external_input_worker routes typed text into
+# instead of the normal utterance queue whenever a voice confirmation is
+# active, so confirm.py can pick it up directly without touching the lock.
+_voice_confirmation_active = threading.Event()
+_confirmation_answers: "queue.Queue[str]" = queue.Queue()
+
+
+def set_voice_confirmation_active(active: bool) -> None:
+    if active:
+        _voice_confirmation_active.set()
+    else:
+        _voice_confirmation_active.clear()
+        # Drop any stale answer left over from this window so it can't
+        # leak into an unrelated later confirmation.
+        while not _confirmation_answers.empty():
+            try:
+                _confirmation_answers.get_nowait()
+            except queue.Empty:
+                break
+
+
+def is_voice_confirmation_active() -> bool:
+    return _voice_confirmation_active.is_set()
+
+
+def submit_confirmation_answer(text: str) -> None:
+    _confirmation_answers.put(text)
+
+
+def get_confirmation_answer(timeout: float | None = None) -> str | None:
+    try:
+        return _confirmation_answers.get(timeout=timeout)
+    except queue.Empty:
+        return None
+
+
 def start_push_to_talk() -> None:
     _ptt_active.set()
 
