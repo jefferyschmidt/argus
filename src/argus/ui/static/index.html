@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Argus Console</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%91%81%EF%B8%8F%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -211,6 +212,7 @@
   .chip { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 7px; border-radius: 20px; white-space: nowrap; border: 1px solid transparent; }
   .chip.allow { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
   .chip.confirm { color: var(--alert); background: color-mix(in srgb, var(--alert) 14%, transparent); border-color: color-mix(in srgb, var(--alert) 30%, transparent); }
+  .tool-entry .time { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-dim); white-space: nowrap; }
   .empty-note { font-size: 12px; color: var(--ink-dim); font-style: italic; }
 
   .budget-track { height: 6px; border-radius: 3px; background: var(--bg-panel-2); overflow: hidden; margin-top: 2px; }
@@ -221,10 +223,12 @@
   .voice-flags { display: flex; gap: 8px; flex-wrap: wrap; }
   .flag { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-dim); border: 1px solid var(--line); border-radius: 3px; padding: 2px 7px; }
 
-  .visual-card { border: 1px solid var(--line); border-radius: 3px; overflow: hidden; background: var(--bg-panel-2); display: flex; flex-direction: column; }
-  .visual-card img { width: 100%; height: 90px; object-fit: cover; display: block; }
-  .visual-card .cap { font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-dim); padding: 5px 7px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 6px; }
-  .visual-empty { height: 90px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--ink-dim); font-style: italic; text-align: center; padding: 0 10px; }
+  .visual-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+  .visual-card { flex: 0 0 108px; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; background: var(--bg-panel-2); display: flex; flex-direction: column; }
+  .visual-card img { width: 100%; height: 70px; object-fit: cover; display: block; }
+  .visual-card .cap { font-family: var(--font-mono); font-size: 9px; color: var(--ink-dim); padding: 4px 6px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
+  .visual-card .cap span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .visual-empty { flex: 1 1 auto; height: 90px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--ink-dim); font-style: italic; text-align: center; padding: 0 10px; }
 
   .transcript { background: var(--bg-panel); border: 1px solid var(--line); border-radius: 4px; padding: 18px 20px 16px; }
   .transcript .eyebrow { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--accent-bright); margin-bottom: 12px; }
@@ -305,8 +309,8 @@
     </div>
 
     <div class="panel">
-      <div class="eyebrow">Visual output <span class="n">last generated</span></div>
-      <div class="visual-card" id="visualCard">
+      <div class="eyebrow">Visual output <span class="n">recent</span></div>
+      <div class="visual-strip" id="visualStrip">
         <div class="visual-empty">Nothing captured yet &mdash; ask Argus to take a screenshot</div>
       </div>
     </div>
@@ -333,6 +337,13 @@
       <div class="eyebrow">Tools <span class="n">recent</span></div>
       <div class="rows" id="toolRows">
         <div class="empty-note">No tool calls yet.</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="eyebrow">Idle beats <span class="n">this session</span></div>
+      <div class="rows" id="idleBeatRows">
+        <div class="empty-note">Nothing yet &mdash; Argus improvises these while idle.</div>
       </div>
     </div>
 
@@ -625,13 +636,33 @@
     while (toolRows.children.length > 6) toolRows.removeChild(toolRows.lastChild);
   }
 
-  // ---------- visual output ----------
-  var visualCard = document.getElementById("visualCard");
-  function showImage(name, dataUri) {
+  // ---------- idle beats ----------
+  var idleBeatRows = document.getElementById("idleBeatRows");
+  var idleBeatEmpty = true;
+  function logIdleBeat(name) {
+    if (idleBeatEmpty) { idleBeatRows.innerHTML = ""; idleBeatEmpty = false; }
+    var row = document.createElement("div");
+    row.className = "tool-entry";
     var time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    visualCard.innerHTML =
+    row.innerHTML = '<span class="name">' + esc(name) + '</span><span class="time">' + esc(time) + '</span>';
+    idleBeatRows.insertBefore(row, idleBeatRows.firstChild);
+    while (idleBeatRows.children.length > 6) idleBeatRows.removeChild(idleBeatRows.lastChild);
+  }
+
+  // ---------- visual output ----------
+  var VISUAL_HISTORY_MAX = 5;
+  var visualStrip = document.getElementById("visualStrip");
+  var visualEmpty = true;
+  function showImage(name, dataUri) {
+    if (visualEmpty) { visualStrip.innerHTML = ""; visualEmpty = false; }
+    var time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    var card = document.createElement("div");
+    card.className = "visual-card";
+    card.innerHTML =
       '<img src="' + dataUri + '" alt="' + esc(name) + '">' +
       '<div class="cap"><span>' + esc(name) + '</span><span>' + esc(time) + '</span></div>';
+    visualStrip.insertBefore(card, visualStrip.firstChild);
+    while (visualStrip.children.length > VISUAL_HISTORY_MAX) visualStrip.removeChild(visualStrip.lastChild);
   }
 
   // ---------- memory / system ----------
@@ -1097,6 +1128,7 @@
     captionTextEl.classList.remove("placeholder");
     captionTextEl.textContent = "( " + name + " )";
     idleEmoteCaptionShown = true;
+    logIdleBeat(name);
   }
   function clearIdleEmoteCaptionIfShown() {
     if (!idleEmoteCaptionShown) return;
