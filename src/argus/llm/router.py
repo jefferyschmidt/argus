@@ -1,6 +1,8 @@
 import logging
 import re
 
+import anthropic
+
 from argus.llm.anthropic_client import AnthropicClient
 from argus.llm.base import CompletionResult, Message, Tier
 from argus.llm.cost_governor import BudgetExceeded, CostGovernor
@@ -44,6 +46,12 @@ def classify(text: str) -> Tier:
     return Tier.FAST
 
 
+_OFFLINE_NO_LOCAL_MESSAGE = (
+    "I'm completely offline right now -- no internet reachable, and no local "
+    "model either. I can't help with anything until one of those is back."
+)
+
+
 class ModelRouter:
     def __init__(self, daily_cap_usd: float = 5.0):
         self.local = OllamaClient()
@@ -51,6 +59,27 @@ class ModelRouter:
         self.cost_governor = CostGovernor(daily_cap_usd=daily_cap_usd)
         if self.local.is_available():
             self.local.prewarm()
+
+    def _degraded_result(self, user_text: str, system: str, note: str) -> CompletionResult:
+        """The frontier tier (network) is unreachable. Rather than let the
+        exception propagate and crash the whole turn -- previously the only
+        behavior, since nothing here caught APIConnectionError -- fall back
+        to the local model if it's up (with a clear disclaimer that tools/
+        web access aren't available in this fallback), or return a plain
+        "I'm offline" message if even that's unreachable. Either way the
+        caller always gets back a normal CompletionResult, never an
+        exception, so the rest of the turn (memory, transcript, TTS) keeps
+        working instead of dying mid-conversation."""
+        if self.local.is_available():
+            try:
+                result = self.local.complete(
+                    [Message(role="user", content=user_text)], system=system
+                )
+                result.text = f"({note}) {result.text}"
+                return result
+            except Exception:
+                log.exception("Local fallback also failed during offline degradation")
+        return CompletionResult(text=_OFFLINE_NO_LOCAL_MESSAGE, tier=Tier.LOCAL, model="offline")
 
     def complete(
         self,
@@ -62,8 +91,17 @@ class ModelRouter:
 
         if tier is Tier.LOCAL:
             if self.local.is_available():
-                return self.local.complete(messages, system=system)
-            log.warning("Ollama unavailable, escalating to frontier fast tier")
+                try:
+                    return self.local.complete(messages, system=system)
+                except Exception:
+                    # is_available() can be stale (Ollama was up a moment
+                    # ago, isn't now) -- don't let that raise all the way
+                    # out, just escalate the same as if it were never
+                    # available. If frontier is ALSO unreachable from here,
+                    # the try/except below catches that and degrades too.
+                    log.exception("Local completion failed despite is_available()==True; escalating")
+            else:
+                log.warning("Ollama unavailable, escalating to frontier fast tier")
             tier = Tier.FAST
 
         try:
@@ -74,7 +112,13 @@ class ModelRouter:
                 return self.local.complete(messages, system=system)
             raise
 
-        result = self.frontier.complete(messages, system=system, tier=tier)
+        try:
+            result = self.frontier.complete(messages, system=system, tier=tier)
+        except anthropic.APIConnectionError:
+            log.warning("Anthropic API unreachable; degrading to offline fallback")
+            return self._degraded_result(
+                messages[-1].content if messages else "", system, "offline -- no internet"
+            )
         cost = estimate_cost(tier, result.input_tokens, result.output_tokens)
         self.cost_governor.record(cost)
         return result
@@ -103,7 +147,11 @@ class ModelRouter:
         if on_tool_call is not None:
             kwargs["on_tool_call"] = on_tool_call
 
-        result = self.frontier.complete_with_tools(user_text, system, tool_registry, tier=tier, **kwargs)
+        try:
+            result = self.frontier.complete_with_tools(user_text, system, tool_registry, tier=tier, **kwargs)
+        except anthropic.APIConnectionError:
+            log.warning("Anthropic API unreachable; degrading to offline fallback (no tools/web access)")
+            return self._degraded_result(user_text, system, "offline -- no internet, no tools/web access")
         cost = estimate_cost(tier, result.input_tokens, result.output_tokens)
         self.cost_governor.record(cost)
         return result
@@ -123,9 +171,19 @@ class ModelRouter:
 
         self.cost_governor.check()
 
-        result = self.frontier.complete_with_tools_streaming(
-            user_text, system, tool_registry, on_text, tier=tier, on_tool_call=on_tool_call
-        )
+        try:
+            result = self.frontier.complete_with_tools_streaming(
+                user_text, system, tool_registry, on_text, tier=tier, on_tool_call=on_tool_call
+            )
+        except anthropic.APIConnectionError:
+            log.warning("Anthropic API unreachable; degrading to offline fallback (no tools/web access)")
+            result = self._degraded_result(user_text, system, "offline -- no internet, no tools/web access")
+            # Handles the common case (can't connect at all, so nothing was
+            # streamed yet) correctly. A connection drop mid-response after
+            # some real text already streamed is a rarer case this doesn't
+            # fully solve -- the fallback text would follow the partial one.
+            on_text(result.text)
+            return result
         cost = estimate_cost(tier, result.input_tokens, result.output_tokens)
         self.cost_governor.record(cost)
         return result

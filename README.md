@@ -124,10 +124,21 @@ calls (with real generated images), memory, and routing/spend.
 17. Backup/restore -- everything lives only on this machine (SQLite +
     Chroma); a simple encrypted backup step before this becomes something
     relied on daily.
-18. Graceful offline-degraded mode -- Ollama already falls back for chat
-    when Anthropic's unreachable, but tools like web search and desktop
-    control just fail silently right now. Clear "I'm offline, here's what
-    I can still do" behavior instead.
+18. ~~Graceful offline-degraded mode~~ -- turned out worse than "fails
+    silently": complete_with_tools/complete_with_tools_streaming had NO
+    handling at all for Anthropic being unreachable, so a real network
+    outage raised an uncaught exception straight through the orchestrator
+    and crashed the whole turn (chat's console.input() loop, voice's
+    _process_utterance -- neither had a catch for it). ModelRouter now
+    catches anthropic.APIConnectionError at every frontier call site and
+    falls back to the local model with a clear disclaimer (tools/web
+    unavailable in the fallback), or a plain "I'm offline" message if
+    local is unreachable too -- always a normal reply, never an exception.
+    Found and fixed a second related gap while testing this: the local-
+    tier fast-path had no error handling either, so a stale
+    is_available()==True followed by an actual failure would also crash;
+    that path now escalates to the frontier (and from there to the same
+    degraded fallback) instead.
 19. Voice journaling -- a lightweight "take a note" mode that captures
     freeform spoken thoughts to a running, later-searchable log. Natural
     fit given the voice-first design and existing memory system.
