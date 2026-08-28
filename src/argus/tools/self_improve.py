@@ -22,7 +22,23 @@ class OwnSourcePathEscapesAllowedRoots(Exception):
 
 def _resolve_own_path(path_str: str) -> Path:
     p = Path(path_str)
-    candidate = p.resolve() if p.is_absolute() else (PROJECT_ROOT / path_str).resolve()
+    if p.is_absolute():
+        candidate = p.resolve()
+    else:
+        # Confirmed live as a real bug: "ui" (unambiguously meant as
+        # src/argus/ui -- said right after list_own_source's own listing
+        # of the source root showed "ui/" as an entry) used to be resolved
+        # ONLY against PROJECT_ROOT, landing on a nonexistent top-level
+        # ui/ and getting refused as "outside" even though the intent was
+        # completely clear. A relative path already starting with
+        # "src/argus" or "tests" is treated as already fully-qualified
+        # (resolved against the project root, unchanged from before);
+        # anything else -- the common case for this tool -- is resolved
+        # against Argus's own source root instead.
+        parts = p.parts
+        already_qualified = parts[:2] == ("src", "argus") or parts[:1] == ("tests",)
+        base = PROJECT_ROOT if already_qualified else PROJECT_ROOT / "src" / "argus"
+        candidate = (base / path_str).resolve()
     for root in _SELF_ROOTS:
         if candidate == root or root in candidate.parents:
             return candidate
@@ -38,6 +54,13 @@ def _read_own_source(args: dict) -> str:
         return f"error: {e}"
     if not path.exists():
         return f"error: {args['path']} does not exist"
+    if path.is_dir():
+        # Confirmed live as a real bug: reading a directory raised a raw
+        # PermissionError from Windows (open() on a directory), surfaced
+        # verbatim as "permission error" -- confusing and wrong, since
+        # it's not a real permissions problem at all, just the wrong tool
+        # for a directory. A clear redirect instead of a cryptic OS error.
+        return f"error: '{args['path']}' is a directory -- use list_own_source to see what's in it"
     return path.read_text(errors="replace")
 
 
@@ -59,6 +82,8 @@ def _write_own_source(args: dict) -> str:
         path = _resolve_own_path(args["path"])
     except OwnSourcePathEscapesAllowedRoots as e:
         return f"error: {e}"
+    if path.is_dir():
+        return f"error: '{args['path']}' is a directory, not a file -- can't write to it"
     path.parent.mkdir(parents=True, exist_ok=True)
     snapshot_before_write(path)
     path.write_text(args["content"])

@@ -76,6 +76,59 @@ def test_list_own_source(fake_roots):
     assert "sub/" in result
 
 
+def test_bare_relative_path_resolves_against_argus_own_source_root():
+    """Confirmed live as a real bug: "ui" (unambiguously meant as
+    src/argus/ui -- said right after list_own_source's own listing of the
+    source root showed "ui/" as an entry) used to be resolved ONLY
+    against PROJECT_ROOT, landing on a nonexistent top-level ui/ and
+    getting refused as "outside" even though the intent was completely
+    clear. Uses the REAL project layout (not the fake_roots fixture,
+    which doesn't monkeypatch PROJECT_ROOT) since that's exactly the
+    layout that triggered the bug."""
+    result = si._list_own_source({"path": "ui"})
+    assert not result.startswith("error:")
+    assert "static/" in result
+
+
+def test_bare_relative_file_path_resolves_against_argus_own_source_root():
+    result = si._read_own_source({"path": "orchestrator.py"})
+    assert not result.startswith("error:")
+    assert "SYSTEM_PROMPT" in result
+
+
+def test_already_prefixed_relative_path_still_works():
+    result = si._list_own_source({"path": "src/argus/ui"})
+    assert not result.startswith("error:")
+    assert "static/" in result
+
+
+def test_relative_tests_path_still_resolves_to_the_tests_root():
+    result = si._list_own_source({"path": "tests"})
+    assert not result.startswith("error:")
+    assert "test_self_improve_tools.py" in result
+
+
+def test_reading_a_directory_gives_a_clear_error_not_a_raw_permission_error():
+    """Confirmed live as a real bug: reading a directory raised a raw
+    Windows PermissionError from open(), surfaced verbatim as "permission
+    error" -- confusing and wrong, since it's not a real permissions
+    problem, just the wrong tool for a directory."""
+    result = si._read_own_source({"path": "ui"})
+    assert result.startswith("error:")
+    assert "directory" in result
+    assert "list_own_source" in result
+
+
+def test_writing_to_a_directory_path_gives_a_clear_error(fake_roots):
+    src_root, _ = fake_roots
+    (src_root / "sub").mkdir()
+
+    result = si._write_own_source({"path": str(src_root / "sub"), "content": "x"})
+
+    assert result.startswith("error:")
+    assert "directory" in result
+
+
 def test_run_own_tests_uses_the_current_interpreter_not_bare_python():
     """Confirmed live as a real, currently-broken bug: the literal string
     "python" on PATH resolved to a completely different global install

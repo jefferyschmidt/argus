@@ -10,6 +10,26 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (self-editing path resolution refused an
+unambiguous relative path, and a directory read leaked a raw OS error)**:
+reported live -- Argus had already found and diagnosed the mouth-
+animation bug, then hit "a permission error trying to access the
+source" on a second look. Two real bugs in `_resolve_own_path`
+(argus/tools/self_improve.py). (1) `list_own_source({"path": "ui"})`
+(said right after its OWN listing of the source root had just shown
+"ui/" as an entry) was refused as "outside Argus's own source" --
+relative paths were resolved only against the project root, so a bare
+"ui" looked for a nonexistent top-level `ui/` instead of the obviously-
+intended `src/argus/ui`. Now a relative path already starting with
+`src/argus` or `tests` resolves against the project root as before;
+anything else -- the common case -- resolves against Argus's own source
+root instead. (2) `read_own_source({"path": "src/argus"})` (a directory)
+raised a raw Windows `PermissionError` from `open()`, surfaced verbatim
+as "permission error" -- confusing and just wrong, since it's not a
+real permissions problem, only the wrong tool for a directory. Both
+read_own_source and write_own_source now check `is_dir()` first and
+return a clear, actionable error instead.
+
 **Fixed live, 2026-08-28 (typed "yes" during a voice confirmation was
 never actually processed)**: reported live -- "he's asking 'may I run
 shell, say yes or no,' I'm saying yes but he's not picking it up... I
