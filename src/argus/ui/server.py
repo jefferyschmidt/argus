@@ -41,6 +41,15 @@ def stop_listening() -> dict:
     return {"ok": True}
 
 
+@app.post("/api/restart")
+def restart() -> dict:
+    from argus.restart import request_restart
+
+    ui_events.publish({"type": "toast", "text": "Restarting Argus..."})
+    request_restart()
+    return {"ok": True}
+
+
 class TextInput(BaseModel):
     text: str
 

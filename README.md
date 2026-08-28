@@ -151,22 +151,20 @@ calls (with real generated images), memory, and routing/spend.
 21. Meeting assistant -- join/transcribe/summarize calls and extract action
     items. Genuinely valuable but a bigger lift than the others here (needs
     audio capture from other apps, or a bot-join integration).
-22. Self-modification -- Argus edits its own source in response to
-    conversation ("you can't do X yet" -> plan it, build it, right then).
-    Deferred until the autonomous agent loop (item 6) is solid, since both
-    are about less-supervised action and the second should build on lessons
-    from the first. Design decided when this comes up again:
-    - Open its file tools to its own `src/argus` (currently excluded from
-      the sandbox on purpose).
-    - Every change is a real git commit -- nothing is ever unrecoverable,
-      and the diff is inspectable after the fact.
-    - It must run the test suite itself; a change only counts as done if
-      tests pass, not just "looks right."
-    - Self-edits require explicit user confirmation, at minimum -- this is
-      a materially higher-risk category than other CONFIRM-tier actions
-      (e.g. it editing its own permission tiers), so lean toward confirm
-      rather than broad access here even once other tools loosen up.
-    - No hot-reload: Python doesn't pick up code changes in a running
+22. ~~Self-modification~~ -- Argus edits its own source through normal
+    conversation (voice, chat, or Telegram -- no separate CLI mode):
+    read_own_source/list_own_source/write_own_source/run_own_tests/
+    commit_own_changes/restart_argus (argus/tools/self_improve.py), scoped
+    to src/argus + tests only (a separate, narrower sandbox from the
+    general file tools' workspace_dir). write_own_source and
+    commit_own_changes are always CONFIRM-tier. The system prompt tells it
+    to read before writing, run its own tests after every write and
+    report honestly (never claim success without seeing tests pass), and
+    only commit once they do. restart_argus (also CONFIRM) re-execs the
+    process via `python -m argus.cli <original args>` (argus/restart.py)
+    since Python can't hot-reload -- also available as a console button
+    (with a confirm prompt) for when you just want to restart without
+    asking Argus to.
       process, so the flow is propose -> tests pass -> tell the user to
       restart (or later, have it restart itself deliberately) -- never a
       silent rewrite-and-keep-running-on-old-code situation.
