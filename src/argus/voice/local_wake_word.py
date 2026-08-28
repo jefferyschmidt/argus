@@ -1,3 +1,4 @@
+import difflib
 import re
 
 import numpy as np
@@ -23,6 +24,30 @@ _MIN_SPEECH_MS_TO_TRANSCRIBE = 250  # a cough/click can pass VAD for one frame; 
 # during testing. Matched as whole words (not a substring) so "Argus" inside
 # a longer unrelated word never false-triggers.
 _WAKE_PATTERN = re.compile(r"\b(argus|argos|arcus)\b", re.IGNORECASE)
+_WORD_PATTERN = re.compile(r"[A-Za-z']+")
+# Reported live as a real stuck-listening bug: the exact-match regex above
+# is strict, and local Whisper (already documented above as prone to
+# mishearing "Argus" on short clips) sometimes transcribes something close
+# but not in that word list -- the utterance then just silently failed to
+# match forever, looping through re-checks with no way out, which reads as
+# "stuck on listening" even though speech WAS being heard and transcribed.
+# This fuzzy fallback catches near-misses the strict list doesn't cover.
+_FUZZY_MATCH_THRESHOLD = 0.72
+
+
+def _find_wake_word(text: str) -> int | None:
+    """Returns the character index right after the wake word if found
+    (exact match first, then a fuzzy near-miss), else None."""
+    match = _WAKE_PATTERN.search(text)
+    if match:
+        return match.end()
+    for word_match in _WORD_PATTERN.finditer(text):
+        word = word_match.group(0).lower()
+        if len(word) < 4:
+            continue
+        if difflib.SequenceMatcher(None, word, "argus").ratio() >= _FUZZY_MATCH_THRESHOLD:
+            return word_match.end()
+    return None
 
 
 class LocalWakeWordListener:
@@ -119,14 +144,14 @@ class LocalWakeWordListener:
                 if on_checking is not None:
                     on_checking()
                 text = self._transcriber.transcribe_local(utterance)
-                match = _WAKE_PATTERN.search(text)
-                if not match:
+                end_idx = _find_wake_word(text)
+                if end_idx is None:
                     continue
 
                 if on_wake is not None:
                     on_wake()
 
-                command = text[match.end():].strip(" ,.-")
+                command = text[end_idx:].strip(" ,.-")
                 return utterance, (command or None)
 
     def _capture_one_utterance(self, stream, frame_len, silence_hang_frames, max_frames, chunks_out):

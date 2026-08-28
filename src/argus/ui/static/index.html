@@ -1037,9 +1037,13 @@
     var targetX = cx + radX * Math.cos(phi);
     var targetY = cy + radY;
 
-    // Mouth region bulges open with real speech.
-    if (targetY > cy + s * 0.20 && Math.abs(targetX - cx) < s * 0.42) {
-      targetY += Math.sin((targetY - (cy + s * 0.30)) / (s * 0.5) * Math.PI) * mouthOpenPx;
+    // Mouth region bulges open with real speech -- kept to a tight band
+    // right at the mouth line and heavily damped: drawLiquidLipSeam already
+    // draws the actual mouth shape, so this is just a faint nudge, not a
+    // second copy of the articulation. Reported live as looking like the
+    // whole swarm was moving when it should read as "just his mouth."
+    if (targetY > cy + s * 0.26 && targetY < cy + s * 0.40 && Math.abs(targetX - cx) < s * 0.22) {
+      targetY += Math.sin((targetY - (cy + s * 0.30)) / (s * 0.5) * Math.PI) * mouthOpenPx * 0.25;
     }
 
     // Ferrofluid jitter -- amplitude from state energy, speed from swirl

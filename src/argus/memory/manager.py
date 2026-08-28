@@ -1,5 +1,5 @@
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait as wait_futures
 
 from argus.memory.core import CoreMemoryStore
 from argus.memory.episodic import EpisodicStore
@@ -17,15 +17,28 @@ class MemoryManager:
         # Embedding a turn is CPU work that doesn't need to finish before we
         # reply -- only queries (build_context) need to be synchronous.
         self._embed_pool = ThreadPoolExecutor(max_workers=1)
+        self._pending_embeds: list[Future] = []
 
     def remember_turn(self, role: str, content: str) -> None:
         episode_id = self.episodic.add(self.session_id, role, content)
-        self._embed_pool.submit(
+        future = self._embed_pool.submit(
             self.semantic.add,
             doc_id=f"episode-{episode_id}",
             text=content,
             metadata={"role": role, "session_id": self.session_id},
         )
+        self._pending_embeds.append(future)
+        self._pending_embeds = [f for f in self._pending_embeds if not f.done()]
+
+    def flush_pending_embeds(self, timeout: float = 3.0) -> None:
+        """Waits (bounded) for queued embeds to finish. Needed before a
+        restart: restart.py's os.execv replaces the process image directly,
+        bypassing normal interpreter shutdown/atexit entirely, so anything
+        still queued in _embed_pool at that moment would otherwise be
+        silently lost -- the most recent turn(s) never becoming recallable."""
+        if self._pending_embeds:
+            wait_futures(self._pending_embeds, timeout=timeout)
+            self._pending_embeds = []
 
     def build_context(self, query: str, recent_turns: int = 12) -> str:
         """Assembles the memory block to inject ahead of the live conversation:

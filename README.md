@@ -10,6 +10,42 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (stuck on "listening," never processing a reply)**:
+reported live -- "he's stuck on listening and isn't processing what I
+said," with a screenshot showing the local wake-word engine's "checking"
+state hung indefinitely after the user said "Argus, I said yes, I want
+you to handle that." Root cause: local Whisper (already documented in
+this file as prone to mishearing "Argus" on short clips) apparently
+transcribed something close but not in `_WAKE_PATTERN`'s exact word list,
+so the wake-word match silently failed and the loop just re-checked the
+next utterance forever with no way out -- looks exactly like "stuck,"
+even though speech was genuinely being heard and transcribed the whole
+time. Added a fuzzy fallback (`_find_wake_word`, `difflib.SequenceMatcher`
+against "argus" at a 0.72 ratio) that only kicks in when the exact regex
+misses, so a near-miss transcription still gets through.
+
+**Fixed live, 2026-08-28 (memory embeds silently dropped on restart)**:
+`MemoryManager._embed_pool` queues each turn's semantic embedding on a
+background thread and had no shutdown/flush path; `restart.py`'s
+`os.execv`-based restart replaces the process image directly, bypassing
+normal interpreter shutdown/atexit entirely, so anything still queued at
+that exact moment was silently lost -- the most recent turn(s) never
+becoming recallable. Added `MemoryManager.flush_pending_embeds(timeout)`
+(bounded wait via `concurrent.futures.wait`, mirrors the barge-in
+watcher's bounded-join pattern) plus a `set_active_memory_manager`/
+`get_active_memory_manager` registry (mirrors the existing active-router
+registry), called from `request_restart` right before `os.execv`.
+
+**Tightened live, 2026-08-28 (mouth movement read as the whole swarm
+moving)**: reported live -- "the swarm around his mouth shape is moving
+when he talks... it should either just slightly move or not move at all."
+`particleTarget`'s mouth-bulge displacement affected a wide band (most of
+the lower half of the face) at full `mouthOpenPx` amplitude, competing
+visually with `drawLiquidLipSeam`'s actual mouth-shape overlay. Narrowed
+the affected band to a tight zone right at the mouth line and cut the
+displacement to 25% of its previous amplitude -- just a faint nudge, not
+a second copy of the articulation.
+
 **Fixed live, 2026-08-28 (voice confirmations gave no "listening" cue)**:
 reported live -- "he asked 'may I click?' for approval for something, but
 didn't go to 'listening' to hear my response." `make_voice_confirmer`'s

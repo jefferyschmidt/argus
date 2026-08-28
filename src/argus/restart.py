@@ -23,6 +23,18 @@ def request_restart(delay: float = 0.75) -> None:
 
     def _do_restart() -> None:
         time.sleep(delay)
+
+        # os.execv below bypasses normal interpreter shutdown entirely, so
+        # anything still queued in MemoryManager._embed_pool would
+        # otherwise be silently lost -- give it a bounded window to finish.
+        from argus.ui import commands as ui_commands
+        memory_manager = ui_commands.get_active_memory_manager()
+        if memory_manager is not None:
+            try:
+                memory_manager.flush_pending_embeds(timeout=3.0)
+            except Exception:
+                log.exception("Failed to flush pending memory embeds before restart")
+
         args = sys.argv[1:] if len(sys.argv) > 1 else ["voice"]
         log.info("Restarting Argus: python -m argus.cli %s", " ".join(args))
         os.execv(sys.executable, [sys.executable, "-m", "argus.cli"] + args)

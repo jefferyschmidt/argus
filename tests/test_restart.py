@@ -1,6 +1,7 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import argus.restart as restart_mod
+from argus.ui import commands as ui_commands
 
 
 class _SyncThread:
@@ -27,6 +28,26 @@ def test_request_restart_targets_module_entrypoint_with_original_args(monkeypatc
     mock_execv.assert_called_once_with(
         restart_mod.sys.executable, [restart_mod.sys.executable, "-m", "argus.cli", "voice"]
     )
+
+
+def test_request_restart_flushes_pending_memory_embeds_before_execv(monkeypatch):
+    """os.execv bypasses normal interpreter shutdown entirely -- anything
+    still queued in MemoryManager._embed_pool at that moment would
+    otherwise be silently lost. Must flush before execv, not after."""
+    monkeypatch.setattr(restart_mod.sys, "argv", ["argus", "voice"])
+    memory_manager = MagicMock()
+    ui_commands.set_active_memory_manager(memory_manager)
+    try:
+        with patch.object(restart_mod, "threading") as mock_threading, \
+             patch.object(restart_mod.time, "sleep"), \
+             patch.object(restart_mod.os, "execv") as mock_execv:
+            mock_threading.Thread.side_effect = _SyncThread
+            restart_mod.request_restart(delay=0)
+    finally:
+        ui_commands.set_active_memory_manager(None)
+
+    memory_manager.flush_pending_embeds.assert_called_once_with(timeout=3.0)
+    mock_execv.assert_called_once()
 
 
 def test_request_restart_defaults_to_voice_with_no_extra_args(monkeypatch):

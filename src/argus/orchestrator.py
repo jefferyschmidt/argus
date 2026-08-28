@@ -149,6 +149,7 @@ class Orchestrator:
         # registry for why that matters (shared cost governor).
         from argus.ui import commands as ui_commands
         ui_commands.set_active_router(self.router)
+        ui_commands.set_active_memory_manager(self.memory)
 
     def _show_expression(self, name: str) -> None:
         self.last_expression = name

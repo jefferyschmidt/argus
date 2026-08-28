@@ -208,3 +208,17 @@ def set_active_router(router) -> None:
 
 def get_active_router():
     return _active_router
+
+
+# Same pattern, for restart.py to flush pending semantic-memory embeds
+# before os.execv -- see MemoryManager.flush_pending_embeds.
+_active_memory_manager = None
+
+
+def set_active_memory_manager(memory_manager) -> None:
+    global _active_memory_manager
+    _active_memory_manager = memory_manager
+
+
+def get_active_memory_manager():
+    return _active_memory_manager
