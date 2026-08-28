@@ -163,3 +163,34 @@ def test_real_speech_detector_actually_votes_on_an_actual_sized_frame():
 
     silence = np.zeros(_FRAME_SAMPLES, dtype=np.int16)
     assert vad.is_speech(silence) is False
+
+
+def test_chunks_out_is_cleared_between_non_matching_utterances():
+    """Confirmed live as a real bug: chunks_out is the SAME list across
+    every iteration of the wait-for-wake-word loop (the caller creates it
+    once, before this whole call). Without clearing it between attempts,
+    every non-matching utterance's frames just piled onto whatever was
+    already there -- the console's live "hearing" caption (which
+    re-transcribes chunks_out as it grows) showed an ever-growing,
+    increasingly stale blob of everything said since the call started,
+    not just the current utterance in progress."""
+    listener = _listener()
+    listener._transcriber.transcribe_local.side_effect = ["unrelated chatter", "argus hello"]
+    chunks_out: list = []
+
+    def fake_capture(stream, frame_len, silence_hang_frames, max_frames, passed_chunks_out):
+        # Mirrors what the real _capture_one_utterance does: appends real
+        # frames into whatever chunks_out it's handed.
+        if passed_chunks_out is not None:
+            passed_chunks_out.append(np.ones(10, dtype=np.int16))
+        return np.ones(16000, dtype=np.int16)
+
+    with patch.object(listener, "_capture_one_utterance", side_effect=fake_capture), \
+         patch("argus.voice.local_wake_word.sd.InputStream") as mock_stream_cls:
+        mock_stream_cls.return_value.__enter__.return_value = MagicMock()
+        listener.listen_for_wake_and_command(chunks_out=chunks_out)
+
+    # Only the matching (second) utterance's frame should remain -- the
+    # first, non-matching utterance's frame must have been cleared out,
+    # not left to accumulate alongside it.
+    assert len(chunks_out) == 1

@@ -235,10 +235,30 @@ class VoiceLoop:
             last_len = 0
             while not stop_event.is_set():
                 time.sleep(0.6)
-                if len(chunks_out) <= last_len:
+                current_len = len(chunks_out)
+                # The local wake-word engine's listen loop clears chunks_out
+                # between separate (non-matching) utterances now, so length
+                # can drop back to 0, not just grow -- treat any CHANGE as
+                # worth re-checking, not just growth, or a reset here would
+                # leave the caption stuck showing the previous utterance
+                # until the new one happened to out-grow the old one.
+                if current_len == last_len:
                     continue
-                last_len = len(chunks_out)
-                samples = np.concatenate(chunks_out)
+                last_len = current_len
+                if current_len == 0:
+                    continue
+                # A snapshot copy, not a direct concatenate of chunks_out --
+                # the listener thread can now clear() it concurrently
+                # between the length check above and this line (it didn't
+                # used to be cleared at all, only appended to), and
+                # np.concatenate([]) raises on an empty sequence. list(...)
+                # is a single atomic operation under the GIL; concatenating
+                # THAT copy is safe even if the original gets cleared right
+                # after this line runs.
+                snapshot = list(chunks_out)
+                if not snapshot:
+                    continue
+                samples = np.concatenate(snapshot)
                 if samples.size < 16000 * 0.5:  # skip until at least ~0.5s captured
                     continue
                 try:

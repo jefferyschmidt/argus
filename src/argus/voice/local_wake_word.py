@@ -80,6 +80,22 @@ class LocalWakeWordListener:
 
         with sd.InputStream(samplerate=sr, channels=1, dtype="int16", blocksize=frame_len) as stream:
             while True:
+                # chunks_out is the SAME list across every iteration of this
+                # loop (the caller creates it once, before this whole call)
+                # -- confirmed live as a real bug: without clearing it here,
+                # every non-matching utterance's frames just kept piling
+                # onto whatever was already there, so the console's live
+                # "hearing" caption (which re-transcribes chunks_out as it
+                # grows -- see _start_hearing_watcher) accumulated an
+                # ever-growing, increasingly stale blob of everything said
+                # since this call started, minutes of unrelated speech
+                # concatenated together, instead of just showing the
+                # current utterance in progress. Wake-word matching itself
+                # was never affected (that uses _capture_one_utterance's
+                # own fresh local buffer each call) -- this was purely
+                # about what the live caption displayed.
+                if chunks_out is not None:
+                    chunks_out.clear()
                 utterance = self._capture_one_utterance(stream, frame_len, silence_hang_frames, max_frames, chunks_out)
                 if utterance is None or utterance.size == 0:
                     continue
