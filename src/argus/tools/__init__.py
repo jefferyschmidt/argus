@@ -13,6 +13,7 @@ from argus.tools.desktop import (
 )
 from argus.tools.email import list_recent_emails_tool, send_email_tool
 from argus.tools.filesystem import list_dir_tool, read_file_tool, run_shell_tool, write_file_tool
+from argus.tools.ingest import ingest_document_tool
 from argus.tools.journal import search_journal_tool
 from argus.tools.registry import ToolRegistry, console_confirmer
 from argus.tools.reminders import cancel_reminder_tool, list_reminders_tool, set_reminder_tool
@@ -69,6 +70,7 @@ def build_default_registry() -> ToolRegistry:
         restart_argus_tool,
         undo_last_write_tool,
         list_recent_writes_tool,
+        ingest_document_tool,
     ):
         registry.register(tool)
 

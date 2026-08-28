@@ -240,9 +240,23 @@ calls (with real generated images), memory, and routing/spend.
 - Personal knowledge graph -- not just flat memory, but a structured map of
   people/projects/relationships built over time, so it can answer
   relational questions ("who else is on the Coshocton line besides Jason?").
-- Second-brain ingestion -- drop a PDF/note/article into a watched folder
+- ~~Second-brain ingestion -- drop a PDF/note/article into a watched folder
   and it auto-indexes + summarizes into memory, building real long-term
-  expertise on your world instead of only remembering conversations.
+  expertise on your world instead of only remembering conversations.~~
+  Done: `argus/ingest.py` extracts text (PDF via pypdf, txt/md directly),
+  chunks it (1500 chars, 200 overlap -- the embedding model silently
+  truncates long input, so a whole document as one chunk would only ever
+  be searchable by its first ~256 tokens), and stores it into the same
+  SemanticStore conversation recall already searches -- ingested documents
+  are recallable with zero changes to the recall path. Two ways in:
+  `KNOWLEDGE_WATCH_FOLDER` (argus/knowledge_watcher.py) auto-ingests
+  anything dropped in a watched folder and announces new files (existing
+  files are ingested silently on first run, no backlog-flood announcement
+  spam), or the `ingest_document` tool for "read this file" on demand.
+  Re-ingesting a changed file overwrites its old chunks (deterministic doc
+  ids + upsert) rather than duplicating them. Live-verified: ingested a
+  real text file, searched a natural-language question against it through
+  the real Chroma store, got the right chunk back.
 - Proactive research digests -- tell it what you care about (a competitor,
   a technology, a hobby) and it periodically surfaces a digest unprompted.
 - "Teach me once" macros -- walk it through a multi-step task manually one

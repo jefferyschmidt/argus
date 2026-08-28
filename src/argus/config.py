@@ -133,6 +133,16 @@ class Settings(BaseSettings):
     google_calendar_client_id: str = ""
     google_calendar_client_secret: str = ""
 
+    # Second-brain ingestion (argus/ingest.py, argus/knowledge_watcher.py):
+    # drop a PDF/txt/md into this folder and it's auto-extracted, chunked,
+    # and stored into semantic memory -- recallable in conversation with no
+    # extra step. Empty by default (opt-in -- unlike email/calendar this
+    # touches arbitrary local files, so it only watches a folder the user
+    # explicitly points it at).
+    knowledge_watch_folder: str = ""
+    knowledge_watch_enabled: bool = True
+    knowledge_watch_poll_seconds: float = 60.0
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir
