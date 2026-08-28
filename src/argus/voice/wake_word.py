@@ -35,7 +35,9 @@ class WakeWordListener:
                 if any(score > settings.wake_word_threshold for score in scores.values()):
                     return
 
-    def listen_for_wake_and_command(self, on_wake=None, chunks_out: list | None = None) -> tuple[np.ndarray, str | None]:
+    def listen_for_wake_and_command(
+        self, on_wake=None, chunks_out: list | None = None, on_checking=None
+    ) -> tuple[np.ndarray, str | None]:
         """Blocks for the wake word, then records the command that follows
         on the SAME audio stream (no reopen gap, so nothing spoken right
         after the wake word gets clipped). Returns (samples, None) -- int16
@@ -47,7 +49,12 @@ class WakeWordListener:
 
         chunks_out: optional list that command-phase frames are appended
         into as they're captured, so a caller running on another thread can
-        read the in-progress audio for live captioning."""
+        read the in-progress audio for live captioning.
+
+        on_checking: accepted for interface parity with LocalWakeWordListener
+        but never called here -- openWakeWord scores every frame directly
+        (no separate slow transcription step to signal), so there's no
+        "checking" phase distinct from normal listening."""
         from collections import deque
 
         self._model.reset()

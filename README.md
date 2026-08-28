@@ -10,6 +10,24 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (local wake-word: no feedback during the slow
+part)**: reported live -- "it heard me (you can see my speech to text),
+but it's not doing anything." The console's live hearing caption showed
+"Hey, Argus, give me a briefing." correctly, but the state stayed on
+"waiting for the wake word" the whole time. Not a bug in detection itself
+-- a real, measured gap in feedback: the local engine only knows whether
+it heard the wake word AFTER transcribing the whole utterance locally
+(CPU-bound), and the console gave zero visual indication that was even
+happening. Measured directly on this hardware: local transcription of a
+short clip took 8.24s cold (first call in a process, the model loads
+lazily) and 3.17s warm -- easily long enough to look stuck with no
+feedback at all. Fixed with a new `on_checking` callback
+(`LocalWakeWordListener.listen_for_wake_and_command`) that fires the
+moment real speech is captured and about to be checked, publishing a
+state update ("Checking whether that was really meant for me," reusing
+the existing `confirming` label) so the console visibly changes the
+instant it starts working on what you said, not just when it finishes.
+
 **Trimmed live, 2026-08-28 (system prompt conciseness)**: reported live --
 Argus's spoken replies were running too long. The user first asked Argus
 to trim its own SYSTEM_PROMPT via its self-improve tools; that attempt

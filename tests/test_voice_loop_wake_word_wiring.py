@@ -69,3 +69,26 @@ def test_openwakeword_engine_is_selected_when_configured(monkeypatch):
     mock_init.assert_called_once()
     from argus.voice.wake_word import WakeWordListener
     assert isinstance(listener, WakeWordListener)
+
+
+def test_run_passes_an_on_checking_callback_that_publishes_a_state_update():
+    """Confirmed live as a real UX gap: local transcription to check for
+    the wake word can take a genuinely noticeable few seconds, and until
+    this the console gave zero feedback during that window -- reported
+    live as "it heard me but isn't doing anything." """
+    loop = _loop_with_wake_sequence([
+        (np.array([1, 2, 3], dtype=np.int16), None),
+        KeyboardInterrupt(),
+    ])
+    loop._process_utterance = MagicMock(return_value=False)
+
+    with patch("argus.voice.loop.ui_events.publish") as mock_publish:
+        loop.run()
+        on_checking = loop.wake_word.listen_for_wake_and_command.call_args.kwargs["on_checking"]
+        assert on_checking is not None
+        on_checking()
+
+    published_types_and_modes = [
+        (call.args[0].get("type"), call.args[0].get("mode")) for call in mock_publish.call_args_list
+    ]
+    assert ("state", "confirming") in published_types_and_modes

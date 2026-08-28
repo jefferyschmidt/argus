@@ -63,7 +63,9 @@ class LocalWakeWordListener:
     def reset(self) -> None:
         self._vad.reset()
 
-    def listen_for_wake_and_command(self, on_wake=None, chunks_out: list | None = None) -> tuple[np.ndarray, str | None]:
+    def listen_for_wake_and_command(
+        self, on_wake=None, chunks_out: list | None = None, on_checking=None
+    ) -> tuple[np.ndarray, str | None]:
         """Blocks until an utterance containing the wake word is heard.
         Returns (samples, command_text): samples is the full captured
         utterance (kept for the caller's existing chunks_out/live-caption
@@ -72,7 +74,17 @@ class LocalWakeWordListener:
         the user said only the wake word (or nothing usable followed),
         in which case the caller should fall back to recording a separate
         follow-up the normal way, exactly as it already does when
-        openWakeWord is the engine."""
+        openWakeWord is the engine.
+
+        on_checking, if given, fires right before each candidate utterance
+        is transcribed to check for the wake word -- confirmed live as a
+        real UX gap: local (CPU-bound) transcription can take a genuinely
+        noticeable few seconds, especially the first time it runs in a
+        process (the model loads lazily on first use), and until this the
+        console gave zero feedback during that window -- it just kept
+        showing "waiting for the wake word" the whole time, even though
+        real speech had already been captured and was actively being
+        checked. Reported live as "it heard me but isn't doing anything."""
         sr = settings.audio_sample_rate
         frame_len = _FRAME_SAMPLES
         silence_hang_frames = int(_SILENCE_HANG_MS // _FRAME_MS)
@@ -104,6 +116,8 @@ class LocalWakeWordListener:
                 if speech_ms < _MIN_SPEECH_MS_TO_TRANSCRIBE:
                     continue
 
+                if on_checking is not None:
+                    on_checking()
                 text = self._transcriber.transcribe_local(utterance)
                 match = _WAKE_PATTERN.search(text)
                 if not match:

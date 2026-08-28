@@ -313,10 +313,22 @@ class VoiceLoop:
                     ui_events.publish({"type": "state", "value": "listening", "mode": "command"})
                     self._refresh_hot_mic()
 
+                def _on_checking():
+                    # The local engine only knows whether it heard the wake
+                    # word AFTER transcribing the whole utterance -- a real,
+                    # noticeable few seconds on CPU, longer the very first
+                    # time (the model loads lazily). Without this, the
+                    # console just kept showing "waiting for the wake word"
+                    # the entire time real speech was already captured and
+                    # being checked -- confirmed live, reported as "it heard
+                    # me but isn't doing anything."
+                    console.print("[dim](checking what was heard...)[/dim]")
+                    ui_events.publish({"type": "state", "value": "listening", "mode": "confirming"})
+
                 wake_chunks: list = []
                 stop_watcher = self._start_hearing_watcher(wake_chunks)
                 samples, wake_command_text = self.wake_word.listen_for_wake_and_command(
-                    on_wake=_on_wake, chunks_out=wake_chunks
+                    on_wake=_on_wake, chunks_out=wake_chunks, on_checking=_on_checking
                 )
                 stop_watcher.set()
             except KeyboardInterrupt:

@@ -125,6 +125,41 @@ def test_listen_for_wake_and_command_fires_on_wake_callback():
     on_wake.assert_called_once()
 
 
+def test_listen_for_wake_and_command_fires_on_checking_before_each_transcription():
+    """Confirmed live as a real UX gap: local transcription can take a
+    genuinely noticeable few seconds (CPU-bound, longer on first use while
+    the model lazily loads), and until this the console gave zero
+    feedback during that window -- reported live as "it heard me but
+    isn't doing anything." on_checking must fire once per candidate
+    utterance, including ones that turn out not to match."""
+    listener = _listener()
+    listener._transcriber.transcribe_local.side_effect = ["just some chatter", "argus what time is it"]
+    on_checking = MagicMock()
+
+    with patch.object(listener, "_capture_one_utterance", side_effect=[
+        np.ones(16000, dtype=np.int16),
+        np.ones(16000, dtype=np.int16),
+    ]), patch("argus.voice.local_wake_word.sd.InputStream") as mock_stream_cls:
+        mock_stream_cls.return_value.__enter__.return_value = MagicMock()
+        listener.listen_for_wake_and_command(on_checking=on_checking)
+
+    assert on_checking.call_count == 2  # once per candidate utterance, match or not
+
+
+def test_on_checking_does_not_fire_for_bursts_below_the_floor():
+    listener = _listener()
+    on_checking = MagicMock()
+    very_short = np.ones(400, dtype=np.int16)  # 25ms @ 16kHz -- well under the floor
+    listener._transcriber.transcribe_local.return_value = "argus"
+
+    with patch.object(listener, "_capture_one_utterance", side_effect=[very_short, np.ones(16000, dtype=np.int16)]), \
+         patch("argus.voice.local_wake_word.sd.InputStream") as mock_stream_cls:
+        mock_stream_cls.return_value.__enter__.return_value = MagicMock()
+        listener.listen_for_wake_and_command(on_checking=on_checking)
+
+    on_checking.assert_called_once()  # not on the short burst, only the real one
+
+
 def test_short_speech_bursts_are_discarded_without_transcribing():
     """A cough or click can pass VAD for a single frame -- not worth a
     whisper pass. _MIN_SPEECH_MS_TO_TRANSCRIBE filters those out before
