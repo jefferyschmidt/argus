@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 console = Console()
 
 _STOP_LISTENING_PHRASES = ("stop listening", "stop barging in", "quit interrupting")
+_BARGE_IN_HOLD_FRAMES = 3  # ~240ms of sustained energy (at 80ms/chunk) before hot-mic barge-in fires
 
 
 class _BargeInInterrupt(Exception):
@@ -233,6 +234,7 @@ class VoiceLoop:
 
         sentence_queue: queue.Queue[str | None] = queue.Queue()
         interrupted = threading.Event()
+        pending_unspoken: list[str] = []
 
         def consumer() -> None:
             while True:
@@ -243,6 +245,19 @@ class VoiceLoop:
                 ui_events.publish({"type": "caption", "text": sentence})
                 if self._speak_with_barge_in(sentence):
                     interrupted.set()
+                    # This sentence, plus anything the model had already
+                    # generated but this thread hasn't spoken yet, is real
+                    # content we don't want to just throw away -- a false
+                    # barge-in shouldn't mean the rest of the answer never
+                    # gets said. See _resume_after_interruption below.
+                    pending_unspoken.append(sentence)
+                    while True:
+                        try:
+                            queued = sentence_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        if queued is not None:
+                            pending_unspoken.append(queued)
                     return
 
         consumer_thread = threading.Thread(target=consumer)
@@ -261,6 +276,54 @@ class VoiceLoop:
             sentence_queue.put(None)
             consumer_thread.join()
 
+        if self.orchestrator.last_tier is not None:
+            tag = f"[dim]({self.orchestrator.last_tier.value}: {self.orchestrator.last_model})[/dim]"
+            console.print(f"{tag}\n")
+
+        if pending_unspoken:
+            return self._resume_after_interruption(pending_unspoken)
+        return True
+
+    def _speak_sentences(self, sentences: list[str]) -> list[str]:
+        """Speaks each sentence via the barge-in-aware player in order.
+        Returns the sentences (the interrupted one plus anything after it,
+        each in full -- no partial-sentence tracking) that were NOT spoken
+        because playback was interrupted again partway through; empty if
+        every sentence played to completion."""
+        for i, sentence in enumerate(sentences):
+            console.print(f"[bold cyan]argus>[/bold cyan] {sentence}")
+            ui_events.publish({"type": "caption", "text": sentence})
+            if self._speak_with_barge_in(sentence):
+                return sentences[i:]
+        return []
+
+    def _resume_after_interruption(self, pending: list[str], depth: int = 0) -> bool:
+        """A barge-in just cut Argus off mid-reply. Rather than assuming
+        that was a real interruption and silently dropping the rest of the
+        answer (the reported bug: "when there's no input to process, he
+        just stops"), do one short listen first. If something real was
+        actually said, handle it normally. If it was a false trigger --
+        background noise, a click, nothing transcribable -- pick back up
+        where playback left off instead of leaving the reply unfinished."""
+        if depth > 4:  # pathological repeated false-triggers; stop retrying
+            return True
+
+        ui_events.publish({"type": "state", "value": "listening"})
+        console.print("[dim](confirming interruption...)[/dim]")
+        chunks_out: list = []
+        stop_watcher = self._start_hearing_watcher(chunks_out)
+        heard = record_followup(min(settings.followup_window_seconds, 3.0), chunks_out=chunks_out)
+        stop_watcher.set()
+
+        if heard is not None:
+            text = self.transcriber.transcribe(heard)
+            if text and self._seems_addressed_to_argus(text):
+                return self._process_utterance(text=text, check_addressee=False)
+
+        console.print("[dim](no real interruption heard -- resuming)[/dim]")
+        remaining = self._speak_sentences(pending)
+        if remaining:
+            return self._resume_after_interruption(remaining, depth=depth + 1)
         if self.orchestrator.last_tier is not None:
             tag = f"[dim]({self.orchestrator.last_tier.value}: {self.orchestrator.last_model})[/dim]"
             console.print(f"{tag}\n")
@@ -354,6 +417,12 @@ class VoiceLoop:
         # (skip entirely in hot-mic mode -- it doesn't use wake-word scoring).
         warmup_chunks = 0 if hot_mic else 16  # ~1.28s at 80ms/chunk
         chunk = 1280
+        # A single loud 80ms frame (a cough, a click, speaker/echo bleed) was
+        # enough to stop Argus mid-sentence -- reported live as "he keeps
+        # hearing background noise and stopping." Require the energy to hold
+        # for a few consecutive frames before treating it as real speech;
+        # genuine speech onset easily clears this, transient noise doesn't.
+        hot_mic_speech_run = 0
         with sd.InputStream(samplerate=16000, channels=1, dtype="int16", blocksize=chunk) as stream:
             for _ in range(warmup_chunks):
                 if not play_thread.is_alive():
@@ -368,10 +437,14 @@ class VoiceLoop:
                 if hot_mic:
                     rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
                     if rms > settings.voice_silence_rms_threshold:
-                        console.print("[yellow](barge-in: hot mic heard you)[/yellow]")
-                        log.info("hot-mic barge-in triggered at rms=%.1f", rms)
-                        stop_event.set()
-                        return True
+                        hot_mic_speech_run += 1
+                        if hot_mic_speech_run >= _BARGE_IN_HOLD_FRAMES:
+                            console.print("[yellow](barge-in: hot mic heard you)[/yellow]")
+                            log.info("hot-mic barge-in triggered at rms=%.1f", rms)
+                            stop_event.set()
+                            return True
+                    else:
+                        hot_mic_speech_run = 0
                     continue
 
                 score = self.wake_word.score_frame(frame)

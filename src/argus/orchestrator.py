@@ -93,13 +93,20 @@ explicitly by ending your reply with a line: CORE_MEMORY: <the fact>
 That line will be stripped before the user sees it and queued for their
 confirmation.
 
-You also have an animated face in the console with real named expressions.
-When the user directly asks you to show a specific expression (angry, happy,
-sad, scared, curious, surprised, neutral), or when what you're saying calls
-for a strong, obvious emotional beat, end your reply with a line:
-EXPRESSION: <one of angry, happy, sad, scared, curious, surprised, neutral>
-Only include this line when there's a real reason to -- most replies don't
-need one. That line will also be stripped before the user sees it."""
+You also have an animated face in the console with real named expressions:
+angry, happy, sad, scared, curious, surprised, neutral. When the user asks
+to see one specifically ("show me angry"), or asks generally to see your
+expressions/emotions/faces, actually DO it rather than just talking about
+doing it -- pick one right then and put it in this reply, don't describe
+what you're about to show or ask which one they'd like first. If they asked
+generally, just show the first one now; they can ask for the rest one at a
+time. End the reply with a line in exactly this format, nothing else on
+that line:
+EXPRESSION: angry
+(substitute the expression you're actually showing). Also use this,
+unprompted, when what you're saying calls for a strong, obvious emotional
+beat -- most replies still don't need one. The line is stripped before the
+user sees or hears it, so it never gets spoken aloud."""
 
 
 class Orchestrator:
