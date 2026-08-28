@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 
 from argus.config import settings
-from argus.ingest import _SUPPORTED_EXTENSIONS, ingest_file
+from argus.ingest import SUPPORTED_EXTENSIONS, ingest_file
 from argus.ui import events as ui_events
 
 log = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ class KnowledgeWatcher:
 
         newly_ingested = []
         for path in sorted(folder.iterdir()):
-            if not path.is_file() or path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
+            if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
             mtime = path.stat().st_mtime
             key = str(path.resolve())

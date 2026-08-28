@@ -21,7 +21,7 @@ from argus.memory.semantic import SemanticStore
 
 log = logging.getLogger(__name__)
 
-_SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
+SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
 _CHUNK_CHARS = 1500
 _CHUNK_OVERLAP = 200
 
@@ -39,7 +39,7 @@ def _extract_text(path: Path) -> str:
         return "\n\n".join(page.extract_text() or "" for page in reader.pages)
     if ext in (".txt", ".md"):
         return path.read_text(errors="replace")
-    raise UnsupportedFileType(f"unsupported file type: {ext} (supported: {sorted(_SUPPORTED_EXTENSIONS)})")
+    raise UnsupportedFileType(f"unsupported file type: {ext} (supported: {sorted(SUPPORTED_EXTENSIONS)})")
 
 
 def _chunk(text: str) -> list[str]:
