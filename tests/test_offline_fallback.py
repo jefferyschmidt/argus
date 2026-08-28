@@ -16,6 +16,10 @@ def _router(local_available: bool):
     router = ModelRouter.__new__(ModelRouter)
     router.local = MagicMock()
     router.local.is_available.return_value = local_available
+    # These tests aren't exercising the Groq-vs-Ollama distinction --
+    # offline_fallback is what _degraded_result() actually calls, so point
+    # it at the same mock as local so it behaves identically here.
+    router.offline_fallback = router.local
     router.frontier = MagicMock()
     router.cost_governor = MagicMock()
     return router

@@ -3,9 +3,11 @@ import re
 
 import anthropic
 
+from argus.config import settings
 from argus.llm.anthropic_client import AnthropicClient
 from argus.llm.base import CompletionResult, Message, Tier
 from argus.llm.cost_governor import BudgetExceeded, CostGovernor
+from argus.llm.groq_client import GroqClient
 from argus.llm.ollama_client import OllamaClient
 from argus.llm.pricing import estimate_cost
 
@@ -54,25 +56,39 @@ _OFFLINE_NO_LOCAL_MESSAGE = (
 
 class ModelRouter:
     def __init__(self, daily_cap_usd: float = 5.0):
-        self.local = OllamaClient()
+        # Groq (hosted, no cold start) replaces Ollama in this low-latency
+        # slot when configured -- Ollama's CPU-bound cold start on this
+        # hardware was the actual bottleneck. Kept as OllamaClient with no
+        # key set so a from-scratch install with no GROQ_API_KEY still
+        # works exactly as before.
+        self.local = GroqClient() if settings.groq_api_key else OllamaClient()
+        # Always a REAL local model, regardless of what self.local is --
+        # this is specifically for the case where there's no internet at
+        # all, which Groq (hosted) can't help with the way genuine
+        # on-device inference can. Reuses self.local's own instance when
+        # it's already Ollama rather than opening a second connection.
+        self.offline_fallback = self.local if isinstance(self.local, OllamaClient) else OllamaClient()
         self.frontier = AnthropicClient()
         self.cost_governor = CostGovernor(daily_cap_usd=daily_cap_usd)
-        if self.local.is_available():
+        if isinstance(self.local, OllamaClient) and self.local.is_available():
             self.local.prewarm()
 
     def _degraded_result(self, user_text: str, system: str, note: str) -> CompletionResult:
         """The frontier tier (network) is unreachable. Rather than let the
         exception propagate and crash the whole turn -- previously the only
         behavior, since nothing here caught APIConnectionError -- fall back
-        to the local model if it's up (with a clear disclaimer that tools/
-        web access aren't available in this fallback), or return a plain
-        "I'm offline" message if even that's unreachable. Either way the
-        caller always gets back a normal CompletionResult, never an
-        exception, so the rest of the turn (memory, transcript, TTS) keeps
-        working instead of dying mid-conversation."""
-        if self.local.is_available():
+        to a genuinely local model if it's up (with a clear disclaimer that
+        tools/web access aren't available in this fallback), or return a
+        plain "I'm offline" message if even that's unreachable. Uses
+        offline_fallback specifically, not self.local -- if self.local is
+        Groq, it needs internet too and would be just as unreachable as
+        Anthropic during a real outage. Either way the caller always gets
+        back a normal CompletionResult, never an exception, so the rest of
+        the turn (memory, transcript, TTS) keeps working instead of dying
+        mid-conversation."""
+        if self.offline_fallback.is_available():
             try:
-                result = self.local.complete(
+                result = self.offline_fallback.complete(
                     [Message(role="user", content=user_text)], system=system
                 )
                 result.text = f"({note}) {result.text}"

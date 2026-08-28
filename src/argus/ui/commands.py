@@ -4,6 +4,7 @@ import threading
 _stop_listening_requested = threading.Event()
 _text_messages: "queue.Queue[str]" = queue.Queue()
 _ptt_active = threading.Event()
+_quiet_mode = threading.Event()
 
 
 def request_stop_listening() -> None:
@@ -43,3 +44,25 @@ def stop_push_to_talk() -> None:
 
 def is_push_to_talk_active() -> bool:
     return _ptt_active.is_set()
+
+
+def set_quiet_mode(enabled: bool) -> None:
+    """Text-only mode: Argus keeps listening/responding normally, it just
+    never actually speaks the reply out loud -- for when speaking isn't
+    practical (late night, a meeting, a quiet room) but you still want the
+    full assistant, not just the separate `argus chat` mode."""
+    if enabled:
+        _quiet_mode.set()
+    else:
+        _quiet_mode.clear()
+
+
+def is_quiet_mode() -> bool:
+    return _quiet_mode.is_set()
+
+
+def toggle_quiet_mode() -> bool:
+    """Returns the new state after toggling."""
+    new_state = not _quiet_mode.is_set()
+    set_quiet_mode(new_state)
+    return new_state

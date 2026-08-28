@@ -12,6 +12,19 @@ class Settings(BaseSettings):
     ollama_host: str = "http://localhost:11434"
     ollama_local_model: str = "llama3.2:3b"
 
+    # Optional -- if set, Groq replaces Ollama in the low-latency "local"
+    # slot (small talk, addressee-gate classification): hosted, no cold
+    # start, ~300-500 tok/s vs. Ollama's CPU-bound generation on this
+    # hardware. Ollama is kept regardless as the genuine offline fallback
+    # (see ModelRouter.offline_fallback) since Groq still needs internet.
+    groq_api_key: str = ""
+    # gpt-oss-20b is a reasoning model -- without reasoning_effort='low' it
+    # burns its whole token budget on hidden reasoning and returns empty
+    # content (confirmed live: 198/200 tokens on reasoning, 0 on the actual
+    # reply). 'low' keeps latency near-instant (~0.3-0.7s measured) while
+    # still returning real text -- see GroqClient.complete().
+    groq_model: str = "openai/gpt-oss-20b"
+
     anthropic_model: str = "claude-haiku-4-5-20251001"
     anthropic_advanced_model: str = "claude-sonnet-5"
 

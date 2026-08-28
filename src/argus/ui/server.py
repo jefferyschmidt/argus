@@ -66,6 +66,18 @@ def ptt_stop() -> dict:
     return {"ok": True}
 
 
+@app.post("/api/quiet_mode/toggle")
+def quiet_mode_toggle() -> dict:
+    new_state = ui_commands.toggle_quiet_mode()
+    ui_events.publish({"type": "quiet_mode", "value": new_state})
+    return {"quiet_mode": new_state}
+
+
+@app.get("/api/quiet_mode")
+def quiet_mode_status() -> dict:
+    return {"quiet_mode": ui_commands.is_quiet_mode()}
+
+
 def _resolve_core_memory(memory_id: int, confirmed: bool) -> dict:
     """Direct DB access rather than routing through the live VoiceLoop's
     in-memory objects -- confirm/reject is just a row update, and going

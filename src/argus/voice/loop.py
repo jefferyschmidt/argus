@@ -20,6 +20,8 @@ log = logging.getLogger(__name__)
 console = Console()
 
 _STOP_LISTENING_PHRASES = ("stop listening", "stop barging in", "quit interrupting")
+_QUIET_MODE_ON_PHRASES = ("quiet mode", "go quiet", "stop talking out loud", "mute yourself", "text only")
+_QUIET_MODE_OFF_PHRASES = ("unmute", "you can talk again", "quiet mode off", "talk out loud again")
 _BARGE_IN_HOLD_FRAMES = 3  # ~240ms of sustained energy (at 80ms/chunk) before hot-mic barge-in fires
 _LIKELY_ADDRESSED = re.compile(
     r"^(argus|hey\s+argus|can|could|would|will|are|do|does|did|is|"
@@ -304,6 +306,23 @@ class VoiceLoop:
             console.print("[dim](hot mic off -- wake word needed to interrupt again)[/dim]\n")
             return True
 
+        lowered = text.lower()
+        if not ui_commands.is_quiet_mode() and any(phrase in lowered for phrase in _QUIET_MODE_ON_PHRASES):
+            ui_commands.set_quiet_mode(True)
+            console.print("[dim](quiet mode on -- replies are text-only until you say otherwise)[/dim]\n")
+            ui_events.publish({"type": "transcript", "role": "argus", "text": "Going quiet -- text replies only from here."})
+            ui_events.publish({"type": "quiet_mode", "value": True})
+            return True
+        if ui_commands.is_quiet_mode() and any(phrase in lowered for phrase in _QUIET_MODE_OFF_PHRASES):
+            ui_commands.set_quiet_mode(False)
+            console.print("[dim](quiet mode off)[/dim]\n")
+            ui_events.publish({"type": "quiet_mode", "value": False})
+            confirmation = "Back with you -- I can talk again."
+            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
+            ui_events.publish({"type": "caption", "text": confirmation})
+            self._speak_with_barge_in(confirmation)  # now actually audible -- proves quiet mode is really off
+            return True
+
         self._refresh_hot_mic()
 
         sentence_queue: queue.Queue[str | None] = queue.Queue()
@@ -406,6 +425,14 @@ class VoiceLoop:
     def _speak_with_barge_in(self, text: str) -> bool:
         """Synthesizes and plays one sentence. Returns True if barge-in
         interrupted it."""
+        if ui_commands.is_quiet_mode():
+            # Quiet mode: the caller already published the caption/
+            # transcript text before calling this, so the reply is fully
+            # visible in the console/Telegram either way -- just skip the
+            # actual audio synthesis and playback. Nothing played, so
+            # barge-in can't have interrupted anything.
+            return False
+
         # Synthesize BEFORE starting the watcher -- Piper's synthesis is
         # itself onnxruntime compute, and letting it overlap with the
         # watcher's continuous wake-word inference was starving the CPU on
