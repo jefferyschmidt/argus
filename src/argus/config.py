@@ -58,7 +58,12 @@ class Settings(BaseSettings):
     voice_silence_rms_threshold: float = 60.0
     # After Argus finishes speaking, how long to keep listening without
     # requiring the wake word again before falling back to wake-word-only.
-    followup_window_seconds: float = 10.0
+    # Reported live as needing the wake word "too often during normal
+    # usage" at the old 10s default -- a completely ordinary pause to read
+    # a reply or think for a moment easily exceeds that. Each follow-up
+    # utterance renews the window (see voice/loop.py's run()), so this is
+    # "how long since the last thing said," not a hard per-turn cap.
+    followup_window_seconds: float = 30.0
     # Barge-in runs continuous wake-word inference while speech plays, which
     # competes with Piper's own onnx compute for CPU on this hardware. If it
     # causes stalls/silence, set VOICE_BARGE_IN_ENABLED=false in .env.
