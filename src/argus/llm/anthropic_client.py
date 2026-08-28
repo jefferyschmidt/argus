@@ -13,7 +13,21 @@ _TIER_MODEL = {
     Tier.ADVANCED: lambda: settings.anthropic_advanced_model,
 }
 
-_MAX_TOOL_ITERATIONS = 8
+# Confirmed live as a real, self-defeating bug: 8 was too tight for a
+# genuine multi-step desktop task done properly (screenshot, click,
+# screenshot again to verify, repeat -- e.g. "open the calculator and add
+# 4+4" needs open_app + a screenshot/click/verify pair per button, at
+# least 8-9 calls before even reaching "="). Hit this cap mid-task three
+# times in one session, and each time forced a tradeoff between
+# completing the task and verifying each click -- observed live as
+# clicking the same coordinates twice and chaining several clicks between
+# screenshots (skipping the system prompt's own "screenshot after every
+# click" instruction) specifically to cram more actions into too few
+# iterations, then still running out before finishing. 20 gives enough
+# room for a real verify-every-click desktop workflow without being an
+# open-ended agent loop (see argus/agent/runner.py's separate, much
+# higher cap for that).
+_MAX_TOOL_ITERATIONS = 20
 
 # Anthropic's server-side web search -- executes on Anthropic's infrastructure,
 # not through our ToolRegistry, so it needs no local handler/permission tier.

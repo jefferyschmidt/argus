@@ -35,6 +35,16 @@ def set_listening_paused(paused: bool) -> None:
     else:
         _listening_paused.clear()
 
+    # Confirmed directly requested: an audible cue for listening status
+    # "when I'm not staring at the screen." Lazy import -- ui_commands is
+    # imported broadly (server.py, orchestrator, chat-only paths that
+    # never touch audio at all), and this module pulls in sounddevice.
+    try:
+        from argus.voice.chime import play_listening_chime, play_stopped_chime
+        (play_stopped_chime if paused else play_listening_chime)()
+    except Exception:
+        pass  # best-effort -- a missing/busy audio device must never break pausing itself
+
 
 def is_listening_paused() -> bool:
     return _listening_paused.is_set()

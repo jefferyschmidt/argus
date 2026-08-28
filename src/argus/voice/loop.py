@@ -345,6 +345,8 @@ class VoiceLoop:
                     console.print("[green](wake word heard, listening...)[/green]")
                     ui_events.publish({"type": "state", "value": "listening", "mode": "command"})
                     self._refresh_hot_mic()
+                    from argus.voice.chime import play_listening_chime
+                    play_listening_chime()
 
                 def _on_checking():
                     # The local engine only knows whether it heard the wake

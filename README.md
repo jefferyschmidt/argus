@@ -10,6 +10,47 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed, 2026-08-28 (an 8-tool-call budget was too tight for real
+multi-step tasks, plus listening-status chimes)**: three more things,
+found by request ("please see session log") and asked for directly.
+
+1. Calculator control ("click targeting might be off") and a self-editing
+   mouth-animation troubleshooting session both hit "(stopped: too many
+   tool iterations without a final answer)" mid-task -- the calculator
+   task never got past 3 of 4 needed clicks, and the self-editing session
+   burned its ENTIRE budget re-discovering files it had already found
+   (including guessing wrong paths like a root-level `index.html` and a
+   nonexistent `src/argus/web/static/js/face.js`) and never once called
+   write_own_source. Root cause: `_MAX_TOOL_ITERATIONS` (the per-turn
+   tool-call budget for a normal conversation reply, distinct from
+   `argus agent`'s much higher, separate cap) was 8 -- enough for a quick
+   lookup, not for a real verify-every-click desktop task or a
+   read/write/test self-edit. Raised to 20. Also strengthened both the
+   desktop-control and self-editing system-prompt sections: screenshot
+   after EVERY single click with no exceptions (the tight old budget was
+   pushing the model to chain several clicks blind to save iterations,
+   compounding one bad click into several -- confirmed live, clicking the
+   same coordinates twice in a row); and for self-editing, act directly
+   on a conclusion already reached earlier in the SAME conversation
+   instead of re-listing/re-reading files already read, and use
+   read_own_source/list_own_source (not the general, differently-
+   sandboxed read_file/list_dir) for anything in this project's own
+   source.
+2. Audio cues for listening status ("would make it easier to know Argus'
+   status when I'm not staring at the screen"): a short rising chime when
+   the wake word is heard, a short falling chime when "Stop listening" is
+   toggled on (and rising again on resume) -- plain synthesized tones
+   (`argus/voice/chime.py`, numpy sine waves, no asset files, no TTS
+   cost), played on the same speakers Argus's own voice already uses,
+   fire-and-forget so a missing/busy audio device can never break the
+   actual listening-state transition it's signaling.
+3. Confirmed the `addressee_gate` "disregarded as irrelevant" indicator
+   (added earlier today) is genuinely wired up and firing -- found one
+   real instance in the event log with its actual dropped text. Its
+   front-end display only needs the console page open/reloaded, no
+   restart -- it fires rarely by design (the gate is fail-open, biased
+   toward assuming addressed).
+
 **Fixed, 2026-08-28 (session review found: Argus denied asking something
 it actually just asked, and a paraphrased NONE got spoken verbatim)**:
 asked to check the log for another weird interaction. Found two separate
