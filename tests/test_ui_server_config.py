@@ -19,7 +19,7 @@ def test_wake_word_model_is_none_when_local_engine_active(monkeypatch):
 
 def test_wake_word_model_is_reported_when_openwakeword_engine_active(monkeypatch):
     monkeypatch.setattr("argus.ui.server.settings.wake_word_engine", "openwakeword")
-    monkeypatch.setattr("argus.ui.server.settings.wake_word_model", "hey_jarvis_v0.1")
+    monkeypatch.setattr("argus.ui.server.settings.openwakeword_model_name", "hey_jarvis_v0.1")
     client = TestClient(app)
 
     response = client.get("/api/config")

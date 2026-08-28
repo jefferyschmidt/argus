@@ -91,8 +91,9 @@ class VoiceLoop:
         implementations: "local" (default) needs no trained model and
         makes zero ongoing API calls (see LocalWakeWordListener),
         "openwakeword" uses the trained-classifier path (lower latency,
-        needs wake_word_model to actually be an "argus" model once/if one
-        gets trained -- currently still the bundled hey_jarvis placeholder)."""
+        needs openwakeword_model_name to actually be an "argus" model
+        once/if one gets trained -- currently still the bundled
+        hey_jarvis placeholder)."""
         if settings.wake_word_engine == "local":
             from argus.voice.local_wake_word import LocalWakeWordListener
             return LocalWakeWordListener()

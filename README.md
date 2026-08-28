@@ -10,6 +10,24 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (Argus didn't know its own capabilities)**:
+reported live -- asked what to say to get its attention, Argus suggested
+"hey jarvis" (the real wake word is "Argus"; `hey_jarvis_v0.1` is only an
+inert placeholder filename for the openWakeWord engine, which isn't even
+the active one by default). Separately, asked what features it wished it
+had, it claimed it can't act unprompted and can't create/modify files
+outside its own source -- both already exist (six background workers
+already speak up unprompted: context awareness, stuck detection, email
+watching, research digest, reminders, scheduled routines; `write_file`
+already covers Documents/Downloads/Desktop, not just self-editing) but
+were invisible to Argus's own self-knowledge -- the background workers
+aren't tool calls so had zero presence in the system prompt, and
+`write_file`'s real scope wasn't called out clearly enough among 30+
+tool schemas. Renamed the misleading setting (`wake_word_model` ->
+`openwakeword_model_name`, with a comment on the live confusion) and
+added explicit "## Already proactive" and file-tool-scope sections to
+SYSTEM_PROMPT so this kind of self-assessment answers correctly.
+
 **Fixed live, 2026-08-28 (replies to Argus's own unprompted speech got
 silently dropped)**: reported live -- Argus asked "sounds like there's
 something else on your mind about tomorrow, what's up?" (a proactive

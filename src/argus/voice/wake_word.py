@@ -19,7 +19,7 @@ class WakeWordListener:
         from openwakeword.model import Model
 
         openwakeword.utils.download_models()
-        self._model = Model(wakeword_models=[settings.wake_word_model])
+        self._model = Model(wakeword_models=[settings.openwakeword_model_name])
 
     def wait_for_wake(self) -> None:
         """Standalone wake-word wait, kept for tests/tools that only need
