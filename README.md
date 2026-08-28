@@ -115,10 +115,12 @@ calls (with real generated images), memory, and routing/spend.
     live screenshot thumbnail), memory stats, routing tier, and spend.
     Runs in-process over a WebSocket since it reads an in-memory event bus,
     so it only shows data when launched alongside chat/voice, not standalone.
-16. Memory privacy/audit controls -- browse, export, or purge episodic/
-    semantic memory as a whole (core-memory review already exists, but
-    there's no "what do you know about me" / "forget X" for everything
-    else). Matters for trust as memory accumulates, not just a nice-to-have.
+16. ~~Memory privacy/audit controls~~ -- `argus memory export <path>`
+    dumps everything (core, episodic, semantic) to JSON; `argus memory
+    forget` purges episodic + semantic with a typed confirmation (core
+    memory untouched -- that already has its own review flow). CLI-only,
+    deliberately not an LLM-callable tool -- a mishearing shouldn't be
+    able to wipe real history.
 17. Backup/restore -- everything lives only on this machine (SQLite +
     Chroma); a simple encrypted backup step before this becomes something
     relied on daily.

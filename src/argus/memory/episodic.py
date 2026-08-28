@@ -29,3 +29,21 @@ class EpisodicStore:
             "SELECT id, role, content, ts FROM episodes WHERE id > ? ORDER BY id",
             (since_id,),
         ).fetchall()
+
+    def all_rows(self) -> list[sqlite3.Row]:
+        """Every episode across every session -- used by memory export, not
+        by normal conversation (which only ever needs the current
+        session's recency, see recent())."""
+        return self.conn.execute(
+            "SELECT id, session_id, role, content, ts FROM episodes ORDER BY id"
+        ).fetchall()
+
+    def delete_all(self) -> int:
+        """Purges every episode across every session. Irreversible -- only
+        called from the CLI's explicit `argus memory forget` command, never
+        from a conversational tool, since an LLM mishearing "forget that"
+        as "forget everything" would be a bad way to lose real history."""
+        count = self.conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
+        self.conn.execute("DELETE FROM episodes")
+        self.conn.commit()
+        return count

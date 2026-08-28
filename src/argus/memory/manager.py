@@ -60,3 +60,27 @@ class MemoryManager:
             "semantic": self.semantic._collection.count(),
             "episodic": episodic_count,
         }
+
+    def export_all(self) -> dict:
+        """"What do you know about me" made concrete and exhaustive --
+        everything Argus has stored, across every session, not just the
+        top-N relevance hits normal conversation uses. Used by
+        `argus memory export`."""
+        return {
+            "core_confirmed": self.core.list_confirmed(),
+            "core_pending": [dict(row) for row in self.core.list_pending()],
+            "episodic": [dict(row) for row in self.episodic.all_rows()],
+            "semantic": self.semantic.export_all(),
+        }
+
+    def forget_everything_except_core(self) -> dict:
+        """Purges episodic + semantic memory (conversation history and its
+        embeddings). Deliberately leaves core memory untouched -- those
+        already have their own explicit confirm/reject review flow
+        (argus memory review), and a blanket wipe silently taking out
+        standing facts the user confirmed on purpose would be surprising.
+        Used by `argus memory forget`."""
+        return {
+            "episodic_deleted": self.episodic.delete_all(),
+            "semantic_deleted": self.semantic.delete_all(),
+        }

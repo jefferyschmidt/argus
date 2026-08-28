@@ -106,6 +106,41 @@ def memory_review() -> None:
             console.print("  skipped (left pending).")
 
 
+def memory_export(path: str) -> None:
+    import json
+    from pathlib import Path
+
+    mem = MemoryManager()
+    data = mem.export_all()
+    out_path = Path(path)
+    out_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+    console.print(
+        f"Exported {len(data['episodic'])} episodic entries, "
+        f"{len(data['semantic'])} semantic entries, "
+        f"{len(data['core_confirmed'])} confirmed + {len(data['core_pending'])} pending core memories "
+        f"to [bold]{out_path}[/bold]"
+    )
+
+
+def memory_forget() -> None:
+    console.print(
+        "[yellow]This permanently deletes all conversation history (episodic + semantic memory).[/yellow]\n"
+        "Core memories (confirmed standing facts) are NOT affected -- manage those individually with "
+        "'argus memory review'.\n"
+        "Consider 'argus memory export <path>' first if you want a copy."
+    )
+    choice = console.input("Type 'forget everything' to confirm: ").strip()
+    if choice != "forget everything":
+        console.print("Cancelled -- nothing was deleted.")
+        return
+    mem = MemoryManager()
+    result = mem.forget_everything_except_core()
+    console.print(
+        f"Deleted {result['episodic_deleted']} episodic entries and "
+        f"{result['semantic_deleted']} semantic entries."
+    )
+
+
 def main() -> None:
     setup_logging()
     parser = argparse.ArgumentParser(prog="argus")
@@ -120,11 +155,20 @@ def main() -> None:
     memory_parser = sub.add_parser("memory", help="Memory management")
     memory_sub = memory_parser.add_subparsers(dest="memory_command")
     memory_sub.add_parser("review", help="Review agent-proposed core memories")
+    export_parser = memory_sub.add_parser("export", help="Export all memory (core, episodic, semantic) to a JSON file")
+    export_parser.add_argument("path", help="Output file path")
+    memory_sub.add_parser("forget", help="Permanently delete all episodic + semantic memory (core memory untouched)")
 
     args = parser.parse_args()
 
     if args.command == "memory" and args.memory_command == "review":
         memory_review()
+    elif args.command == "memory" and args.memory_command == "export":
+        memory_export(args.path)
+    elif args.command == "memory" and args.memory_command == "forget":
+        memory_forget()
+    elif args.command == "memory":
+        memory_parser.print_help()
     elif args.command == "voice":
         voice()
     elif args.command == "agent":
