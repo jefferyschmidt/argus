@@ -59,11 +59,20 @@ def idle_emote() -> dict:
     return generate_idle_emote(router)
 
 
-@app.post("/api/stop_listening")
-def stop_listening() -> dict:
-    ui_commands.request_stop_listening()
-    ui_events.publish({"type": "toast", "text": "Hot mic turned off from the console."})
-    return {"ok": True}
+@app.post("/api/listening/toggle")
+def listening_toggle() -> dict:
+    new_state = ui_commands.toggle_listening_paused()
+    ui_events.publish({"type": "listening_paused", "value": new_state})
+    ui_events.publish({
+        "type": "toast",
+        "text": "Listening paused -- say nothing until you turn it back on." if new_state else "Listening resumed.",
+    })
+    return {"listening_paused": new_state}
+
+
+@app.get("/api/listening")
+def listening_status() -> dict:
+    return {"listening_paused": ui_commands.is_listening_paused()}
 
 
 @app.post("/api/restart")

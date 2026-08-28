@@ -5,7 +5,7 @@ import time
 
 from argus.config import settings
 
-_stop_listening_requested = threading.Event()
+_listening_paused = threading.Event()
 _text_messages: "queue.Queue[str]" = queue.Queue()
 _ptt_active = threading.Event()
 _quiet_mode = threading.Event()
@@ -17,18 +17,34 @@ if settings.email_watch_enabled:
     _email_watch.set()
 
 
-def request_stop_listening() -> None:
-    _stop_listening_requested.set()
+def set_listening_paused(paused: bool) -> None:
+    """"Stop listening" from the console -- confirmed live that the old
+    one-shot version of this (request_stop_listening/
+    consume_stop_listening_request) only ever turned off the hot-mic
+    barge-in window specifically, not the mic at all: a live hallucination
+    loop (Whisper mis-transcribing near-silence as "thank you" over and
+    over, each reply's own echo re-triggering the next) kept right on
+    running through the normal wake-word/follow-up loop after the button
+    was clicked, because nothing in that loop ever checked it. This is a
+    real, persistent PAUSE instead -- the whole run() loop (wake-word wait
+    AND the follow-up window) checks it and holds, not just hot-mic --
+    same pattern as quiet mode below, not a one-shot flag that gets
+    consumed and forgotten."""
+    if paused:
+        _listening_paused.set()
+    else:
+        _listening_paused.clear()
 
 
-def consume_stop_listening_request() -> bool:
-    """Returns True (and clears the flag) if a stop-listening request has
-    come in since the last check. Polled from the voice loop rather than
-    pushed, since it only needs to be checked at natural pause points."""
-    if _stop_listening_requested.is_set():
-        _stop_listening_requested.clear()
-        return True
-    return False
+def is_listening_paused() -> bool:
+    return _listening_paused.is_set()
+
+
+def toggle_listening_paused() -> bool:
+    """Returns the new state after toggling."""
+    new_state = not _listening_paused.is_set()
+    set_listening_paused(new_state)
+    return new_state
 
 
 def submit_text_message(text: str) -> None:

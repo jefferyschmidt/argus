@@ -10,6 +10,31 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (Whisper hallucination feedback loop)**: reported
+live -- after a normal exchange ended, the transcript showed "You: Thank
+you." / "Argus: You're welcome!" repeating for over a dozen exchanges,
+verbatim, with the user saying nothing. Root cause: Whisper is
+well-documented to hallucinate short boilerplate phrases ("thank you",
+"thanks for watching," "bye") when fed near-silent or ambient audio --
+Argus's own TTS bleeding faintly back into the mic right after he finished
+talking (or just room noise) was enough to trigger it during the
+follow-up window's RMS-threshold gate, which is more permissive than real
+speech detection. The addressee gate's own documented "when uncertain,
+assume addressed" bias then let the hallucinated phrase through, Argus
+replied, and that reply's own echo restarted the cycle. Fixed by running
+the ALREADY-CAPTURED audio through Silero VAD (the same detector already
+used for barge-in) before ever handing it to Whisper at all -- real
+silence/ambient noise is rejected before transcription, not filtered
+after. Separately: the user tried "Stop listening" to break the live
+loop and it didn't help, because that button only ever turned off the
+hot-mic barge-in window specifically -- nothing in the normal wake-word or
+follow-up loop ever checked it. Redesigned into a real persistent pause
+(`ui_commands.set/is/toggle_listening_paused`) that the whole run() loop
+holds on, in both places (wake-word wait and the follow-up window), until
+explicitly turned back on -- not a one-shot flag that only ever covered
+one specific case. The console button is now a real toggle (mirrors the
+existing quiet-mode button pattern) instead of a fire-once action.
+
 **Fixed live, 2026-08-28 (still stuck after the frame-size fix)**: the
 wake-word frame-size fix above was real and necessary, but "stuck in
 speaking mode even when he's done speaking" persisted -- a genuinely

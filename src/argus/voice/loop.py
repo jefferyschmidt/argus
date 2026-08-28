@@ -276,14 +276,36 @@ class VoiceLoop:
             self._hot_mic_until = time.monotonic() + settings.open_barge_in_seconds
 
     def _hot_mic_active(self) -> bool:
-        if ui_commands.consume_stop_listening_request():
+        if ui_commands.is_listening_paused():
             self._hot_mic_until = 0.0
-            console.print("[dim](hot mic off -- stopped from the console)[/dim]")
+            return False
         return time.monotonic() < self._hot_mic_until
+
+    def _wait_while_listening_paused(self) -> None:
+        """Blocks here, doing no audio capture or transcription at all,
+        for as long as "Stop listening" is active -- this is the real
+        enforcement point for a persistent pause (see
+        ui_commands.set_listening_paused's docstring for why the old
+        one-shot version of this button didn't actually stop anything
+        outside the hot-mic window). Ctrl+C while paused propagates
+        normally -- the caller already wraps this in the same
+        KeyboardInterrupt handling as the rest of the loop."""
+        if not ui_commands.is_listening_paused():
+            return
+        console.print("[dim](listening paused from the console)[/dim]")
+        ui_events.publish({"type": "state", "value": "idle", "mode": "paused"})
+        while ui_commands.is_listening_paused():
+            time.sleep(0.3)
+        console.print("[dim](listening resumed)[/dim]")
 
     def run(self) -> None:
         console.print("[bold cyan]Argus[/bold cyan] listening for wake word. Ctrl+C to quit.\n")
         while True:
+            try:
+                self._wait_while_listening_paused()
+            except KeyboardInterrupt:
+                break
+
             ui_events.publish({"type": "state", "value": "listening", "mode": "wake_word"})
             try:
                 def _on_wake():
@@ -324,6 +346,9 @@ class VoiceLoop:
             # follow-up OR the open mic picking up unrelated conversation --
             # gate it.
             while True:
+                if ui_commands.is_listening_paused():
+                    console.print("[dim](listening paused -- back to wake-word listening)[/dim]\n")
+                    break
                 console.print(f"[dim](listening for follow-up, {settings.followup_window_seconds:.0f}s...)[/dim]")
                 ui_events.publish({
                     "type": "state", "value": "listening", "mode": "follow_up",
@@ -393,6 +418,24 @@ class VoiceLoop:
         the conversation shouldn't end just because of one aside to someone
         else in the room."""
         if text is None:
+            # Whisper is well-documented to hallucinate short boilerplate
+            # phrases ("thank you", "thanks for watching", "bye") when fed
+            # near-silent or ambient audio -- confirmed live as a real,
+            # self-sustaining bug: the follow-up window's RMS-threshold
+            # gate can be permissive enough to pass through Argus's own
+            # TTS bleeding faintly back into the mic (or plain room noise)
+            # right after he finishes talking, Whisper hallucinates "thank
+            # you" from that near-silence, the addressee gate's own
+            # documented "when uncertain, assume addressed" bias lets it
+            # through, Argus replies "you're welcome," and THAT reply's
+            # echo restarts the same cycle -- observed live running for
+            # over a dozen exchanges unattended. A real, stricter check
+            # here -- Silero VAD on the actual captured audio, not just an
+            # RMS threshold -- rejects it before Whisper ever sees it,
+            # closing off the hallucination vector at its source rather
+            # than trying to filter transcribed text after the fact.
+            if samples is not None and samples.size > 0 and not self.speech_detector.is_speech(samples):
+                return False
             text = self.transcriber.transcribe(samples)
         if not text:
             return False
