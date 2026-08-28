@@ -298,7 +298,18 @@ class VoiceLoop:
         window here, and having the wake-word listener honor it (see
         hot_mic_check in LocalWakeWordListener.listen_for_wake_and_command),
         means anything Argus says opens the same hands-free follow-up a
-        normal reply does."""
+        normal reply does.
+
+        Also records the turn into memory (remember_turn) -- a SEPARATE
+        real gap confirmed live: only the normal reply flow did this too,
+        so a proactive nudge like "need any help with those settings?"
+        was invisible to Argus's own "look back at our conversation"
+        recall. When the user answered it, Argus flatly denied ever
+        asking -- it genuinely had no record of its own question. Every
+        background worker already routes through this one method, so
+        recording it here covers all of them without touching each
+        worker file individually."""
+        self.orchestrator.memory.remember_turn("assistant", text)
         interrupted = self._speak_with_barge_in(text)
         self._refresh_hot_mic()
         return interrupted

@@ -3,6 +3,7 @@ import time
 from datetime import datetime
 
 from argus.config import settings
+from argus.proactive_none import is_none_reply
 from argus.tools.registry import ToolRegistry
 from argus.ui import events as ui_events
 
@@ -87,7 +88,7 @@ class ResearchDigestWorker:
             prompt, system="", tool_registry=self._empty_registry, force_tier=Tier.ADVANCED
         )
         text = result.text.strip()
-        is_none = not text or text.upper() == "NONE"
+        is_none = is_none_reply(text)
 
         conn = get_connection()
         try:

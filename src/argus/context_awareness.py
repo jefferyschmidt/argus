@@ -3,6 +3,7 @@ import time
 from collections import deque
 
 from argus.config import settings
+from argus.proactive_none import is_none_reply
 from argus.ui import commands as ui_commands
 from argus.ui import events as ui_events
 
@@ -126,7 +127,7 @@ class ContextAwarenessWorker:
             return None
 
         text = result.text.strip()
-        if not text or text.upper() == "NONE" or len(text) > 240:
+        if is_none_reply(text) or len(text) > 240:
             return None
         return text
 

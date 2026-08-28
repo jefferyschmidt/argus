@@ -10,6 +10,7 @@ def _bare_loop():
     loop = VoiceLoop.__new__(VoiceLoop)
     loop._speak_with_barge_in = MagicMock(return_value=False)
     loop._hot_mic_until = 0.0
+    loop.orchestrator = MagicMock()
     return loop
 
 
@@ -32,6 +33,22 @@ def test_speak_and_open_mic_returns_whether_barge_in_interrupted():
         result = loop._speak_and_open_mic("hello")
 
     assert result is True
+
+
+def test_speak_and_open_mic_records_the_turn_into_memory():
+    """Confirmed live as a real, separate gap: a proactive nudge ("need
+    any help with those settings?") was never recorded into memory, so
+    when the user answered it, Argus had no record of its own question
+    and flatly denied asking. Every background worker routes through
+    this one method, so recording it here covers all of them."""
+    loop = _bare_loop()
+
+    with patch("argus.voice.loop.settings.open_barge_in_seconds", 30.0):
+        loop._speak_and_open_mic("Need any help with those settings?")
+
+    loop.orchestrator.memory.remember_turn.assert_called_once_with(
+        "assistant", "Need any help with those settings?"
+    )
 
 
 def test_run_passes_hot_mic_active_as_the_hot_mic_check_callback():

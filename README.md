@@ -10,6 +10,32 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed, 2026-08-28 (session review found: Argus denied asking something
+it actually just asked, and a paraphrased NONE got spoken verbatim)**:
+asked to check the log for another weird interaction. Found two separate
+bugs. (1) Argus proactively asked "Sounds like a deep dive -- need any
+help with those settings?", the user answered it, and Argus flatly
+denied ever asking -- "I didn't actually ask you about settings... I'm
+not sure what you're referring to." Root cause: `remember_turn` was only
+ever called from the normal reply flow (`Orchestrator.handle`/
+`handle_streaming`) -- every background worker (context awareness, email
+watcher, reminders, routines, etc.) speaks directly via
+`_speak_and_open_mic`, which never recorded the turn into memory. Argus's
+own proactive question was genuinely invisible to its own "look back at
+our conversation" recall. Now records it there too -- one shared choke
+point, covers every worker without touching each file individually.
+
+(2) A separate, recurring pattern: Argus randomly saying "worth saying"
+or "something worth saying" with no context, repeatedly. Root cause:
+`context_awareness.py`/`stuck_detection.py`/`research_digest.py` each
+ask a cheap/local model "is this worth interrupting for? reply with
+exactly: NONE" as an escape hatch, checked with a brittle exact
+`text.upper() == "NONE"` match -- a cheap model paraphrasing the escape
+hatch ("there's nothing worth saying right now") instead of using the
+literal token fell through and got spoken verbatim. Added a shared
+`is_none_reply` (`argus/proactive_none.py`) tolerant of trailing
+punctuation and common paraphrases, used by all three.
+
 **Fixed, 2026-08-28 (session review found: background video treated as a
 direct question, then the whole reply re-spoken)**: asked to review the
 session's event log for rough spots. Found a real incident: at 15:45,
