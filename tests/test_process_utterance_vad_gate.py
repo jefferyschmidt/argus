@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -33,10 +33,16 @@ def test_non_speech_audio_is_never_sent_to_the_transcriber():
     loop = _loop()
     loop.speech_detector.is_speech.return_value = False
 
-    result = loop._process_utterance(samples=_samples())
+    with patch("argus.voice.loop.ui_events.publish") as mock_publish:
+        result = loop._process_utterance(samples=_samples())
 
     assert result is False
     loop.transcriber.transcribe.assert_not_called()
+    # Confirmed live as a real, separate silent-drop path from the
+    # addressee gate -- reported as "still ignoring my input sometimes,
+    # without saying that he's disregarding me." This one never reaches
+    # transcription at all, so it needs its own visibility event.
+    mock_publish.assert_called_once_with({"type": "addressee_gate", "verdict": "not_speech", "text": None})
 
 
 def test_real_speech_audio_still_gets_transcribed_normally():

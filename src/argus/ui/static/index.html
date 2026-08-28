@@ -685,7 +685,17 @@
   // I'm not." A dimmed transcript line + a toast makes every drop
   // visible the moment it happens, not just reviewable after the fact in
   // the event log.
-  function addIgnoredTranscriptLine(text) {
+  function addIgnoredTranscriptLine(text, verdict) {
+    // "not_speech": a SEPARATE, earlier silent-drop path than the
+    // addressee gate -- Silero VAD decided the captured audio wasn't
+    // speech at all (near-silence, room noise), so it never even reached
+    // transcription and there's no text to show. Still surfaced (a toast,
+    // no transcript line) so this doesn't read as Argus simply never
+    // having heard anything at all.
+    if (verdict === "not_speech") {
+      showToast("Picked something up, but it didn't sound like speech.");
+      return;
+    }
     if (transcriptEmpty) { transcriptBody.innerHTML = ""; transcriptEmpty = false; }
     var line = document.createElement("div");
     line.className = "line you ignored";
@@ -855,7 +865,7 @@
       else if (event.type === "confirm_resolved") removeConfirmCard(event.id);
       else if (event.type === "show_modal") openShowModal(event);
       else if (event.type === "show_modal_close") closeShowModal();
-      else if (event.type === "addressee_gate") addIgnoredTranscriptLine(event.text);
+      else if (event.type === "addressee_gate") addIgnoredTranscriptLine(event.text, event.verdict);
     };
   }
 

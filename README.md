@@ -10,6 +10,31 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (calculator clicks kept missing the same
+coordinates, plus a second silent-drop path with no visibility)**: a
+follow-up session log showed `click({'x': 537, 'y': 315})` retried at
+that exact same spot four separate times without ever landing correctly,
+plus `press_key(alt+F4)` and a click on what looks like the window's
+close button mid-task -- the model trying to force the calculator closed
+instead of continuing. Added explicit guidance: prefer the keyboard over
+clicking wherever the app takes it (digits/operators/Enter for a
+calculator, Tab between fields) -- small pixel-perfect buttons are
+exactly where a click is most likely to miss, and it sidesteps the
+coordinate-accuracy problem entirely for apps that accept typed input.
+Also told explicitly not to try force-closing an unresponsive window
+(Alt+F4, clicking X) as a troubleshooting step.
+
+Separately -- reported live: "still ignoring my input sometimes, without
+saying that he's disregarding me." Found a second silent-drop path,
+earlier and separate from the `addressee_gate` event added earlier
+today: `_process_utterance`'s Silero VAD check (rejects near-silent/non-
+speech audio before it ever reaches transcription, closing off the
+Whisper-hallucination vector) had no visibility at all -- nothing to
+report on since there's no transcribed text yet at that point. Now
+publishes its own `addressee_gate` event (`verdict: "not_speech"`) --
+the console shows a toast ("picked something up, but it didn't sound
+like speech") instead of nothing happening at all.
+
 **Fixed, 2026-08-28 (an 8-tool-call budget was too tight for real
 multi-step tasks, plus listening-status chimes)**: three more things,
 found by request ("please see session log") and asked for directly.

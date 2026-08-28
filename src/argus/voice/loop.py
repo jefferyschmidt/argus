@@ -571,6 +571,13 @@ class VoiceLoop:
             # closing off the hallucination vector at its source rather
             # than trying to filter transcribed text after the fact.
             if samples is not None and samples.size > 0 and not self.speech_detector.is_speech(samples):
+                # Confirmed live as a real, separate silent-drop path from
+                # the addressee gate -- this one never even reaches
+                # transcription, so there was nothing for that gate to
+                # report on. Same visibility fix: log it so "he's ignoring
+                # me and not saying so" is reviewable/diagnosable instead
+                # of indistinguishable from a genuine non-event.
+                ui_events.publish({"type": "addressee_gate", "verdict": "not_speech", "text": None})
                 return False
             text = self.transcriber.transcribe(samples)
         if not text:

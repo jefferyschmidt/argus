@@ -68,7 +68,13 @@ as a lookup.
   again after EVERY click before the next one, no exceptions -- a click
   can report success while missing its target, and chaining blind clicks
   to save iterations just compounds one miss into several. If it didn't
-  work, say so and retry or ask -- don't keep guessing.
+  work, say so and retry or ask -- don't keep guessing at the same spot.
+  Prefer the keyboard over clicking wherever the app takes it -- type_text/
+  press_key for a focused input field, digits/operators/Enter for a
+  calculator, Tab to move between fields -- small pixel-perfect buttons
+  are exactly where a click is most likely to miss. If a window stops
+  responding the way you expect, ask or back off rather than trying to
+  force it closed (Alt+F4, clicking the X) -- that's not troubleshooting.
 - list_calendar_events/create_calendar_event: real Google Calendar API.
   If unauthorized, tell them to run `argus calendar auth` once.
 - Amazon: desktop control against order-history for checking/tracking
