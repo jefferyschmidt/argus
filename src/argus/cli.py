@@ -1,4 +1,7 @@
 import argparse
+import ctypes
+import logging
+import sys
 
 from rich.console import Console
 
@@ -7,6 +10,7 @@ from argus.memory.manager import MemoryManager
 from argus.orchestrator import Orchestrator
 
 console = Console()
+log = logging.getLogger(__name__)
 
 
 def _maybe_start_ui_server(port: int = 8765) -> None:
@@ -203,7 +207,27 @@ def backup_restore(path: str) -> None:
     console.print(f"Restored {result['entries']} files from backup.")
 
 
+def _make_dpi_aware() -> None:
+    """Without this, a scaled Windows display (anything above 100%) puts
+    pyautogui's screenshot/click coordinates in two DIFFERENT spaces --
+    confirmed live as the actual cause of a real reported bug (Argus
+    "clicked" but nothing happened): this process reported the screen as
+    1536x864 (GetSystemMetrics, DPI-virtualized) while pyautogui.screenshot()
+    was capturing the real physical 1920x1080 (125% scaling) -- so a
+    coordinate read off a screenshot was consistently off by the scaling
+    factor when clicked. Must be called once, before pyautogui/pygetwindow
+    are used anywhere (desktop.py imports them lazily inside each tool
+    function specifically so this can run first)."""
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        log.warning("Failed to set process DPI awareness -- desktop-control clicks may be misaligned on a scaled display")
+
+
 def main() -> None:
+    _make_dpi_aware()
     setup_logging()
     parser = argparse.ArgumentParser(prog="argus")
     sub = parser.add_subparsers(dest="command")

@@ -26,32 +26,51 @@ def make_voice_confirmer(speaker, transcriber):
     out to a safe default of declining, with a spoken explanation, rather
     than hanging forever."""
 
-    def confirmer(tool_name: str, tool_input: dict) -> bool:
-        from argus.ui import commands as ui_commands
+    def _try_voice(prompt_text: str) -> bool | None:
+        """Returns True/False on a clear answer, None if nothing usable
+        was heard (silence, unclear, or a transcription/audio error)."""
         from argus.voice.audio_io import record_followup
 
-        console.print(f"\n[confirm] Argus wants to run '{tool_name}' with input: {tool_input}")
-
         try:
-            prompt_text = f"May I {tool_name.replace('_', ' ')}? Say yes or no."
             speaker.speak(prompt_text)
         except Exception:
             log.exception("Failed to speak confirmation prompt")
 
         try:
-            samples = record_followup(6.0)
-            if samples is not None:
-                heard = transcriber.transcribe(samples).strip()
-                if heard:
-                    console.print(f"[bold green]you>[/bold green] {heard}")
-                    lowered = heard.lower()
-                    if any(w in lowered for w in _NO_WORDS):
-                        return False
-                    if any(w in lowered for w in _YES_WORDS):
-                        return True
-                    console.print("[dim](didn't catch a clear yes/no)[/dim]")
+            samples = record_followup(7.0)
+            if samples is None:
+                return None
+            heard = transcriber.transcribe(samples).strip()
+            if not heard:
+                return None
+            console.print(f"[bold green]you>[/bold green] {heard}")
+            lowered = heard.lower()
+            if any(w in lowered for w in _NO_WORDS):
+                return False
+            if any(w in lowered for w in _YES_WORDS):
+                return True
+            console.print("[dim](didn't catch a clear yes/no)[/dim]")
+            return None
         except Exception:
             log.exception("Voice confirmation failed")
+            return None
+
+    def confirmer(tool_name: str, tool_input: dict) -> bool:
+        from argus.ui import commands as ui_commands
+
+        console.print(f"\n[confirm] Argus wants to run '{tool_name}' with input: {tool_input}")
+
+        # Two tries by voice before falling back to the UI -- confirmed
+        # live that a single ~6s window was cutting hands-free confirmation
+        # short too easily (mistimed or slightly-late "yes" fell all the
+        # way through to needing a browser click, which defeats the point
+        # of asking hands-free in the first place).
+        result = _try_voice(f"May I {tool_name.replace('_', ' ')}? Say yes or no.")
+        if result is not None:
+            return result
+        result = _try_voice("Sorry, didn't catch that -- yes or no?")
+        if result is not None:
+            return result
 
         from argus.ui import events as ui_events
 

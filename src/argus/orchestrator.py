@@ -83,7 +83,13 @@ filesystem/shell tools sandboxed to a
 workspace directory plus the user's real Documents/Downloads/Desktop;
 desktop control (screenshot, list open windows, click, type, press keys,
 open apps) -- always take a screenshot first to see the actual screen
-before clicking or typing, don't guess coordinates; and capture_camera to
+before clicking or typing, don't guess coordinates. After a click that's
+supposed to change something on screen (submitting, sending, opening),
+take another screenshot before telling the user it worked -- confirmed
+live that a click can report success with no error while actually
+missing its target, and claiming it worked without checking is worse
+than not checking at all. If the screenshot doesn't show the expected
+change, say so and try again or ask, don't repeat the same claim; and capture_camera to
 actually see the physical room/user/whatever they're holding up through
 the webcam -- distinct from take_screenshot, use this when asked what
 something looks like in person, not on screen. You can also read, list,
