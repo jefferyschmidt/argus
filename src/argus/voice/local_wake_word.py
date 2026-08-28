@@ -91,7 +91,7 @@ class LocalWakeWordListener:
 
     def listen_for_wake_and_command(
         self, on_wake=None, chunks_out: list | None = None, on_checking=None, hot_mic_check=None,
-        should_stop=None,
+        should_stop=None, via_hot_mic_out: list | None = None,
     ) -> tuple[np.ndarray, str | None]:
         """Blocks until an utterance containing the wake word is heard.
         Returns (samples, command_text): samples is the full captured
@@ -120,6 +120,22 @@ class LocalWakeWordListener:
         check-in, an email alert) never opened a hands-free follow-up
         window the way a normal reply did, so answering it directly with
         no wake word looked like Argus silently ignoring what was said.
+
+        via_hot_mic_out, if given, gets True appended to it when a return
+        happened via the hot_mic_check path above rather than a genuine
+        wake-word match. Confirmed live as a real, related bug: the caller
+        used to treat EVERY return from this method as equally explicit
+        intent (skipping the addressee gate) -- fine for a real wake word,
+        wrong for a hot-mic-window capture, which is exactly as likely to
+        be background noise/another conversation as a normal follow-up
+        utterance is. Caused a real incident: background video audio
+        during an open hot-mic window got treated as a direct question,
+        Argus replied to it, and a loud line from the SAME video then
+        triggered a false barge-in mid-reply, cutting Argus off and (once
+        the resulting "was that a real interruption?" check correctly
+        decided no) resuming and re-speaking most of the reply -- read
+        live as "he repeated the whole thing." The caller now checks this
+        to decide whether to still run the addressee gate.
 
         should_stop, if given, is checked once per audio frame (not just
         once per utterance) and raises ListeningPaused immediately when it
@@ -170,6 +186,8 @@ class LocalWakeWordListener:
                 if hot_mic_check is not None and hot_mic_check():
                     if on_wake is not None:
                         on_wake()
+                    if via_hot_mic_out is not None:
+                        via_hot_mic_out.append(True)
                     return utterance, (text.strip() or None)
 
                 end_idx = _find_wake_word(text)

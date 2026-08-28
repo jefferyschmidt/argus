@@ -10,6 +10,32 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed, 2026-08-28 (session review found: background video treated as a
+direct question, then the whole reply re-spoken)**: asked to review the
+session's event log for rough spots. Found a real incident: at 15:45,
+Argus heard background video audio during an open hot-mic window (opened
+by a proactive nudge, "Just browsing the web?"), replied to it directly
+as if it were a real question, then a loud line from the SAME video
+triggered a false barge-in mid-reply -- cutting Argus off -- and once the
+"was that a real interruption?" recovery check correctly decided no,
+resumed and re-spoke most of the original reply. Read live as "he
+repeated the whole thing" (confirmed the user's own account, plus a
+separate live report the same day that he "picked up background noise
+and asked about it" after being told it wasn't for him).
+
+Root cause: the hot-mic-bypass path added earlier today (so replying to
+Argus's own proactive speech wouldn't require the wake word) was treated
+by `run()` exactly like a genuine wake-word match -- both skipped the
+addressee gate entirely. A real wake word IS always explicit intent; a
+hot-mic-window capture is exactly as likely to be background noise as a
+normal follow-up-window utterance is. Added `via_hot_mic_out` to
+`listen_for_wake_and_command` (set when a return came from the
+hot-mic-bypass path, not a real match) so `run()` can now pass
+`check_addressee=True` for exactly those captures, while a genuine wake
+word still skips the gate as before. This also removes the trigger for
+the "repeated" symptom, since it's the same underlying misfire cascading
+into a false barge-in.
+
 **Fixed live, 2026-08-28 (dropped-utterance feedback in the console, and
 a cooler computer-vision rendering)**: two more live follow-ups. (1) The
 `addressee_gate` event added earlier today was only ever written to the

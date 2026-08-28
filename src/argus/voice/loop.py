@@ -348,11 +348,13 @@ class VoiceLoop:
                     ui_events.publish({"type": "state", "value": "listening", "mode": "confirming"})
 
                 wake_chunks: list = []
+                via_hot_mic: list = []
                 stop_watcher = self._start_hearing_watcher(wake_chunks)
                 samples, wake_command_text = self.wake_word.listen_for_wake_and_command(
                     on_wake=_on_wake, chunks_out=wake_chunks, on_checking=_on_checking,
                     hot_mic_check=self._hot_mic_active,
                     should_stop=ui_commands.is_listening_paused,
+                    via_hot_mic_out=via_hot_mic,
                 )
                 stop_watcher.set()
             except KeyboardInterrupt:
@@ -384,20 +386,29 @@ class VoiceLoop:
                 time.sleep(3.0)
                 continue
 
-            # The wake-word-triggered command is always explicit intent --
-            # no addressee check needed. wake_command_text is only ever set
-            # by the local engine (see LocalWakeWordListener) -- it means
-            # the command was already said in the SAME breath as the wake
-            # word ("Argus, what time is it") and already transcribed
-            # locally as part of detecting the wake word itself, so pass it
-            # straight through instead of transcribing samples all over
-            # again (that second pass would otherwise hit Groq, defeating
-            # the entire point of the local engine).
+            # A genuine wake-word match is always explicit intent -- no
+            # addressee check needed. But a hot-mic-window capture (see
+            # via_hot_mic_out's docstring on LocalWakeWordListener) is
+            # exactly as likely to be background noise/another
+            # conversation as a normal follow-up-window utterance is, so
+            # it needs the SAME addressee gate a follow-up gets -- caused
+            # a real incident otherwise: background video audio during an
+            # open hot-mic window got treated as a direct question and
+            # replied to.
+            check_addressee = bool(via_hot_mic)
+            # wake_command_text is only ever set by the local engine (see
+            # LocalWakeWordListener) -- it means the command was already
+            # said in the SAME breath as the wake word ("Argus, what time
+            # is it") and already transcribed locally as part of detecting
+            # the wake word itself, so pass it straight through instead of
+            # transcribing samples all over again (that second pass would
+            # otherwise hit Groq, defeating the entire point of the local
+            # engine).
             with self._interaction_lock:
                 if wake_command_text:
-                    processed = self._process_utterance(text=wake_command_text, check_addressee=False)
+                    processed = self._process_utterance(text=wake_command_text, check_addressee=check_addressee)
                 else:
-                    processed = self._process_utterance(samples, check_addressee=False)
+                    processed = self._process_utterance(samples, check_addressee=check_addressee)
             if not processed:
                 console.print("[dim](heard nothing, back to listening)[/dim]\n")
                 continue

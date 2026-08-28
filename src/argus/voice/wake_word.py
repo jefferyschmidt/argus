@@ -38,7 +38,7 @@ class WakeWordListener:
 
     def listen_for_wake_and_command(
         self, on_wake=None, chunks_out: list | None = None, on_checking=None, hot_mic_check=None,
-        should_stop=None,
+        should_stop=None, via_hot_mic_out: list | None = None,
     ) -> tuple[np.ndarray, str | None]:
         """Blocks for the wake word, then records the command that follows
         on the SAME audio stream (no reopen gap, so nothing spoken right
@@ -66,7 +66,11 @@ class WakeWordListener:
 
         should_stop: checked once per frame in both phases, raises
         ListeningPaused immediately when it returns True -- same real-mute
-        behavior as LocalWakeWordListener, see ListeningPaused's docstring."""
+        behavior as LocalWakeWordListener, see ListeningPaused's docstring.
+
+        via_hot_mic_out: accepted for interface parity but never appended
+        to here, since hot_mic_check is never honored by this engine
+        either (see above)."""
         from collections import deque
 
         self._model.reset()
