@@ -70,6 +70,21 @@ def _click(args: dict) -> str:
     return f"clicked at ({x}, {y})"
 
 
+def _scroll(args: dict) -> str:
+    import pyautogui
+
+    try:
+        amount = int(args["amount"])
+    except (KeyError, TypeError, ValueError):
+        return f"error: amount must be an integer (positive = up, negative = down), got {args.get('amount')!r}"
+
+    x, y = args.get("x"), args.get("y")
+    if x is not None and y is not None:
+        pyautogui.moveTo(int(x), int(y))
+    pyautogui.scroll(amount)
+    return f"scrolled {amount}"
+
+
 def _type_text(args: dict) -> str:
     import pyautogui
 
@@ -145,6 +160,29 @@ click_tool = Tool(
     tier=PermissionTier.CONFIRM,
     repeatable=True,
     handler=_click,
+)
+
+scroll_tool = Tool(
+    name="scroll",
+    description=(
+        "Scrolls the page/window at the current (or given) cursor position. Positive amount "
+        "scrolls up, negative scrolls down -- e.g. -400 to scroll down a webpage or email to "
+        "find content below the fold. Take a screenshot after to see the new state before "
+        "clicking anything. Without this, anything below the initial viewport (a link near "
+        "the bottom of an email, an item further down a list) was simply unreachable."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "amount": {"type": "integer", "description": "Scroll amount; positive = up, negative = down."},
+            "x": {"type": "integer", "description": "Optional: move here first, then scroll (defaults to current cursor position)."},
+            "y": {"type": "integer"},
+        },
+        "required": ["amount"],
+    },
+    tier=PermissionTier.CONFIRM,
+    repeatable=True,
+    handler=_scroll,
 )
 
 type_text_tool = Tool(

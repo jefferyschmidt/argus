@@ -10,6 +10,25 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Added live, 2026-08-28 (direct email unsubscribe + a scroll tool for
+desktop control)**: reported live -- Argus was "still struggling to get
+it to unsubscribe" from a marketing email via desktop-automation clicking
+(imprecise coordinate-guessing at a tiny link, discussed live via the
+argus.log tool-call trail -- there's no separate conversation-transcript
+file, only infrastructure call logging). Root cause of the underlying
+struggle: desktop control had no `scroll` tool at all -- anything below
+the initial screenshot's viewport (a link near the bottom of a long email,
+an item further down a list) was simply unreachable by clicking alone.
+Added `scroll` (repeatable, like click/type_text/press_key). Separately,
+and more directly: most real marketing email carries a machine-readable
+`List-Unsubscribe` header (RFC 2369/8058) -- a one-click HTTPS link or a
+mailto:, no screen-clicking needed at all. Added `unsubscribe_from_email`
+(finds the message by sender/subject match, uses the header directly,
+falls back to telling the user it needs a manual click only when the
+email genuinely has no machine-readable option) and a system-prompt rule
+that an internal tool always beats desktop/browser control when one
+exists for the task.
+
 **Fixed live, 2026-08-28 (stuck on "listening," never processing a reply)**:
 reported live -- "he's stuck on listening and isn't processing what I
 said," with a screenshot showing the local wake-word engine's "checking"

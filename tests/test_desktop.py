@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from argus.tools.desktop import _capture_camera, _click
+from argus.tools.desktop import _capture_camera, _click, _scroll
 
 
 def test_click_rejects_malformed_coordinate_string():
@@ -26,6 +26,27 @@ def test_click_coerces_numeric_strings():
         result = _click({"x": "100", "y": "200"})
     mock_click.assert_called_once_with(100, 200)
     assert result == "clicked at (100, 200)"
+
+
+def test_scroll_rejects_non_integer_amount():
+    result = _scroll({"amount": "a lot"})
+    assert result.startswith("error:")
+
+
+def test_scroll_scrolls_at_current_position_when_no_coordinates_given():
+    with patch("pyautogui.scroll") as mock_scroll, patch("pyautogui.moveTo") as mock_move:
+        result = _scroll({"amount": -400})
+    mock_move.assert_not_called()
+    mock_scroll.assert_called_once_with(-400)
+    assert result == "scrolled -400"
+
+
+def test_scroll_moves_to_given_coordinates_first():
+    with patch("pyautogui.scroll") as mock_scroll, patch("pyautogui.moveTo") as mock_move:
+        result = _scroll({"amount": 200, "x": 500, "y": 300})
+    mock_move.assert_called_once_with(500, 300)
+    mock_scroll.assert_called_once_with(200)
+    assert result == "scrolled 200"
 
 
 def test_capture_camera_returns_error_when_no_camera_available():
