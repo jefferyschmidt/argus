@@ -1,12 +1,25 @@
 import subprocess
 from pathlib import Path
 
-from argus.config import settings
+from argus.config import PROJECT_ROOT, settings
 from argus.tools.base import PermissionTier, Tool
 
 
 class PathEscapesAllowedRoots(Exception):
     pass
+
+
+class PathIsDenied(Exception):
+    pass
+
+
+# The project directory is one of real_fs_roots, but .env lives right in
+# it with live API keys -- read_file is ALLOW-tier (no confirmation), so
+# without this a plain "read that file" could surface secrets in a reply.
+# Explicit denylist rather than trying to keep it out of real_fs_roots
+# entirely, since everything else in the project directory is meant to be
+# reachable.
+_DENIED_PATHS = [(PROJECT_ROOT / ".env").resolve()]
 
 
 def _allowed_roots() -> list[Path]:
@@ -16,10 +29,14 @@ def _allowed_roots() -> list[Path]:
 def _resolve_path(path_str: str) -> Path:
     """Relative paths resolve against the sandboxed workspace (unchanged
     default behavior). Absolute paths are allowed too, but only inside one
-    of the configured real_fs_roots (Documents/Downloads/Desktop) -- not
-    anywhere else on disk."""
+    of the configured real_fs_roots (Documents/Downloads/Desktop, and this
+    project's own directory) -- not anywhere else on disk. A short denylist
+    (currently just .env) is checked first regardless of root."""
     p = Path(path_str)
     candidate = p.resolve() if p.is_absolute() else (settings.workspace_dir / p).resolve()
+
+    if candidate in _DENIED_PATHS:
+        raise PathIsDenied(f"'{path_str}' is off-limits (holds live credentials)")
 
     for root in _allowed_roots():
         if candidate == root or root in candidate.parents:

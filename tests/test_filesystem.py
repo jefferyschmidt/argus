@@ -51,3 +51,12 @@ def test_write_then_read_round_trip(roots):
     filesystem._write_file({"path": "hello.txt", "content": "hi there"})
     result = filesystem._read_file({"path": "hello.txt"})
     assert result == "hi there"
+
+
+def test_denied_path_is_rejected_even_inside_an_allowed_root(roots, monkeypatch):
+    _, real_root = roots
+    fake_env = (real_root / ".env").resolve()
+    monkeypatch.setattr(filesystem, "_DENIED_PATHS", [fake_env])
+
+    with pytest.raises(filesystem.PathIsDenied):
+        filesystem._resolve_path(str(fake_env))

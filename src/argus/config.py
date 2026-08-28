@@ -125,10 +125,16 @@ class Settings(BaseSettings):
     @property
     def real_fs_roots(self) -> list[Path]:
         """Real folders (beyond the sandbox) the file tools may touch.
-        Deliberately narrow -- your actual Documents/Downloads/Desktop, not
-        the whole filesystem. Extend by editing this list if you want more."""
+        Documents/Downloads/Desktop plus this project's own directory (at
+        the user's request, so Argus can read/run things in its own repo
+        via the general file/shell tools -- separate from and broader than
+        the narrower src/argus+tests-only self_improve tools). .env living
+        in this same directory is excluded at the path-resolution level in
+        filesystem.py regardless of this list, since the general read_file
+        tool is ALLOW-tier (no confirmation) and that file holds live
+        API keys."""
         home = Path.home()
-        return [p for p in (home / "Documents", home / "Downloads", home / "Desktop") if p.exists()]
+        return [p for p in (home / "Documents", home / "Downloads", home / "Desktop", PROJECT_ROOT) if p.exists()]
 
 
 settings = Settings()
