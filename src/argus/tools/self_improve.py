@@ -52,11 +52,14 @@ def _list_own_source(args: dict) -> str:
 
 
 def _write_own_source(args: dict) -> str:
+    from argus.undo_log import snapshot_before_write
+
     try:
         path = _resolve_own_path(args["path"])
     except OwnSourcePathEscapesAllowedRoots as e:
         return f"error: {e}"
     path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_before_write(path)
     path.write_text(args["content"])
     try:
         shown_path = path.relative_to(PROJECT_ROOT)

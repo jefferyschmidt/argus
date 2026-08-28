@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from argus import undo_log
 from argus.tools import filesystem
 
 
@@ -10,6 +11,11 @@ from argus.tools import filesystem
 class _FakeSettings:
     workspace_dir: Path
     real_fs_roots: list = field(default_factory=list)
+
+
+@dataclass
+class _FakeUndoSettings:
+    data_dir: Path
 
 
 @pytest.fixture
@@ -20,6 +26,11 @@ def roots(tmp_path, monkeypatch):
     real_root.mkdir()
     monkeypatch.setattr(filesystem, "_allowed_roots", lambda: [workspace, real_root.resolve()])
     monkeypatch.setattr(filesystem, "settings", _FakeSettings(workspace_dir=workspace))
+    # _write_file calls undo_log.snapshot_before_write, which reads its own
+    # settings reference independently -- without this, tests here were
+    # writing real entries into the live data/undo/log.jsonl (confirmed
+    # live: found actual pytest tmp_path entries in the real log).
+    monkeypatch.setattr(undo_log, "settings", _FakeUndoSettings(data_dir=tmp_path / "undo_data"))
     return workspace, real_root
 
 

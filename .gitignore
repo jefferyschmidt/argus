@@ -14,6 +14,7 @@ data/*.sqlite3
 data/spend.json
 data/workspace/
 data/piper_voices/
+data/undo/
 
 *.log
 

@@ -123,9 +123,14 @@ calls (with real generated images), memory, and routing/spend.
     plugin can't override a built-in tool's name. example_dice.py ships
     as a real, working example (a roll_dice tool) -- delete it if you
     don't want it, it's not load-bearing for anything else.
-14. Undo/rollback for risky actions -- especially file writes and desktop
-    control: back up before overwriting, so a bad CONFIRM-tier action is
-    recoverable, not just "confirmed and done."
+14. ~~Undo/rollback~~ -- scoped to file writes (argus/undo_log.py);
+    desktop-action undo has no generic mechanism (there's no "undo" for
+    an arbitrary click) so stays out of scope. write_file and
+    write_own_source both snapshot the target's prior content before
+    overwriting; undo_last_write (no confirmation needed -- undo is
+    itself the corrective action) reverts the most recent write to a
+    given path, or the single most recent write of any file.
+    list_recent_writes shows what's undoable.
 15. ~~Observability dashboard~~ -- **Argus Console**: a live local web UI
     (`argus voice`/`argus chat` auto-launch it) showing real-time voice
     state, transcript, tool calls (with actual generated images -- e.g. a

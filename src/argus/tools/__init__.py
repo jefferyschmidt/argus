@@ -28,6 +28,7 @@ from argus.tools.self_improve import (
     run_own_tests_tool,
     write_own_source_tool,
 )
+from argus.tools.undo import list_recent_writes_tool, undo_last_write_tool
 from argus.tools.web_content import fetch_image_tool
 
 log = logging.getLogger(__name__)
@@ -63,6 +64,8 @@ def build_default_registry() -> ToolRegistry:
         run_own_tests_tool,
         commit_own_changes_tool,
         restart_argus_tool,
+        undo_last_write_tool,
+        list_recent_writes_tool,
     ):
         registry.register(tool)
 

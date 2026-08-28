@@ -1,6 +1,15 @@
+from dataclasses import dataclass
+from pathlib import Path
+
 import pytest
 
+from argus import undo_log
 from argus.tools import self_improve as si
+
+
+@dataclass
+class _FakeUndoSettings:
+    data_dir: Path
 
 
 @pytest.fixture
@@ -10,6 +19,12 @@ def fake_roots(tmp_path, monkeypatch):
     src_root.mkdir(parents=True)
     tests_root.mkdir(parents=True)
     monkeypatch.setattr(si, "_SELF_ROOTS", [src_root.resolve(), tests_root.resolve()])
+    # _write_own_source calls undo_log.snapshot_before_write, which reads
+    # its own settings reference independently of _SELF_ROOTS above --
+    # without this, tests here would write real entries into the live
+    # data/undo/log.jsonl (same real pollution confirmed live in
+    # test_filesystem.py's equivalent fixture).
+    monkeypatch.setattr(undo_log, "settings", _FakeUndoSettings(data_dir=tmp_path / "undo_data"))
     return src_root, tests_root
 
 

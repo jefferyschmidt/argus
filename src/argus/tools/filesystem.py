@@ -55,8 +55,11 @@ def _read_file(args: dict) -> str:
 
 
 def _write_file(args: dict) -> str:
+    from argus.undo_log import snapshot_before_write
+
     path = _resolve_path(args["path"])
     path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_before_write(path)
     path.write_text(args["content"])
     return f"wrote {len(args['content'])} chars to {args['path']}"
 
