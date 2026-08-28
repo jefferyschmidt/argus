@@ -1,6 +1,13 @@
 from unittest.mock import MagicMock, patch
 
-from argus.tools.desktop import _capture_camera, _click, _scroll, _stylize_vision
+from argus.tools.desktop import (
+    _capture_camera,
+    _click,
+    _detect_faces,
+    _draw_target_reticle,
+    _scroll,
+    _stylize_vision,
+)
 
 
 def test_click_rejects_malformed_coordinate_string():
@@ -94,7 +101,31 @@ def test_stylize_vision_returns_same_shape_black_canvas_with_edges():
     result = _stylize_vision(frame)
 
     assert result.shape == frame.shape
+    assert result.dtype == frame.dtype
     assert result.any()  # some edge pixels were drawn, not an all-black frame
+
+
+def test_detect_faces_on_a_blank_frame_returns_no_faces_without_raising():
+    """Confirmed directly requested: make the rendering "cooler" -- a
+    corner-bracket targeting reticle on any detected face, using the
+    Haar cascade already bundled with opencv (no extra model/download).
+    Must never break the whole rendering if detection finds nothing or
+    fails for any reason."""
+    import numpy as np
+
+    gray = np.zeros((50, 50), dtype=np.uint8)
+    faces = _detect_faces(gray)
+    assert faces == []
+
+
+def test_draw_target_reticle_draws_visible_pixels_in_its_region():
+    import numpy as np
+
+    canvas = np.zeros((100, 100, 3), dtype=np.uint8)
+    _draw_target_reticle(canvas, 20, 20, 40, 40)
+    assert canvas.any()
+
+
 
 
 def test_capture_camera_publishes_stylized_view_by_default_not_raw():

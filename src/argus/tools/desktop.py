@@ -10,22 +10,72 @@ from argus.ui import events as ui_events
 _VISION_EDGE_COLOR_BGR = (255, 157, 62)
 
 
+def _detect_faces(gray):
+    """Best-effort Haar-cascade face detection (bundled with opencv, no
+    extra download/model needed) -- returns [] on any failure rather than
+    breaking the whole rendering, since this is a HUD flourish, not the
+    point of the capture."""
+    import cv2
+
+    try:
+        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        if cascade.empty():
+            return []
+        return list(cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60)))
+    except Exception:
+        return []
+
+
+def _draw_target_reticle(canvas, x, y, w, h):
+    """Corner-bracket targeting reticle, the classic computer-vision-HUD
+    annotation for a detected object -- genuinely different from a plain
+    image filter, closer to what real detector output actually looks
+    like."""
+    import cv2
+
+    color = _VISION_EDGE_COLOR_BGR
+    bracket = max(8, int(min(w, h) * 0.18))
+    for cx, cy, sx, sy in ((x, y, 1, 1), (x + w, y, -1, 1), (x, y + h, 1, -1), (x + w, y + h, -1, -1)):
+        cv2.line(canvas, (cx, cy), (cx + sx * bracket, cy), color, 2, cv2.LINE_AA)
+        cv2.line(canvas, (cx, cy), (cx, cy + sy * bracket), color, 2, cv2.LINE_AA)
+    cv2.putText(canvas, "TARGET", (x, max(12, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+
+
 def _stylize_vision(frame):
-    """Renders a computer-vision-style edge outline instead of the literal
+    """Renders a computer-vision-style rendering instead of the literal
     photo -- the DEFAULT display for capture_camera. Deliberately NOT what
     gets sent to the model (see _capture_camera -- it still analyzes the
     real frame, so it can actually answer questions about it accurately);
     this is purely a display choice, confirmed as an explicit preference:
-    show the raw capture only when specifically asked for it (raw=true),
-    a stylized rendering is "cooler" as the default."""
+    show the raw capture only when specifically asked for it (raw=true).
+
+    Confirmed live as a real ask for more -- a plain Canny edge outline
+    was "not bad, but... make it cooler." Three additions, each a real
+    computer-vision-HUD convention, not just a color filter: thicker
+    dilated edges so lines read clearly at typical display size; a glow/
+    bloom pass (blur the edge layer, add it back additively -- the
+    standard trick for that glowing-line sci-fi look); and a genuine
+    object-detection annotation -- a corner-bracket targeting reticle on
+    any face the bundled Haar cascade detects, plus faint scanlines for
+    texture."""
     import cv2
     import numpy as np
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
     edges = cv2.Canny(blurred, 60, 160)
+    edges = cv2.dilate(edges, np.ones((2, 2), np.uint8), iterations=1)
+
     canvas = np.zeros_like(frame)
     canvas[edges > 0] = _VISION_EDGE_COLOR_BGR
+
+    glow = cv2.GaussianBlur(canvas, (0, 0), sigmaX=4)
+    canvas = cv2.add(canvas, glow)
+
+    for (x, y, w, h) in _detect_faces(gray):
+        _draw_target_reticle(canvas, x, y, w, h)
+
+    canvas[::3, :] = (canvas[::3, :] * 0.75).astype(np.uint8)  # faint scanlines
     return canvas
 
 

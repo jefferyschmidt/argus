@@ -278,6 +278,8 @@
   .line.argus .who { color: var(--accent-bright); }
   .line .text { max-width: 68ch; }
   .line .tier-tag { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-dim); margin-left: 6px; }
+  .line.ignored { opacity: .5; font-style: italic; }
+  .line.ignored .tier-tag { color: #E0A63E; font-style: normal; }
 
   footer.note { text-align: center; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.05em; color: var(--ink-dim); padding: 6px 0 2px; }
 
@@ -677,6 +679,29 @@
     transcriptBody.scrollTop = transcriptBody.scrollHeight;
   }
 
+  // Confirmed live as a real, recurring gap: nothing showed WHEN Argus
+  // heard something but decided it wasn't meant for him (the addressee
+  // gate) -- "struggling to figure out when I'm talking to him and when
+  // I'm not." A dimmed transcript line + a toast makes every drop
+  // visible the moment it happens, not just reviewable after the fact in
+  // the event log.
+  function addIgnoredTranscriptLine(text) {
+    if (transcriptEmpty) { transcriptBody.innerHTML = ""; transcriptEmpty = false; }
+    var line = document.createElement("div");
+    line.className = "line you ignored";
+    var time = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    line.innerHTML =
+      '<span class="time">' + esc(time) + '</span>' +
+      '<span class="who">You</span>' +
+      '<span class="text">' + esc(text) + '<span class="tier-tag">not addressed</span></span>';
+    transcriptBody.appendChild(line);
+    while (transcriptBody.children.length > TRANSCRIPT_MAX_LINES) {
+      transcriptBody.removeChild(transcriptBody.firstChild);
+    }
+    transcriptBody.scrollTop = transcriptBody.scrollHeight;
+    showToast("Heard that, but it didn't seem meant for me.");
+  }
+
   // ---------- tools ----------
   var toolRows = document.getElementById("toolRows");
   var toolEmpty = true;
@@ -830,6 +855,7 @@
       else if (event.type === "confirm_resolved") removeConfirmCard(event.id);
       else if (event.type === "show_modal") openShowModal(event);
       else if (event.type === "show_modal_close") closeShowModal();
+      else if (event.type === "addressee_gate") addIgnoredTranscriptLine(event.text);
     };
   }
 

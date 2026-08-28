@@ -10,6 +10,21 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (dropped-utterance feedback in the console, and
+a cooler computer-vision rendering)**: two more live follow-ups. (1) The
+`addressee_gate` event added earlier today was only ever written to the
+on-disk event log -- nothing displayed it live, so the recurring "can't
+tell when he's listening" complaint was still only reviewable after the
+fact, not visible in the moment. Added a dimmed, italicized transcript
+line ("not addressed" tag) plus a toast the instant an utterance is
+dropped, so it's visible live, not just in the log. (2) The Canny-edge
+camera rendering shown live was "not bad, but... make it cooler" --
+added edge dilation (thicker, clearer lines), a glow/bloom pass (blur
+the edge layer, add it back additively -- the standard sci-fi-HUD glow
+trick), a genuine object-detection annotation (a corner-bracket
+targeting reticle on any face the bundled Haar cascade detects, labeled
+"TARGET"), and faint scanlines for texture.
+
 **Fixed live, 2026-08-28 (two follow-ups on the "show me" window, caught
 during live testing right after it shipped)**: (1) "he doesn't seem to be
 able to close the show window when asked" -- true: closing was wired as
