@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     anthropic_advanced_model: str = "claude-sonnet-5"
 
     argus_data_dir: str = "data"
+    # Console defaults to WARNING+ only for normal interactive use (INFO+
+    # always goes to data/argus.log regardless) -- set to INFO for a debug
+    # session to see the real-time detail (wake-word detections, tool
+    # calls, turn failures) without tailing the log file separately.
+    console_log_level: str = "WARNING"
     daily_budget_usd: float = 5.0
     # Optional -- set in .env so location-dependent questions (weather, "near
     # me" searches) don't need to be asked every time. Empty by default.

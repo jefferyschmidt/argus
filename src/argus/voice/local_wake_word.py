@@ -5,7 +5,15 @@ import sounddevice as sd
 
 from argus.config import settings
 
-_FRAME_MS = 30
+_FRAME_SAMPLES = 512  # Silero's required chunk size at 16kHz -- confirmed live as a
+# real, total bug: this used to be computed from a 30ms frame (480 samples
+# at 16kHz), one sample chunk short of Silero's minimum. SpeechDetector.is_speech()
+# sub-chunks its input into blocks of exactly 512; with only 480 samples the
+# iteration range was empty, so it silently returned False on every single
+# call, no matter what was actually said -- the wake word could never fire
+# through this path at all. Using Silero's own native chunk size directly
+# avoids this whole class of off-by-a-few-samples mismatch.
+_FRAME_MS = _FRAME_SAMPLES * 1000 / 16000  # ~32ms, for the ms-based constants below
 _SILENCE_HANG_MS = 900
 _MAX_UTTERANCE_SECONDS = 20
 _MIN_SPEECH_MS_TO_TRANSCRIBE = 250  # a cough/click can pass VAD for one frame; not worth a whisper pass
@@ -66,9 +74,9 @@ class LocalWakeWordListener:
         follow-up the normal way, exactly as it already does when
         openWakeWord is the engine."""
         sr = settings.audio_sample_rate
-        frame_len = int(sr * _FRAME_MS / 1000)
-        silence_hang_frames = _SILENCE_HANG_MS // _FRAME_MS
-        max_frames = (_MAX_UTTERANCE_SECONDS * 1000) // _FRAME_MS
+        frame_len = _FRAME_SAMPLES
+        silence_hang_frames = int(_SILENCE_HANG_MS // _FRAME_MS)
+        max_frames = int((_MAX_UTTERANCE_SECONDS * 1000) // _FRAME_MS)
 
         with sd.InputStream(samplerate=sr, channels=1, dtype="int16", blocksize=frame_len) as stream:
             while True:

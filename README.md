@@ -10,6 +10,31 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (critical)**: the local wake-word engine added
+earlier this session could never actually detect the wake word --
+`LocalWakeWordListener` read the mic in 30ms/480-sample frames, but
+`SpeechDetector.is_speech()` (Silero VAD) sub-chunks its input into blocks
+of exactly its own required 512 samples; fed anything smaller, the
+sub-chunking loop's range was empty and it silently returned `False`
+unconditionally, no matter what was actually said. This explained all
+three symptoms reported live in one shot: the wake word never firing at
+all (direct cause); Argus getting stuck showing a jittering, synthetically-
+wobbling open mouth (once real speech-timing data for a reply expired, the
+mouth falls back to a synthetic wobble *while the client's state stays
+"speaking"* -- which only happens if the backend never sends a follow-up
+state update, exactly what a backend stuck forever in a broken wait loop
+would do); and a page refresh landing on a permanently stuck "idle" (the
+backend had nothing new to tell a freshly-connected client, since it was
+never advancing past "waiting for wake word" in the first place). Fixed by
+reading in Silero's own native 512-sample chunk size directly instead of
+computing a frame length from an arbitrary millisecond duration. Confirmed
+live end to end: streamed a real recorded utterance through the corrected
+frame size and got 42 of 143 frames correctly speech-flagged, versus zero
+before the fix. Also added a `CONSOLE_LOG_LEVEL` setting (default
+`WARNING`, set to `INFO` for a debug session) -- console logging was
+silently WARNING-only even though a full INFO+ log already existed at
+`data/argus.log`, making live debugging harder than it needed to be.
+
 **Fixed live, 2026-08-28**: `capture_camera`'s JPEG output was being sent to
 the Anthropic API hardcoded as `image/png` (`_tool_result_content` in
 `argus/llm/anthropic_client.py` assumed every tool-returned image was PNG --
