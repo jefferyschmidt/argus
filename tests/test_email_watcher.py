@@ -3,7 +3,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from unittest.mock import MagicMock, patch
 
-from argus.email_watcher import EmailWatcher, _EmailSummary, _decode, _plain_text_body, _strip_html
+from argus.email_watcher import EmailWatcher, _EmailSummary, _decode, _decode_part, _plain_text_body, _strip_html
 from argus.llm.base import CompletionResult, Tier
 
 
@@ -29,6 +29,25 @@ def test_decode_encoded_header():
 
 def test_decode_none_is_empty_string():
     assert _decode(None) == ""
+
+
+def test_decode_unregistered_charset_falls_back_instead_of_raising():
+    """Confirmed live: a real batch of 50 Yahoo emails crashed the entire
+    fetch on one header declaring 'unknown-8bit' -- a real placeholder
+    charset some mail servers use, not an actual registered Python codec,
+    so .decode() raised LookupError instead of the more common
+    UnicodeDecodeError."""
+    with patch("argus.email_watcher.decode_header", return_value=[(b"Hello", "unknown-8bit")]):
+        assert _decode("anything") == "Hello"
+
+
+def test_decode_part_unregistered_charset_falls_back_instead_of_raising():
+    part = MIMEText("body text", "plain")
+    del part["Content-Transfer-Encoding"]
+    part.set_payload(b"raw body bytes")
+    part.set_param("charset", "unknown-8bit")
+    result = _decode_part(part)
+    assert "raw body bytes" in result
 
 
 def test_plain_text_body_simple_message():

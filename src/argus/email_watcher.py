@@ -43,13 +43,22 @@ UNSURE -- can't tell from this much, would need to see more of the email"""
 
 
 def _decode(value: str | None) -> str:
+    """Confirmed live: a real batch of 50 Yahoo emails crashed the whole
+    fetch on a single header ("unknown-8bit" -- a real placeholder charset
+    some mail servers declare, not an actual registered Python codec, so
+    .decode() raises LookupError rather than the more common
+    UnicodeDecodeError). One bad header shouldn't take down the other 49
+    good ones -- fall back to utf-8-with-replace, which never raises."""
     if not value:
         return ""
     parts = decode_header(value)
     out = []
     for text, charset in parts:
         if isinstance(text, bytes):
-            out.append(text.decode(charset or "utf-8", errors="replace"))
+            try:
+                out.append(text.decode(charset or "utf-8", errors="replace"))
+            except (LookupError, UnicodeDecodeError):
+                out.append(text.decode("utf-8", errors="replace"))
         else:
             out.append(text)
     return "".join(out).strip()
@@ -82,10 +91,15 @@ def _strip_html(html: str) -> str:
 
 
 def _decode_part(part: email.message.Message) -> str:
-    try:
-        raw = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", errors="replace")
-    except Exception:
+    payload = part.get_payload(decode=True)
+    if payload is None:
         return ""
+    try:
+        raw = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+    except (LookupError, UnicodeDecodeError):
+        # Same "unknown-8bit"-style unregistered-charset issue as _decode()
+        # above -- fall back rather than losing the whole body.
+        raw = payload.decode("utf-8", errors="replace")
     return _strip_html(raw) if part.get_content_type() == "text/html" else raw
 
 
