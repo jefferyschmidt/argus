@@ -45,6 +45,13 @@ class ToolRegistry:
             if not self.confirmer(name, tool_input):
                 log.info("Tool call denied by user: %s(%s)", name, tool_input)
                 raise ToolDenied(f"user declined to run '{name}'")
+            # high_risk tools (send_email, restart_argus, commit_own_changes,
+            # write_own_source) get asked twice, not once -- a single
+            # misheard "yes" is a real risk, and these are the actions
+            # where that's most costly. Both confirmations must pass.
+            if getattr(tool, "high_risk", False) and not self.confirmer(name, tool_input):
+                log.info("Tool call denied by user on second confirmation: %s(%s)", name, tool_input)
+                raise ToolDenied(f"user declined to run '{name}' on second confirmation")
 
         log.info("Executing tool: %s(%s) [tier=%s]", name, tool_input, tool.tier.value)
         return tool.handler(tool_input)

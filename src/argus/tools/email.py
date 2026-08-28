@@ -158,5 +158,6 @@ send_email_tool = Tool(
         "required": ["account", "to", "subject", "body"],
     },
     tier=PermissionTier.CONFIRM,
+    high_risk=True,  # visible to someone else, can't be unsent -- asked twice, not once
     handler=_send_email,
 )

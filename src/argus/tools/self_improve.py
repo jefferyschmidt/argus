@@ -147,6 +147,7 @@ write_own_source_tool = Tool(
         "required": ["path", "content"],
     },
     tier=PermissionTier.CONFIRM,
+    high_risk=True,  # editing Argus's own live code -- asked twice, not once
     handler=_write_own_source,
 )
 
@@ -177,6 +178,7 @@ commit_own_changes_tool = Tool(
         "required": ["message"],
     },
     tier=PermissionTier.CONFIRM,
+    high_risk=True,  # permanent project-history change -- asked twice, not once
     handler=_commit_own_changes,
 )
 
@@ -197,5 +199,6 @@ restart_argus_tool = Tool(
     ),
     input_schema={"type": "object", "properties": {}},
     tier=PermissionTier.CONFIRM,
+    high_risk=True,  # ends the current session abruptly -- asked twice, not once
     handler=_restart_argus,
 )

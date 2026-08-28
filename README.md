@@ -228,8 +228,12 @@ calls (with real generated images), memory, and routing/spend.
 - Speaker recognition (know *who's* talking -- useful once more than one
   person interacts with Argus).
 - Document/receipt scanning via camera.
-- Voice-gated confirmation for the riskiest actions (an extra layer beyond
-  a typed/spoken "yes").
+- ~~Voice-gated confirmation for the riskiest actions (an extra layer beyond
+  a typed/spoken "yes").~~ Done: a `high_risk` flag on `Tool` (send_email,
+  write_own_source, commit_own_changes, restart_argus) makes
+  `ToolRegistry.execute` ask for confirmation twice, not once, before
+  running -- a single misheard "yes" from STT is a real, previously
+  unmitigated risk for exactly these irreversible/visible actions.
 
 ### Dream / stretch goals
 
