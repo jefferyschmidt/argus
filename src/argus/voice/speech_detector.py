@@ -1,35 +1,52 @@
 import numpy as np
-import webrtcvad
+import torch
+from silero_vad import load_silero_vad
+
+_CHUNK_SAMPLES = 512  # Silero's required chunk size at 16kHz
 
 
 class SpeechDetector:
-    """Wraps WebRTC's VAD to answer "is this actual human speech" rather
-    than just "is this loud" -- RMS-threshold barge-in was firing on any
-    loud transient (a cough, a click, speaker/echo bleed), since amplitude
-    alone can't tell speech from noise. WebRTC's classifier looks at the
-    audio's spectral shape instead, and is small/fast enough to run on
-    every frame on CPU-only hardware with no real cost.
+    """Wraps Silero's neural VAD to answer "is this actual human speech"
+    rather than just "is this loud" -- RMS-threshold barge-in was firing on
+    any loud transient (a cough, a click, speaker/echo bleed), since
+    amplitude alone can't tell speech from noise. Previously used
+    webrtcvad (a classic DSP-based classifier); switched to Silero after
+    noticing the AI-receptionist project (Pipecat + Silero) handles
+    turn-taking noticeably better -- Silero's small neural model is more
+    accurate at telling speech from noise/echo, and still cheap enough
+    (~0.5ms/chunk measured on this CPU-only hardware) to run on every
+    frame with no real cost.
 
-    aggressiveness: 0 (most permissive, most false positives) to 3 (most
-    aggressive at filtering out non-speech). 2 is WebRTC's own suggested
-    default for a noisy environment."""
+    threshold: Silero's own speech-probability cutoff, 0-1. 0.5 is its
+    documented default."""
 
-    def __init__(self, aggressiveness: int = 2):
-        self._vad = webrtcvad.Vad(aggressiveness)
+    def __init__(self, threshold: float = 0.5):
+        self._model = load_silero_vad(onnx=True)
+        self._threshold = threshold
+
+    def reset(self) -> None:
+        """Silero's model carries streaming state (recurrent) across
+        calls -- reset it at the start of each new watch session so stale
+        context from a previous utterance doesn't bias the next one."""
+        self._model.reset_states()
 
     def is_speech(self, frame: np.ndarray, sample_rate: int = 16000) -> bool:
-        """frame: int16 mono samples, any length. WebRTC VAD only accepts
-        10/20/30ms sub-frames at 8/16/32/48kHz, so a longer frame (e.g. the
-        80ms chunks used elsewhere in this codebase) is voted on in 20ms
-        slices -- majority speech-flagged wins. Returns False for a frame
-        too short to contain even one full sub-frame."""
-        sub_len = int(sample_rate * 0.02)  # 20ms
+        """frame: int16 mono samples, any length, at 16kHz (the only rate
+        this is wired for -- matches every other place in this codebase
+        that talks to the wake-word/barge-in mic). A longer frame (e.g.
+        the 80ms/1280-sample chunks used elsewhere here) is voted on in
+        Silero's required 512-sample (32ms) sub-chunks -- majority
+        speech-flagged wins. Returns False for a frame too short to
+        contain even one full sub-chunk."""
+        if sample_rate != 16000:
+            raise ValueError("SpeechDetector is only wired for 16kHz audio")
+        floats = frame.astype(np.float32) / 32768.0
         votes = 0
         total = 0
-        for i in range(0, len(frame) - sub_len + 1, sub_len):
-            sub = frame[i : i + sub_len]
+        for i in range(0, len(floats) - _CHUNK_SAMPLES + 1, _CHUNK_SAMPLES):
+            sub = torch.from_numpy(floats[i : i + _CHUNK_SAMPLES])
             total += 1
-            if self._vad.is_speech(sub.astype(np.int16).tobytes(), sample_rate):
+            if self._model(sub, sample_rate).item() >= self._threshold:
                 votes += 1
         if total == 0:
             return False

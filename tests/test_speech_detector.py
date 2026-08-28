@@ -16,14 +16,31 @@ def test_silence_is_not_speech():
 
 def test_too_short_frame_is_not_speech():
     detector = SpeechDetector()
-    tiny = np.zeros(10, dtype=np.int16)  # shorter than one 20ms sub-frame
+    tiny = np.zeros(10, dtype=np.int16)  # shorter than one 512-sample sub-chunk
     assert detector.is_speech(tiny) is False
+
+
+def test_rejects_non_16khz():
+    detector = SpeechDetector()
+    frame = np.zeros(1280, dtype=np.int16)
+    try:
+        detector.is_speech(frame, sample_rate=8000)
+        assert False, "expected ValueError for non-16kHz input"
+    except ValueError:
+        pass
 
 
 def test_frame_length_matches_codebase_chunking():
     """Both the 1280-sample (80ms @16kHz) barge-in chunk size and shorter
     partial frames should be handled without raising."""
     detector = SpeechDetector()
-    for length in (320, 640, 1280):
+    for length in (512, 1024, 1280):
         frame = _tone(200.0, length / 16000, amplitude=5000)[:length]
         detector.is_speech(frame)  # must not raise
+
+
+def test_reset_does_not_raise():
+    detector = SpeechDetector()
+    detector.is_speech(np.zeros(1280, dtype=np.int16))
+    detector.reset()
+    detector.is_speech(np.zeros(1280, dtype=np.int16))

@@ -28,7 +28,7 @@ voice = [
     "sounddevice>=0.5.1",
     "numpy>=2.1.0",
     "cartesia>=2.0.0",
-    "webrtcvad-wheels>=2.0.14",
+    "silero-vad>=6.0.0",
 ]
 dev = [
     "pytest>=8.3.0",

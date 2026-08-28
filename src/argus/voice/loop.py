@@ -435,8 +435,11 @@ class VoiceLoop:
         hot_mic = self._hot_mic_active()
 
         # Without this, leftover prediction state from the wake-word model's
-        # last real detection can cause an immediate spurious trigger here.
+        # (or the VAD's own recurrent state's) last real detection can
+        # cause an immediate spurious trigger here.
         self.wake_word.reset()
+        if hot_mic:
+            self.speech_detector.reset()
 
         # openWakeWord's embedding model scores over a rolling ~1.3s window.
         # Right after reset() that buffer is mostly empty, and scoring
