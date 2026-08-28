@@ -26,7 +26,14 @@ CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id);
 
 def get_connection(path: Path | None = None) -> sqlite3.Connection:
     db_path = path or (settings.data_dir / "argus.db")
-    conn = sqlite3.connect(db_path)
+    # check_same_thread=False: MemoryManager's connection is created once
+    # (main thread) but voice input, text input, and push-to-talk each run
+    # on their own thread and all reach the same orchestrator/memory
+    # instance. That's safe here specifically because VoiceLoop's
+    # _interaction_lock already serializes every call path that touches
+    # this connection -- sqlite3's default same-thread restriction is a
+    # blanket guard, not something this app actually needs given that.
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     return conn

@@ -131,6 +131,16 @@ class Orchestrator:
             event["result"] = str(result)[:400]
         ui_events.publish(event)
 
+    def _propose_core_memory(self, text: str) -> None:
+        """Proposals sit unconfirmed until approved -- previously only
+        approvable via a separate `argus memory review` terminal command,
+        with no path from voice or the console, so proposals just piled up
+        invisibly. Now also published as a UI event so the console can
+        show it with confirm/reject buttons right where it happened."""
+        memory_id = self.memory.core.propose(text)
+        if memory_id:
+            ui_events.publish({"type": "core_memory_pending", "id": memory_id, "text": text})
+
     def _publish_turn_end(self) -> None:
         ui_events.publish({
             "type": "system",
@@ -162,7 +172,7 @@ class Orchestrator:
 
         reply, proposed = _extract_core_memory(result.text)
         if proposed:
-            self.memory.core.propose(proposed)
+            self._propose_core_memory(proposed)
 
         self.memory.remember_turn("assistant", reply)
         ui_events.publish({"type": "transcript", "role": "argus", "text": reply, "tier": result.tier.value, "model": result.model})
@@ -215,7 +225,7 @@ class Orchestrator:
 
         reply, proposed = _extract_core_memory(result.text)
         if proposed:
-            self.memory.core.propose(proposed)
+            self._propose_core_memory(proposed)
 
         self.memory.remember_turn("assistant", reply)
         ui_events.publish({"type": "transcript", "role": "argus", "text": reply, "tier": result.tier.value, "model": result.model})

@@ -66,6 +66,40 @@ def ptt_stop() -> dict:
     return {"ok": True}
 
 
+def _resolve_core_memory(memory_id: int, confirmed: bool) -> dict:
+    """Direct DB access rather than routing through the live VoiceLoop's
+    in-memory objects -- confirm/reject is just a row update, and going
+    through the shared SQLite file works whether or not the console
+    happens to be attached to the same orchestrator instance."""
+    from argus.memory.core import CoreMemoryStore
+    from argus.memory.store import get_connection
+
+    conn = get_connection()
+    try:
+        store = CoreMemoryStore(conn)
+        if confirmed:
+            store.confirm(memory_id)
+        else:
+            store.reject(memory_id)
+        core_count = len(store.list_confirmed())
+    finally:
+        conn.close()
+
+    ui_events.publish({"type": "core_memory_resolved", "id": memory_id, "confirmed": confirmed})
+    ui_events.publish({"type": "memory", "core": core_count})
+    return {"ok": True}
+
+
+@app.post("/api/core_memory/{memory_id}/confirm")
+def confirm_core_memory(memory_id: int) -> dict:
+    return _resolve_core_memory(memory_id, confirmed=True)
+
+
+@app.post("/api/core_memory/{memory_id}/reject")
+def reject_core_memory(memory_id: int) -> dict:
+    return _resolve_core_memory(memory_id, confirmed=False)
+
+
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()

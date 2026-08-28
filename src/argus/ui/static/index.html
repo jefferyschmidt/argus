@@ -58,6 +58,27 @@
   }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+  .pending-memories {
+    position: fixed; top: 18px; right: 18px; z-index: 20;
+    display: flex; flex-direction: column; gap: 8px; width: min(320px, calc(100vw - 36px));
+  }
+  .memory-card {
+    background: var(--bg-panel); border: 1px solid var(--accent); border-radius: 6px;
+    padding: 12px 14px; box-shadow: 0 12px 32px -10px rgba(0,0,0,.6);
+    animation: card-in .2s ease;
+  }
+  @keyframes card-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+  .memory-card .eyebrow { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent-bright); margin-bottom: 6px; }
+  .memory-card .text { font-family: var(--font-body); font-size: 13px; color: var(--ink); line-height: 1.4; margin-bottom: 10px; }
+  .memory-card .actions { display: flex; gap: 8px; }
+  .memory-card button {
+    flex: 1; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase;
+    border-radius: 4px; padding: 6px 0; cursor: pointer; border: 1px solid var(--line-strong);
+    background: var(--bg-panel-2); color: var(--ink-dim); transition: border-color .12s, color .12s;
+  }
+  .memory-card button.confirm:hover { border-color: var(--ok); color: var(--ok); }
+  .memory-card button.reject:hover { border-color: var(--err); color: var(--err); }
+
   .hero { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 22px 20px 6px; }
   .hero-row { display: flex; align-items: stretch; justify-content: center; gap: 16px; flex-wrap: wrap; width: 100%; }
   .head-frame {
@@ -200,6 +221,7 @@
     </div>
   </div>
   <div class="toast" id="toast"></div>
+  <div class="pending-memories" id="pendingMemories"></div>
 
   <div class="hero">
     <div class="hero-row">
@@ -492,9 +514,9 @@
     barEl.style.width = pct + "%";
   }
   function updateMemory(m) {
-    setBar(document.getElementById("memCoreBar"), document.getElementById("memCoreCount"), m.core, 20);
-    setBar(document.getElementById("memSemBar"), document.getElementById("memSemCount"), m.semantic, 500);
-    setBar(document.getElementById("memEpiBar"), document.getElementById("memEpiCount"), m.episodic, 300);
+    if (m.core !== undefined) setBar(document.getElementById("memCoreBar"), document.getElementById("memCoreCount"), m.core, 20);
+    if (m.semantic !== undefined) setBar(document.getElementById("memSemBar"), document.getElementById("memSemCount"), m.semantic, 500);
+    if (m.episodic !== undefined) setBar(document.getElementById("memEpiBar"), document.getElementById("memEpiCount"), m.episodic, 300);
   }
   function updateSystem(s) {
     if (s.tier) {
@@ -538,6 +560,9 @@
       else if (event.type === "memory") updateMemory(event);
       else if (event.type === "system") updateSystem(event);
       else if (event.type === "toast") showToast(event.text);
+      else if (event.type === "core_memory_pending") addPendingMemoryCard(event.id, event.text);
+      else if (event.type === "core_memory_resolved") removePendingMemoryCard(event.id);
+      else if (event.type === "expression") setExpression(event.value, event.duration_ms);
     };
   }
 
@@ -549,6 +574,30 @@
     toastEl.classList.add("show");
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 3000);
+  }
+
+  // ---------- pending core memory review ----------
+  var pendingMemoriesEl = document.getElementById("pendingMemories");
+  function addPendingMemoryCard(id, text) {
+    var card = document.createElement("div");
+    card.className = "memory-card";
+    card.id = "mem-card-" + id;
+    card.innerHTML =
+      '<div class="eyebrow">Remember this?</div>' +
+      '<div class="text">' + esc(text) + '</div>' +
+      '<div class="actions"><button class="confirm">Confirm</button><button class="reject">Forget</button></div>';
+    card.querySelector(".confirm").addEventListener("click", function () { resolvePendingMemory(id, true); });
+    card.querySelector(".reject").addEventListener("click", function () { resolvePendingMemory(id, false); });
+    pendingMemoriesEl.appendChild(card);
+  }
+  function removePendingMemoryCard(id) {
+    var card = document.getElementById("mem-card-" + id);
+    if (card) card.remove();
+  }
+  function resolvePendingMemory(id, confirmed) {
+    fetch("/api/core_memory/" + id + "/" + (confirmed ? "confirm" : "reject"), { method: "POST" })
+      .then(function () { removePendingMemoryCard(id); })
+      .catch(function () { showToast("Couldn't reach Argus -- is it still running?"); });
   }
 
   document.getElementById("stopListeningBtn").addEventListener("click", function () {
