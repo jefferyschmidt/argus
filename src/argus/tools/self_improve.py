@@ -1,4 +1,5 @@
 import subprocess
+import sys
 from pathlib import Path
 
 from argus.config import PROJECT_ROOT
@@ -69,8 +70,16 @@ def _write_own_source(args: dict) -> str:
 
 
 def _run_own_tests(args: dict) -> str:
+    # sys.executable, not the literal "python" -- confirmed live this was
+    # a real, currently-broken bug: "python" on PATH resolved to a
+    # completely different global install with no dependencies installed
+    # (pytest included), so this reported FAILED unconditionally,
+    # regardless of whether the actual code change was fine. That
+    # silently defeated the one safety check the self-improve system
+    # prompt relies on ("never claim success without having actually seen
+    # tests pass").
     result = subprocess.run(
-        ["python", "-m", "pytest", "-q"],
+        [sys.executable, "-m", "pytest", "-q"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,

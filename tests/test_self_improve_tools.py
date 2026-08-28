@@ -1,5 +1,7 @@
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -72,3 +74,22 @@ def test_list_own_source(fake_roots):
 
     assert "a.py" in result
     assert "sub/" in result
+
+
+def test_run_own_tests_uses_the_current_interpreter_not_bare_python():
+    """Confirmed live as a real, currently-broken bug: the literal string
+    "python" on PATH resolved to a completely different global install
+    with no project dependencies (pytest included) -- run_own_tests
+    reported FAILED unconditionally regardless of whether the actual code
+    change was fine, silently defeating the self-improve system prompt's
+    one safety check ("never claim success without having actually seen
+    tests pass")."""
+    with patch("argus.tools.self_improve.subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = "5 passed"
+        mock_run.return_value.stderr = ""
+        si._run_own_tests({})
+
+    called_command = mock_run.call_args[0][0]
+    assert called_command[0] == sys.executable
+    assert called_command[0] != "python"
