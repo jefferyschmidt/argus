@@ -75,7 +75,9 @@ calls (with real generated images), memory, and routing/spend.
    CONFIRM tools still require a human's yes. Self-modification (below)
    depends on this being solid first, since both are about Argus taking
    action with less direct supervision.
-7. Email/calendar, smart home (Home Assistant) -- need OAuth/app setup first
+7. ~~Email~~ monitoring (Gmail + Yahoo via IMAP, argus/email_watcher.py --
+   see the proactive-context-style writeup further down); calendar and
+   smart home (Home Assistant) still need OAuth/app setup first
 8. ~~Camera/vision~~ (single-shot, on request): capture_camera tool
    (opencv-python-headless), same bytes-result pipeline as the screenshot
    tool. CONFIRM-tier -- more sensitive than a screenshot since it captures

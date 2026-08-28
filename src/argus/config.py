@@ -94,6 +94,20 @@ class Settings(BaseSettings):
     # never feel like running commentary.
     proactive_context_cooldown_minutes: float = 5.0
 
+    # Email monitoring (argus/email_watcher.py) -- IMAP, not SMTP/POP3
+    # (IMAP is the read/monitor protocol; SMTP only sends; POP3 downloads-
+    # and-removes, which would interfere with your normal mail client's
+    # view of the same inbox). Both need an app-specific password, not
+    # your real account password -- Gmail and Yahoo both gate third-party
+    # IMAP behind one now. Either or both accounts can be left blank to
+    # skip that account entirely.
+    gmail_imap_user: str = ""
+    gmail_imap_app_password: str = ""
+    yahoo_imap_user: str = ""
+    yahoo_imap_app_password: str = ""
+    email_watch_enabled: bool = True
+    email_watch_poll_seconds: float = 120.0
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir

@@ -99,6 +99,18 @@ def proactive_context_status() -> dict:
     return {"proactive_context": ui_commands.is_proactive_context_enabled()}
 
 
+@app.post("/api/email_watch/toggle")
+def email_watch_toggle() -> dict:
+    new_state = ui_commands.toggle_email_watch_enabled()
+    ui_events.publish({"type": "email_watch", "value": new_state})
+    return {"email_watch": new_state}
+
+
+@app.get("/api/email_watch")
+def email_watch_status() -> dict:
+    return {"email_watch": ui_commands.is_email_watch_enabled()}
+
+
 def _resolve_core_memory(memory_id: int, confirmed: bool) -> dict:
     """Direct DB access rather than routing through the live VoiceLoop's
     in-memory objects -- confirm/reject is just a row update, and going

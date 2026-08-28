@@ -10,6 +10,9 @@ _quiet_mode = threading.Event()
 _proactive_context = threading.Event()
 if settings.proactive_context_enabled:
     _proactive_context.set()
+_email_watch = threading.Event()
+if settings.email_watch_enabled:
+    _email_watch.set()
 
 
 def request_stop_listening() -> None:
@@ -90,4 +93,21 @@ def is_proactive_context_enabled() -> bool:
 def toggle_proactive_context_enabled() -> bool:
     new_state = not _proactive_context.is_set()
     set_proactive_context_enabled(new_state)
+    return new_state
+
+
+def set_email_watch_enabled(enabled: bool) -> None:
+    if enabled:
+        _email_watch.set()
+    else:
+        _email_watch.clear()
+
+
+def is_email_watch_enabled() -> bool:
+    return _email_watch.is_set()
+
+
+def toggle_email_watch_enabled() -> bool:
+    new_state = not _email_watch.is_set()
+    set_email_watch_enabled(new_state)
     return new_state

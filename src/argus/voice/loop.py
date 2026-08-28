@@ -28,6 +28,9 @@ _PROACTIVE_CONTEXT_ON_PHRASES = ("proactive mode on", "start checking in", "you 
 _JOURNAL_TRIGGER = re.compile(
     r"^(note to self|journal this|take a note|log this thought)\s*[:,-]?\s*(.*)$", re.IGNORECASE
 )
+_EMAIL_CHECK_PHRASES = ("check my email", "check my mail", "any new email", "any new mail")
+_EMAIL_WATCH_OFF_PHRASES = ("stop checking my email", "stop watching my email", "email watch off")
+_EMAIL_WATCH_ON_PHRASES = ("check my email again", "start checking my email", "email watch on")
 _BARGE_IN_HOLD_FRAMES = 3  # ~240ms of sustained energy (at 80ms/chunk) before hot-mic barge-in fires
 _LIKELY_ADDRESSED = re.compile(
     r"^(argus|hey\s+argus|can|could|would|will|are|do|does|did|is|"
@@ -100,6 +103,12 @@ class VoiceLoop:
             self.orchestrator, self._speak_with_barge_in, self._interaction_lock
         )
         threading.Thread(target=self.context_awareness.run, daemon=True).start()
+
+        from argus.email_watcher import EmailWatcher
+        self.email_watcher = EmailWatcher(
+            self.orchestrator, self._speak_with_barge_in, self._interaction_lock
+        )
+        threading.Thread(target=self.email_watcher.run, daemon=True).start()
 
     def _reminder_checker_worker(self) -> None:
         """Reminders are meant to be surfaced proactively, not just answered
@@ -363,6 +372,33 @@ class VoiceLoop:
         journal_match = _JOURNAL_TRIGGER.match(text.strip())
         if journal_match:
             return self._handle_journal_trigger(journal_match.group(2).strip())
+
+        if any(phrase in lowered for phrase in _EMAIL_CHECK_PHRASES):
+            console.print("[dim](checking email...)[/dim]\n")
+            confirmation = "Checking now -- I'll let you know if anything looks important."
+            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
+            ui_events.publish({"type": "caption", "text": confirmation})
+            self._speak_with_barge_in(confirmation)
+            # Runs in the background -- IMAP round-trips can take a few
+            # seconds, no reason to hold the conversation open for it.
+            threading.Thread(target=self.email_watcher.check_now, daemon=True).start()
+            return True
+        if any(phrase in lowered for phrase in _EMAIL_WATCH_OFF_PHRASES):
+            ui_commands.set_email_watch_enabled(False)
+            console.print("[dim](email watch off)[/dim]\n")
+            confirmation = "Okay, I'll stop checking your email."
+            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
+            ui_events.publish({"type": "caption", "text": confirmation})
+            self._speak_with_barge_in(confirmation)
+            return True
+        if any(phrase in lowered for phrase in _EMAIL_WATCH_ON_PHRASES):
+            ui_commands.set_email_watch_enabled(True)
+            console.print("[dim](email watch on)[/dim]\n")
+            confirmation = "Will do -- I'll keep an eye on your email again."
+            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
+            ui_events.publish({"type": "caption", "text": confirmation})
+            self._speak_with_barge_in(confirmation)
+            return True
 
         self._refresh_hot_mic()
 
