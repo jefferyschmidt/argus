@@ -1,4 +1,5 @@
 import base64
+import re
 from datetime import datetime
 
 from argus.config import settings
@@ -94,19 +95,20 @@ That line will be stripped before the user sees it and queued for their
 confirmation.
 
 You also have an animated face in the console with real named expressions:
-angry, happy, sad, scared, curious, surprised, neutral. When the user asks
-to see one specifically ("show me angry"), or asks generally to see your
-expressions/emotions/faces, actually DO it rather than just talking about
-doing it -- pick one right then and put it in this reply, don't describe
-what you're about to show or ask which one they'd like first. If they asked
-generally, just show the first one now; they can ask for the rest one at a
-time. End the reply with a line in exactly this format, nothing else on
-that line:
+angry, happy, sad, scared, curious, surprised, neutral. The face can only
+show ONE expression at a time -- there is no such thing as showing several
+at once, so never claim or imply you're displaying more than one
+simultaneously, and never write more than one EXPRESSION: line in a reply
+(the system already handles direct requests like "show me angry" or "show
+me your expressions" automatically -- you don't need to add the marker
+yourself for those, just respond naturally as if it already happened,
+since it has). Use the marker yourself only for an UNPROMPTED strong,
+obvious emotional beat in what you're saying -- most replies don't need
+one. When you do, end the reply with a line in exactly this format,
+nothing else on that line:
 EXPRESSION: angry
-(substitute the expression you're actually showing). Also use this,
-unprompted, when what you're saying calls for a strong, obvious emotional
-beat -- most replies still don't need one. The line is stripped before the
-user sees or hears it, so it never gets spoken aloud."""
+(substitute the expression you're actually showing). The line is stripped
+before the user sees or hears it, so it never gets spoken aloud."""
 
 
 class Orchestrator:
@@ -121,6 +123,11 @@ class Orchestrator:
         self.tools = tool_registry or build_default_registry()
         self.last_tier: Tier | None = None
         self.last_model: str | None = None
+        self.last_expression: str | None = None
+
+    def _show_expression(self, name: str) -> None:
+        self.last_expression = name
+        ui_events.publish({"type": "expression", "value": name})
 
     def _build_system(self, user_text: str) -> str:
         context = self.memory.build_context(query=user_text)
@@ -172,6 +179,10 @@ class Orchestrator:
         self.memory.remember_turn("user", user_text)
         system = self._build_system(user_text)
 
+        requested_expression = _detect_requested_expression(user_text, self.last_expression)
+        if requested_expression:
+            self._show_expression(requested_expression)
+
         # Local 3B model can't do reliable tool calling, so trivial messages
         # that would route local skip tools entirely; anything else gets
         # the full tool-use loop on the frontier tier.
@@ -188,8 +199,8 @@ class Orchestrator:
         reply, proposed, expression = _extract_markers(result.text)
         if proposed:
             self._propose_core_memory(proposed)
-        if expression:
-            ui_events.publish({"type": "expression", "value": expression})
+        if expression and not requested_expression:
+            self._show_expression(expression)
 
         self.memory.remember_turn("assistant", reply)
         ui_events.publish({"type": "transcript", "role": "argus", "text": reply, "tier": result.tier.value, "model": result.model})
@@ -206,6 +217,10 @@ class Orchestrator:
         self.memory.remember_turn("user", user_text)
         system = self._build_system(user_text)
 
+        requested_expression = _detect_requested_expression(user_text, self.last_expression)
+        if requested_expression:
+            self._show_expression(requested_expression)
+
         if classify(user_text) is Tier.LOCAL:
             # Ollama isn't streamed here -- local replies are short enough
             # that streaming wouldn't meaningfully reduce latency anyway.
@@ -215,8 +230,8 @@ class Orchestrator:
             reply, proposed, expression = _extract_markers(result.text)
             if proposed:
                 self.memory.core.propose(proposed)
-            if expression:
-                ui_events.publish({"type": "expression", "value": expression})
+            if expression and not requested_expression:
+                self._show_expression(expression)
             if reply:
                 on_sentence(reply)
             self.memory.remember_turn("assistant", reply)
@@ -248,8 +263,8 @@ class Orchestrator:
         reply, proposed, expression = _extract_markers(result.text)
         if proposed:
             self._propose_core_memory(proposed)
-        if expression:
-            ui_events.publish({"type": "expression", "value": expression})
+        if expression and not requested_expression:
+            self._show_expression(expression)
 
         self.memory.remember_turn("assistant", reply)
         ui_events.publish({"type": "transcript", "role": "argus", "text": reply, "tier": result.tier.value, "model": result.model})
@@ -258,6 +273,30 @@ class Orchestrator:
 
 
 _VALID_EXPRESSIONS = {"angry", "happy", "sad", "scared", "curious", "surprised", "neutral"}
+_EXPRESSION_CYCLE = ["happy", "angry", "sad", "scared", "curious", "surprised"]
+_EXPRESSION_WORD = re.compile(r"\b(" + "|".join(_VALID_EXPRESSIONS) + r")\b", re.IGNORECASE)
+_EXPRESSION_TARGET = re.compile(r"\b(face|expression|look|emotion)s?\b", re.IGNORECASE)
+_GENERIC_EXPRESSION_REQUEST = re.compile(
+    r"\b(show|see|do)\b.{0,25}\b(facial\s+)?(expressions?|emotions?|faces)\b", re.IGNORECASE
+)
+
+
+def _detect_requested_expression(text: str, last_shown: str | None) -> str | None:
+    """A small/fast model proved unreliable at remembering to emit the
+    EXPRESSION: marker on direct requests (either skipping it entirely or,
+    once, hallucinating that it was showing four expressions "at the same
+    time" -- not something the face can actually do). Direct requests are a
+    narrow, well-defined pattern, so they're matched deterministically here
+    instead of depending on LLM compliance; the marker mechanism remains
+    for unprompted emotional beats where deterministic matching doesn't
+    apply."""
+    word_match = _EXPRESSION_WORD.search(text)
+    if word_match and _EXPRESSION_TARGET.search(text):
+        return word_match.group(1).lower()
+    if _GENERIC_EXPRESSION_REQUEST.search(text):
+        idx = (_EXPRESSION_CYCLE.index(last_shown) + 1) % len(_EXPRESSION_CYCLE) if last_shown in _EXPRESSION_CYCLE else 0
+        return _EXPRESSION_CYCLE[idx]
+    return None
 
 
 def _extract_markers(text: str) -> tuple[str, str | None, str | None]:
@@ -274,8 +313,8 @@ def _extract_markers(text: str) -> tuple[str, str | None, str | None]:
             lines.pop()
         elif stripped.upper().startswith("EXPRESSION:"):
             candidate = stripped.split(":", 1)[1].strip().lower()
-            if candidate in _VALID_EXPRESSIONS:
-                expression = candidate
+            if candidate in _VALID_EXPRESSIONS and expression is None:
+                expression = candidate  # closest-to-the-end marker wins if the model emits more than one
             lines.pop()
         else:
             break
