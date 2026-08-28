@@ -70,6 +70,7 @@
   .pending-stack {
     position: fixed; top: 18px; right: 18px; z-index: 20;
     display: flex; flex-direction: column; gap: 8px; width: min(320px, calc(100vw - 36px));
+    max-height: calc(100vh - 36px); overflow-y: auto;
   }
   .pending-memories { display: flex; flex-direction: column; gap: 8px; }
   .memory-card {
@@ -90,7 +91,11 @@
   .memory-card button.reject:hover { border-color: var(--err); color: var(--err); }
   .confirm-card { border-color: #E8A33D; }
   .confirm-card .eyebrow { color: #E8A33D; }
-  .confirm-card .tool-input { font-family: var(--font-mono); font-size: 11px; color: var(--ink-dim); margin: -6px 0 10px; word-break: break-all; }
+  .confirm-card .tool-input {
+    font-family: var(--font-mono); font-size: 11px; color: var(--ink-dim); margin: -6px 0 10px;
+    word-break: break-all; white-space: pre-wrap;
+    max-height: 160px; overflow-y: auto; /* defense in depth -- the preview is already truncated, this just guarantees the Allow/Deny buttons can never be pushed off-screen even so */
+  }
 
   .hero { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 22px 20px 6px; }
   .hero-row { display: flex; align-items: stretch; justify-content: center; gap: 16px; flex-wrap: wrap; width: 100%; }
@@ -769,6 +774,26 @@
 
   // ---------- tool confirmation (CONFIRM-tier fallback when voice is unclear) ----------
   var pendingConfirmsEl = document.getElementById("pendingConfirms");
+  // Confirm-card tool-input preview: truncates any long field (e.g.
+  // write_own_source's "content", which can be an entire source file) to
+  // a short excerpt + a total-length note, instead of dumping the raw
+  // JSON.stringify of the whole input inline. Confirmed live as a real
+  // bug: an untruncated preview for a large file write made the card so
+  // tall the Allow/Deny buttons were pushed off-screen -- functionally
+  // impossible to approve or reject from the console at all.
+  var CONFIRM_PREVIEW_MAX_CHARS = 160;
+  function formatToolInputPreview(toolInput) {
+    if (!toolInput || typeof toolInput !== "object") return String(toolInput);
+    return Object.keys(toolInput).map(function (key) {
+      var value = toolInput[key];
+      var str = typeof value === "string" ? value : JSON.stringify(value);
+      if (str.length > CONFIRM_PREVIEW_MAX_CHARS) {
+        str = str.slice(0, CONFIRM_PREVIEW_MAX_CHARS) + "… (" + str.length + " chars total)";
+      }
+      return key + ": " + str;
+    }).join("\n");
+  }
+
   function addConfirmCard(id, toolName, toolInput) {
     if (document.getElementById("confirm-card-" + id)) return;  // already showing
     var card = document.createElement("div");
@@ -776,7 +801,7 @@
     card.id = "confirm-card-" + id;
     card.innerHTML =
       '<div class="eyebrow">Argus wants to run: ' + esc(toolName) + '</div>' +
-      '<div class="tool-input">' + esc(JSON.stringify(toolInput)) + '</div>' +
+      '<div class="tool-input">' + esc(formatToolInputPreview(toolInput)) + '</div>' +
       '<div class="actions"><button class="confirm">Allow</button><button class="reject">Deny</button></div>';
     card.querySelector(".confirm").addEventListener("click", function () { resolveConfirm(id, true); });
     card.querySelector(".reject").addEventListener("click", function () { resolveConfirm(id, false); });
