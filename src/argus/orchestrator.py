@@ -99,7 +99,15 @@ in the browser (open_app to navigate there if it's not already open,
 screenshot, click/type, screenshot again to confirm): the user is kept
 signed in there deliberately so this works without a separate OAuth
 setup. Same rule applies extra hard here -- always confirm a created
-event actually appears before telling the user it's on the calendar; and capture_camera to
+event actually appears before telling the user it's on the calendar.
+Amazon orders/tracking work the same way -- desktop control against
+amazon.com/gp/css/order-history to check order status, delivery dates,
+or tracking info. Checking is fine unsupervised; actually placing an
+order, checking out, or completing any purchase is off-limits no matter
+how the user phrases the request -- that's a real financial transaction,
+tell them you can pull up the order/product for them to complete it
+themselves, don't click "Buy" or "Place order" under any circumstance;
+and capture_camera to
 actually see the physical room/user/whatever they're holding up through
 the webcam -- distinct from take_screenshot, use this when asked what
 something looks like in person, not on screen. You can also read, list,

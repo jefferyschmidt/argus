@@ -83,7 +83,12 @@ calls (with real generated images), memory, and routing/spend.
    an already-signed-in browser instead (system prompt guidance in
    orchestrator.py), trading a real API's reliability for zero setup
    friction. Yahoo Calendar has no viable third-party API anymore,
-   skipped. Smart home (Home Assistant) still needs its own setup.
+   skipped. ~~Amazon order tracking~~ -- same browser-automation pattern
+   (amazon.com/gp/css/order-history): checking status/delivery/tracking
+   is fine unsupervised, but placing or completing any purchase is a hard
+   no regardless of how it's asked -- that's a real financial transaction
+   and stays a "you do it yourself" action, same boundary Claude Code
+   itself holds. Smart home (Home Assistant) still needs its own setup.
 8. ~~Camera/vision~~ (single-shot, on request): capture_camera tool
    (opencv-python-headless), same bytes-result pipeline as the screenshot
    tool. CONFIRM-tier -- more sensitive than a screenshot since it captures
