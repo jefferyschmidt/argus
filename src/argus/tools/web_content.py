@@ -1,7 +1,9 @@
+import base64
 import io
 import urllib.request
 
 from argus.tools.base import PermissionTier, Tool
+from argus.ui import events as ui_events
 
 _MAX_DOWNLOAD_BYTES = 15_000_000  # cap on the raw download, before re-encoding
 _TIMEOUT_SECONDS = 10
@@ -55,10 +57,20 @@ def _fetch_image(args: dict) -> bytes | str:
     for quality in (85, 70, 55, 40):
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=quality)
-        encoded = buf.getvalue()
-        if len(encoded) <= _MAX_OUTPUT_BYTES:
-            return encoded
-    return encoded  # smallest attempt, still returned rather than silently dropped
+        result = buf.getvalue()
+        if len(result) <= _MAX_OUTPUT_BYTES:
+            break
+    # fetch_image is explicitly "show me a picture of X" -- unlike
+    # take_screenshot/capture_camera (small history-strip entries only,
+    # incidental captures), this always opens the large show modal too, not
+    # just the small strip (still populated separately via the generic
+    # bytes-result path in orchestrator._on_tool_call).
+    ui_events.publish({
+        "type": "show_modal", "kind": "image",
+        "title": args.get("title") or url.rsplit("/", 1)[-1] or "Image",
+        "image": base64.b64encode(result).decode("ascii"),
+    })
+    return result
 
 
 fetch_image_tool = Tool(
@@ -72,9 +84,43 @@ fetch_image_tool = Tool(
     ),
     input_schema={
         "type": "object",
-        "properties": {"url": {"type": "string"}},
+        "properties": {
+            "url": {"type": "string"},
+            "title": {"type": "string", "description": "Optional short caption for the show window, e.g. 'a 1966 Mustang'."},
+        },
         "required": ["url"],
     },
     tier=PermissionTier.ALLOW,
     handler=_fetch_image,
+)
+
+
+def _show_website(args: dict) -> str:
+    url = args["url"]
+    if not url.startswith(("http://", "https://")):
+        return "error: only http/https URLs are supported"
+    ui_events.publish({
+        "type": "show_modal", "kind": "url", "url": url, "title": args.get("title") or url,
+    })
+    return f"Showing {url}."
+
+
+show_website_tool = Tool(
+    name="show_website",
+    description=(
+        "Displays a website large in the console's show window -- use whenever the user says "
+        "'show me [a website]' or similar. Some sites refuse to be embedded this way (their own "
+        "security policy); if the user says it looks blank, tell them and offer open_app to open "
+        "it in their real browser instead."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "url": {"type": "string"},
+            "title": {"type": "string", "description": "Optional short caption, defaults to the URL."},
+        },
+        "required": ["url"],
+    },
+    tier=PermissionTier.ALLOW,
+    handler=_show_website,
 )

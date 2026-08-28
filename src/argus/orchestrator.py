@@ -62,6 +62,10 @@ as a lookup.
   post-training-cutoff, anything time-sensitive). fetch_image: search
   first to find a real current image URL, then fetch it -- never guess or
   recall a URL from memory, only ever fetch one a search just returned.
+  Both fetch_image and show_website open the console's large show window
+  automatically -- use them whenever asked "show me X," not
+  open_app/desktop control (that opens a real, separate OS window the
+  console can't display inline).
 - Desktop control: screenshot first to see the real screen before
   clicking/typing. If what you need isn't visible, scroll for it rather
   than guessing coordinates outside the screenshot -- most of a page or
@@ -227,8 +231,16 @@ class Orchestrator:
             "tier": tool.tier.value if tool else None,
         }
         if isinstance(result, bytes):
-            event["image"] = base64.b64encode(result).decode("ascii")
-            event["result"] = f"<{len(result)} bytes>"
+            if name == "capture_camera":
+                # capture_camera publishes its own display event (a
+                # stylized rendering by default, the raw frame only when
+                # explicitly asked -- see desktop.py's _capture_camera) --
+                # skip the generic auto-display here, or the raw photo
+                # would ALSO silently show up, defeating that default.
+                event["result"] = f"<{len(result)} bytes>"
+            else:
+                event["image"] = base64.b64encode(result).decode("ascii")
+                event["result"] = f"<{len(result)} bytes>"
         else:
             event["result"] = str(result)[:400]
         ui_events.publish(event)

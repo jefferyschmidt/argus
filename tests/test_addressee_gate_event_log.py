@@ -28,7 +28,9 @@ def test_a_dropped_utterance_publishes_an_addressee_gate_event():
 
     assert result is True  # follow-up window stays open
     published = [call.args[0] for call in mock_publish.call_args_list]
-    assert {"type": "addressee_gate", "verdict": "stray", "text": "that sounds expensive"} in published
+    assert {
+        "type": "addressee_gate", "verdict": "stray", "text": "that sounds expensive", "loudness": None,
+    } in published
 
 
 def test_addressed_utterance_does_not_publish_a_gate_event():

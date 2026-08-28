@@ -445,7 +445,32 @@ class VoiceLoop:
                     console.print("[dim](back to wake-word listening)[/dim]\n")
                     break
 
-    def _seems_addressed_to_argus(self, text: str) -> bool:
+    @staticmethod
+    def _loudness_hint(samples) -> str | None:
+        """Quieter audio is genuinely more likely to be distant background
+        conversation/TV than a direct request -- confirmed live as a real
+        missing signal: the addressee gate previously looked at the
+        transcribed TEXT only, never how loud/close the utterance actually
+        was. Peak RMS relative to the same silence floor already used for
+        VAD gating (settings.voice_silence_rms_threshold) as a cheap,
+        already-available proxy for distance/directness -- not a real
+        source-localization signal, just "was this said right at the mic
+        or picked up faintly from across the room." Returns None (no
+        opinion) when there's nothing to measure."""
+        if samples is None or samples.size == 0:
+            return None
+        peak_rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+        floor = settings.voice_silence_rms_threshold
+        if floor <= 0:
+            return None
+        ratio = peak_rms / floor
+        if ratio < 2.0:
+            return "quiet -- said at a volume close to background noise, more likely distant/incidental"
+        if ratio < 4.0:
+            return "moderate volume -- not unusually quiet, but not a clear close, direct voice either"
+        return "clear, close volume -- consistent with speaking directly at the mic"
+
+    def _seems_addressed_to_argus(self, text: str, samples=None) -> bool:
         """Cheap gate for follow-up-window utterances: is this actually
         meant for Argus, or is the open mic picking up stray conversation
         (e.g. talking to someone else in the room)? Real addressee
@@ -457,15 +482,21 @@ class VoiceLoop:
         testing showed the local 3B classifier dropping obviously-addressed
         questions ("Can you still hear me?") as STRAY, which is far more
         disruptive than the rare bit of stray chatter it's meant to filter.
-        Only genuinely ambiguous statements (no "?", no direct opener) fall
-        through to the model, and its own prompt is now biased the same
-        way: uncertain defaults to ADDRESSED, since wrongly continuing to
-        listen for one more turn costs nothing but wrongly dropping a real
-        question breaks the conversation."""
+        Deliberately NOT gated on loudness -- a clear direct question asked
+        quietly on purpose should still pass immediately. Only genuinely
+        ambiguous statements (no "?", no direct opener) fall through to the
+        model, WITH a loudness hint (see _loudness_hint) folded into its
+        prompt as one more signal alongside the words themselves. Its own
+        prompt is still biased toward ADDRESSED when uncertain, since
+        wrongly continuing to listen for one more turn costs nothing but
+        wrongly dropping a real question breaks the conversation."""
         if "?" in text or _LIKELY_ADDRESSED.match(text.strip()):
             return True
 
         from argus.llm.base import Message
+
+        loudness_hint = self._loudness_hint(samples)
+        loudness_line = f"Volume: {loudness_hint}.\n" if loudness_hint else ""
 
         try:
             prompt = (
@@ -473,11 +504,14 @@ class VoiceLoop:
                 "voice assistant -- a question, request, or command -- or "
                 "is it more likely stray conversation/background talk not "
                 f'meant for the assistant?\nUtterance: "{text}"\n'
+                f"{loudness_line}"
                 "If genuinely uncertain, answer ADDRESSED -- only answer "
                 "STRAY when it clearly sounds like a comment to someone "
                 "else in the room (uses another person's name, or reads as "
-                "one half of a conversation not involving the assistant) "
-                "or an unrelated snippet like TV/media audio.\n"
+                "one half of a conversation not involving the assistant), "
+                "an unrelated snippet like TV/media audio, or (when given) "
+                "a quiet/distant volume combined with otherwise ambiguous "
+                "wording.\n"
                 "Reply with exactly one word: ADDRESSED or STRAY."
             )
             result = self.orchestrator.router.local.complete([Message(role="user", content=prompt)])
@@ -518,7 +552,7 @@ class VoiceLoop:
         if not text:
             return False
 
-        if check_addressee and not self._seems_addressed_to_argus(text):
+        if check_addressee and not self._seems_addressed_to_argus(text, samples=samples):
             console.print(f"[dim]you (ignored, seems unaddressed)> {text}[/dim]\n")
             # Confirmed live as a real, recurring complaint -- "struggling
             # to figure out when I'm talking to him and when I'm not."
@@ -527,7 +561,10 @@ class VoiceLoop:
             # drop reviewable after the fact (see ui/events.py's event
             # log), not just guessable from console scrollback that's
             # long gone by the time it's reported.
-            ui_events.publish({"type": "addressee_gate", "verdict": "stray", "text": text})
+            ui_events.publish({
+                "type": "addressee_gate", "verdict": "stray", "text": text,
+                "loudness": self._loudness_hint(samples),
+            })
             return True  # keep the follow-up window open, just ignore this one
 
         console.print(f"[bold green]you>[/bold green] {text}")

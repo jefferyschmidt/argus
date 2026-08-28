@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from argus.tools.desktop import _capture_camera, _click, _scroll
+from argus.tools.desktop import _capture_camera, _click, _scroll, _stylize_vision
 
 
 def test_click_rejects_malformed_coordinate_string():
@@ -77,8 +77,80 @@ def test_capture_camera_returns_jpeg_bytes_on_success():
     mock_cap.isOpened.return_value = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     mock_cap.read.return_value = (True, frame)
-    with patch("cv2.VideoCapture", return_value=mock_cap):
+    with patch("cv2.VideoCapture", return_value=mock_cap), \
+         patch("argus.tools.desktop.ui_events.publish"):
         result = _capture_camera({})
     assert isinstance(result, bytes)
     assert result[:2] == b"\xff\xd8"  # JPEG magic bytes
     mock_cap.release.assert_called_once()
+
+
+def test_stylize_vision_returns_same_shape_black_canvas_with_edges():
+    import numpy as np
+
+    frame = np.zeros((20, 20, 3), dtype=np.uint8)
+    frame[5:15, 5:15] = 255  # a bright square, should produce an edge ring
+
+    result = _stylize_vision(frame)
+
+    assert result.shape == frame.shape
+    assert result.any()  # some edge pixels were drawn, not an all-black frame
+
+
+def test_capture_camera_publishes_stylized_view_by_default_not_raw():
+    """Confirmed directly requested: show a computer-vision-style rendering
+    by default, never the literal photo unless specifically asked."""
+    import numpy as np
+
+    mock_cap = MagicMock()
+    mock_cap.isOpened.return_value = True
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    mock_cap.read.return_value = (True, frame)
+
+    with patch("cv2.VideoCapture", return_value=mock_cap), \
+         patch("argus.tools.desktop.ui_events.publish") as mock_publish:
+        _capture_camera({})
+
+    mock_publish.assert_called_once()
+    event = mock_publish.call_args[0][0]
+    assert event["type"] == "tool_call"
+    assert event["name"] == "camera view (computer vision)"
+    assert "image" in event
+
+
+def test_capture_camera_publishes_raw_view_when_explicitly_requested():
+    import numpy as np
+
+    mock_cap = MagicMock()
+    mock_cap.isOpened.return_value = True
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    mock_cap.read.return_value = (True, frame)
+
+    with patch("cv2.VideoCapture", return_value=mock_cap), \
+         patch("argus.tools.desktop.ui_events.publish") as mock_publish:
+        _capture_camera({"raw": True})
+
+    event = mock_publish.call_args[0][0]
+    assert event["name"] == "capture_camera"
+
+
+def test_capture_camera_returns_the_real_frame_to_the_model_even_when_stylized_for_display():
+    """The stylized rendering is a display-only choice -- the model must
+    still see and be able to analyze the actual captured frame either way,
+    e.g. to answer "what am I holding"."""
+    import cv2
+    import numpy as np
+
+    mock_cap = MagicMock()
+    mock_cap.isOpened.return_value = True
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    frame[:] = (10, 20, 30)  # a distinctive, non-black frame
+    mock_cap.read.return_value = (True, frame)
+
+    with patch("cv2.VideoCapture", return_value=mock_cap), \
+         patch("argus.tools.desktop.ui_events.publish"):
+        result = _capture_camera({})
+
+    decoded = cv2.imdecode(np.frombuffer(result, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert decoded is not None
+    assert tuple(decoded[0, 0]) != (0, 0, 0)  # the real (non-black) frame, not the stylized one

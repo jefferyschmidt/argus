@@ -10,6 +10,41 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Added live, 2026-08-28 (loudness as an addressee signal, a "show me"
+window, and a computer-vision-style camera default)**: three separate
+live requests.
+
+1. Asked directly: "does Argus understand that the quieter a sound is,
+   the more likely it is to be background noise?" No -- the addressee
+   gate (`_seems_addressed_to_argus`) looked only at the transcribed
+   TEXT, never how loud/close the utterance actually was. Added
+   `_loudness_hint` (peak RMS relative to the same silence floor already
+   used for VAD gating) folded into the local model's classification
+   prompt as an extra signal alongside the words -- deliberately NOT a
+   hard code-level gate, so a real question asked quietly on purpose
+   still passes immediately via the existing fast-path ("?" / direct
+   opener).
+2. A "show me" window: `show_website` (new tool) and `fetch_image` (now
+   also publishes a `show_modal` event) open a large modal in the console
+   (`#showModal`, image or embedded-site iframe) -- distinct from the
+   small "Visual output" history strip, which stays for incidental
+   captures (screenshots, camera frames). Some sites refuse to be framed
+   (their own CSP); the title always includes the real URL as a fallback.
+3. `capture_camera` now defaults to displaying a computer-vision-style
+   edge-outline rendering (`_stylize_vision`, OpenCV Canny, drawn in the
+   console's own accent color) instead of the literal photo -- the raw
+   photo only displays when `raw=true` is explicitly requested. The
+   MODEL still always analyzes the real captured frame either way (e.g.
+   to answer "what am I holding") -- this only changes what's shown on
+   screen, via a dedicated display event the tool publishes itself, with
+   `Orchestrator._on_tool_call`'s generic auto-display skipped
+   specifically for this tool so the raw frame doesn't ALSO silently
+   appear.
+
+Not yet visually verified live (backend logic and event-publishing are
+fully unit-tested; the modal's actual on-screen appearance/interaction
+needs a real run to confirm).
+
 **Added, 2026-08-28 (a real session event log, and grouped desktop-control
 confirmation)**: asked live -- "is there a good way to let you review
 Argus's sessions... would we have to write transcripts as well as

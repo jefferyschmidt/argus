@@ -1,7 +1,32 @@
+import base64
 import io
 import subprocess
 
 from argus.tools.base import PermissionTier, Tool
+from argus.ui import events as ui_events
+
+# BGR -- matches the console UI's own --accent (#3E9DFF) so the stylized
+# camera view reads as part of the same visual language, not a random filter.
+_VISION_EDGE_COLOR_BGR = (255, 157, 62)
+
+
+def _stylize_vision(frame):
+    """Renders a computer-vision-style edge outline instead of the literal
+    photo -- the DEFAULT display for capture_camera. Deliberately NOT what
+    gets sent to the model (see _capture_camera -- it still analyzes the
+    real frame, so it can actually answer questions about it accurately);
+    this is purely a display choice, confirmed as an explicit preference:
+    show the raw capture only when specifically asked for it (raw=true),
+    a stylized rendering is "cooler" as the default."""
+    import cv2
+    import numpy as np
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    edges = cv2.Canny(blurred, 60, 160)
+    canvas = np.zeros_like(frame)
+    canvas[edges > 0] = _VISION_EDGE_COLOR_BGR
+    return canvas
 
 
 def _take_screenshot(args: dict) -> bytes:
@@ -16,10 +41,18 @@ def _take_screenshot(args: dict) -> bytes:
 def _capture_camera(args: dict) -> bytes | str:
     """One-shot webcam frame, same bytes-result pipeline as the screenshot
     tool (Orchestrator._on_tool_call base64-encodes bytes as an image
-    content block the model can actually see). CONFIRM-tier, unlike the
+    content block the model can actually see) -- what's RETURNED (and so
+    what the model sees) is always the real frame, so it can actually
+    answer questions about it accurately. CONFIRM-tier, unlike the
     screenshot tool -- this captures the physical room/person rather than
     the screen, which is a meaningfully more sensitive thing to send off
-    to a frontier model without the user explicitly saying yes each time."""
+    to a frontier model without the user explicitly saying yes each time.
+
+    What's DISPLAYED in the console is a separate choice: publishes its
+    own image event here (stylized by default -- see _stylize_vision --
+    or the real frame when args["raw"] is true) instead of letting
+    Orchestrator._on_tool_call auto-display the raw bytes this returns,
+    which is deliberately skipped for this tool -- see its comment."""
     import cv2
 
     cap = cv2.VideoCapture(0)
@@ -36,6 +69,17 @@ def _capture_camera(args: dict) -> bytes | str:
             return "error: camera opened but failed to capture a frame"
     finally:
         cap.release()
+
+    raw = bool(args.get("raw"))
+    display_frame = frame if raw else _stylize_vision(frame)
+    ok, encoded_display = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    if ok:
+        ui_events.publish({
+            "type": "tool_call",
+            "name": "capture_camera" if raw else "camera view (computer vision)",
+            "tier": "confirm",
+            "image": base64.b64encode(encoded_display.tobytes()).decode("ascii"),
+        })
 
     ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
     if not ok:
@@ -123,13 +167,24 @@ take_screenshot_tool = Tool(
 capture_camera_tool = Tool(
     name="capture_camera",
     description=(
-        "Takes a single photo from the webcam and returns it so you can see what's "
-        "physically in front of the computer -- the room, the user, an object they're "
-        "holding up, etc. Distinct from take_screenshot (that's the screen, this is the "
-        "camera). Requires the user's confirmation each time since it captures the "
-        "physical space, not just the screen."
+        "Takes a single photo from the webcam so you can see what's physically in front of "
+        "the computer -- the room, the user, an object they're holding up, etc -- and describe "
+        "it. Distinct from take_screenshot (that's the screen, this is the camera). By default "
+        "the console displays a stylized computer-vision-style rendering of the frame, NOT the "
+        "literal photo (the raw photo is never shown unless raw=true is explicitly requested) "
+        "-- you still always see and analyze the real frame either way, this only changes what "
+        "the user sees on screen. Requires the user's confirmation each time since it captures "
+        "the physical space, not just the screen."
     ),
-    input_schema={"type": "object", "properties": {}},
+    input_schema={
+        "type": "object",
+        "properties": {
+            "raw": {
+                "type": "boolean",
+                "description": "Show the literal captured photo instead of the default stylized rendering -- only when the user explicitly asks to see the raw/actual photo.",
+            },
+        },
+    },
     tier=PermissionTier.CONFIRM,
     handler=_capture_camera,
 )
