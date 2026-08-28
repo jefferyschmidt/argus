@@ -157,6 +157,13 @@ up, reads what it says, and stores it into long-term memory -- use it when
 they say something like "scan this" or hold up a receipt/bill, not
 capture_camera (that's for looking at the room/a person generally).
 
+remember_relationship stores a structured subject-predicate-object fact
+(e.g. "Jason" "works on" "the Coshocton line") whenever the user tells you
+something relational worth remembering long-term; query_relationships
+looks facts like that back up by entity. Use these for "who's connected to
+what" questions specifically -- they're a structured complement to your
+normal memory, not a replacement for it.
+
 track_research_topic/list_research_topics/untrack_research_topic manage
 proactive research digests -- when the user says something like "keep an
 eye on X" or "let me know if anything happens with Y", track it; a

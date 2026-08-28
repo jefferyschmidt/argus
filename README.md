@@ -249,9 +249,26 @@ calls (with real generated images), memory, and routing/spend.
 
 ### Dream / stretch goals
 
-- Personal knowledge graph -- not just flat memory, but a structured map of
-  people/projects/relationships built over time, so it can answer
-  relational questions ("who else is on the Coshocton line besides Jason?").
+- ~~Personal knowledge graph -- not just flat memory, but a structured map
+  of people/projects/relationships built over time, so it can answer
+  relational questions ("who else is on the Coshocton line besides
+  Jason?").~~ Done: a plain subject-predicate-object triple store
+  (argus/memory/knowledge_graph.py, a new kg_facts table), not a real
+  graph database -- at a personal assistant's scale (hundreds to low
+  thousands of facts) that covers both traversal directions with two
+  indexes, no need for real graph-engine overhead. remember_relationship/
+  query_relationships tools let the model add structured facts
+  opportunistically during normal conversation (the same way core memory
+  proposals already work) rather than needing a separate extraction
+  pipeline, and look them up by entity (case-insensitive substring match
+  on either side of the triple) for genuinely relational questions that
+  semantic search alone can't answer -- finding documents *about* a topic
+  is different from finding a specific typed relationship between two
+  named things. Live-verified against the exact motivating example from
+  this roadmap entry: stored 4 real facts (who works on/manages the
+  Coshocton line, who reports to whom), queried "Coshocton line" and got
+  back all three people correctly (Jason, Priya, Marcus), queried "Jason"
+  and got back both of his facts correctly.
 - ~~Second-brain ingestion -- drop a PDF/note/article into a watched folder
   and it auto-indexes + summarizes into memory, building real long-term
   expertise on your world instead of only remembering conversations.~~

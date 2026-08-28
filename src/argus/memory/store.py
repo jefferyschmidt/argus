@@ -56,6 +56,18 @@ CREATE TABLE IF NOT EXISTS research_topics (
     last_checked_at TEXT,
     last_digest TEXT
 );
+
+CREATE TABLE IF NOT EXISTS kg_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    subject TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    object TEXT NOT NULL,
+    UNIQUE(subject, predicate, object)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kg_facts_subject ON kg_facts(subject);
+CREATE INDEX IF NOT EXISTS idx_kg_facts_object ON kg_facts(object);
 """
 
 
