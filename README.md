@@ -257,8 +257,25 @@ calls (with real generated images), memory, and routing/spend.
   ids + upsert) rather than duplicating them. Live-verified: ingested a
   real text file, searched a natural-language question against it through
   the real Chroma store, got the right chunk back.
-- Proactive research digests -- tell it what you care about (a competitor,
-  a technology, a hobby) and it periodically surfaces a digest unprompted.
+- ~~Proactive research digests -- tell it what you care about (a
+  competitor, a technology, a hobby) and it periodically surfaces a digest
+  unprompted.~~ Done: track_research_topic/list_research_topics/
+  untrack_research_topic (argus/tools/research_topics.py) manage a
+  tracked-topics list; ResearchDigestWorker (argus/research_digest.py)
+  checks each one on a poll (6h default) via real web search, using the
+  same NONE-escape-hatch pattern as proactive context awareness so staying
+  quiet is the default outcome, not a guaranteed digest every cycle. Each
+  check is told what it last said (last_digest, persisted in a new
+  research_topics table) so it's judging "is this genuinely new since
+  then," not repeating a static summary. Deliberately runs against an
+  EMPTY tool registry (web_search only, via the Anthropic client's
+  always-on web search tool) rather than the orchestrator's real
+  registry -- this runs unattended, and the real registry includes
+  CONFIRM-tier tools that would pop an unprompted confirmation card if the
+  model ever decided a digest check warranted one. Live-verified against
+  the real Anthropic API: asked it to check "Anthropic Claude model
+  releases" with no prior context, got back a real, dated, genuinely
+  current digest (found a specific recent release), real spend recorded.
 - "Teach me once" macros -- walk it through a multi-step task manually one
   time and it generalizes that into a replayable skill, instead of you
   re-describing the same task every time.

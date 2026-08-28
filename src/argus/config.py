@@ -143,6 +143,15 @@ class Settings(BaseSettings):
     knowledge_watch_enabled: bool = True
     knowledge_watch_poll_seconds: float = 60.0
 
+    # Proactive research digests (argus/research_digest.py): tell it topics
+    # you care about (track_research_topic) and it periodically web-
+    # searches for genuinely new developments, staying quiet (like
+    # proactive context awareness's NONE escape hatch) when there's
+    # nothing worth surfacing rather than repeating stale info on a fixed
+    # schedule regardless of whether anything's changed.
+    research_digest_enabled: bool = True
+    research_digest_poll_seconds: float = 21600.0  # 6 hours -- news-cadence, not chat-cadence
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir

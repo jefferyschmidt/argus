@@ -120,6 +120,12 @@ class VoiceLoop:
         self.knowledge_watcher = KnowledgeWatcher(self._speak_with_barge_in, self._interaction_lock)
         threading.Thread(target=self.knowledge_watcher.run, daemon=True).start()
 
+        from argus.research_digest import ResearchDigestWorker
+        self.research_digest = ResearchDigestWorker(
+            self.orchestrator.router, self._speak_with_barge_in, self._interaction_lock
+        )
+        threading.Thread(target=self.research_digest.run, daemon=True).start()
+
     def _reminder_checker_worker(self) -> None:
         """Reminders are meant to be surfaced proactively, not just answered
         once and forgotten -- polls for due-and-not-yet-announced reminders

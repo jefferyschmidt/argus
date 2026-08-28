@@ -47,6 +47,15 @@ CREATE TABLE IF NOT EXISTS routines (
     enabled INTEGER NOT NULL DEFAULT 1,
     last_run_date TEXT
 );
+
+CREATE TABLE IF NOT EXISTS research_topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    topic TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_checked_at TEXT,
+    last_digest TEXT
+);
 """
 
 

@@ -17,6 +17,11 @@ from argus.tools.ingest import ingest_document_tool
 from argus.tools.journal import search_journal_tool
 from argus.tools.registry import ToolRegistry, console_confirmer
 from argus.tools.reminders import cancel_reminder_tool, list_reminders_tool, set_reminder_tool
+from argus.tools.research_topics import (
+    list_research_topics_tool,
+    track_research_topic_tool,
+    untrack_research_topic_tool,
+)
 from argus.tools.routines import (
     cancel_scheduled_routine_tool,
     create_scheduled_routine_tool,
@@ -72,6 +77,9 @@ def build_default_registry(router=None) -> ToolRegistry:
         undo_last_write_tool,
         list_recent_writes_tool,
         ingest_document_tool,
+        track_research_topic_tool,
+        list_research_topics_tool,
+        untrack_research_topic_tool,
     ):
         registry.register(tool)
 
