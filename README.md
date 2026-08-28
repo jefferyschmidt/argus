@@ -172,11 +172,22 @@ calls (with real generated images), memory, and routing/spend.
     `argus journal [query]` or in conversation (search_journal tool).
     Separate from episodic memory (conversation) and core memory (standing
     facts) -- this is freeform thinking-out-loud with Argus as scribe.
-20. Multi-language support -- on-the-fly translation, useful for travel or
-    reading/responding to non-English content.
-21. Meeting assistant -- join/transcribe/summarize calls and extract action
-    items. Genuinely valuable but a bigger lift than the others here (needs
-    audio capture from other apps, or a bot-join integration).
+20. ~~Multi-language support~~ -- turned out to be a genuinely small lift:
+    Claude is multilingual out of the box (system prompt just needed a
+    one-line "translate on request, don't hedge" nudge), and Cartesia TTS
+    already speaks other languages fine. The real gap was STT hardcoded
+    to language="en" everywhere, plus the local Whisper model being the
+    English-only "base.en" variant (physically can't transcribe anything
+    else, regardless of the language parameter). Fixed both: STT_LANGUAGE
+    empty = auto-detect (the default), local model switched to
+    multilingual "base". Verified live end-to-end: real Spanish audio
+    (via Cartesia TTS) correctly auto-detected and transcribed through
+    Groq's hosted Whisper.
+21. Meeting assistant -- DEFERRED INDEFINITELY at the user's direction
+    (not a priority). Would join/transcribe/summarize calls and extract
+    action items; needs audio capture from other apps or a bot-join
+    integration, the biggest lift of anything on this list. Revisit only
+    if priorities change.
 22. ~~Self-modification~~ -- Argus edits its own source through normal
     conversation (voice, chat, or Telegram -- no separate CLI mode):
     read_own_source/list_own_source/write_own_source/run_own_tests/

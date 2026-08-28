@@ -60,14 +60,16 @@ class Transcriber:
 
     def _transcribe_groq(self, samples: np.ndarray) -> str:
         wav_bytes = _to_wav_bytes(samples, settings.audio_sample_rate)
+        kwargs = {"language": settings.stt_language} if settings.stt_language else {}
         response = self._groq.audio.transcriptions.create(
             file=("audio.wav", wav_bytes),
             model=settings.groq_whisper_model,
-            language="en",
+            **kwargs,
         )
         return (response.text or "").strip()
 
     def _transcribe_local(self, samples: np.ndarray) -> str:
         audio = samples.astype(np.float32) / 32768.0
-        segments, _ = self._local().transcribe(audio, language="en")
+        kwargs = {"language": settings.stt_language} if settings.stt_language else {}
+        segments, _ = self._local().transcribe(audio, **kwargs)
         return " ".join(seg.text.strip() for seg in segments).strip()

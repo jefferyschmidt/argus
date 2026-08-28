@@ -44,7 +44,17 @@ class Settings(BaseSettings):
     # one is trained (see README). Swap via WAKE_WORD_MODEL once you have one.
     wake_word_model: str = "hey_jarvis_v0.1"
     wake_word_threshold: float = 0.5
-    whisper_model_size: str = "base.en"
+    # "base" (multilingual), not "base.en" -- the ".en" variants are
+    # trained ONLY on English and can't transcribe anything else no matter
+    # what language is requested. Needed for on-the-fly translation to
+    # work through the local/offline STT fallback, not just via Groq's
+    # already-multilingual hosted Whisper.
+    whisper_model_size: str = "base"
+    # Empty = auto-detect the spoken language (needed for translation
+    # requests spoken in a non-English language). Pin to a code like "en"
+    # if auto-detection ever misfires on short commands -- a real risk
+    # Whisper has on very short/ambiguous audio clips.
+    stt_language: str = ""
     piper_voice: str = "en_US-lessac-medium"
     # Optional. If set, Cartesia is used for TTS (much more natural), with
     # automatic fallback to Piper if unset, unreachable, or it errors.

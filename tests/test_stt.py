@@ -45,3 +45,31 @@ def test_to_wav_bytes_produces_a_valid_wav_header():
     wav_bytes = _to_wav_bytes(_samples(), sample_rate=16000)
     assert wav_bytes[:4] == b"RIFF"
     assert wav_bytes[8:12] == b"WAVE"
+
+
+def test_groq_transcription_omits_language_kwarg_when_unset(monkeypatch):
+    """Empty stt_language means auto-detect -- needed for translation of
+    non-English speech. Confirmed live against real Spanish audio via the
+    real Groq API that omitting the kwarg entirely correctly auto-detects,
+    vs. the old hardcoded language="en" which would have mistranscribed it."""
+    monkeypatch.setattr("argus.voice.stt.settings.stt_language", "")
+    t = Transcriber.__new__(Transcriber)
+    t._groq = MagicMock()
+    t._groq.audio.transcriptions.create.return_value = MagicMock(text="hola")
+
+    t.transcribe(_samples())
+
+    call_kwargs = t._groq.audio.transcriptions.create.call_args.kwargs
+    assert "language" not in call_kwargs
+
+
+def test_groq_transcription_passes_language_kwarg_when_pinned(monkeypatch):
+    monkeypatch.setattr("argus.voice.stt.settings.stt_language", "en")
+    t = Transcriber.__new__(Transcriber)
+    t._groq = MagicMock()
+    t._groq.audio.transcriptions.create.return_value = MagicMock(text="hello")
+
+    t.transcribe(_samples())
+
+    call_kwargs = t._groq.audio.transcriptions.create.call_args.kwargs
+    assert call_kwargs["language"] == "en"
