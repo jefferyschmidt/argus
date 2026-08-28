@@ -166,6 +166,15 @@ calls (with real generated images), memory, and routing/spend.
       process, so the flow is propose -> tests pass -> tell the user to
       restart (or later, have it restart itself deliberately) -- never a
       silent rewrite-and-keep-running-on-old-code situation.
+23. ~~Proactive context awareness~~ -- periodically checks the active
+    window (argus/context_awareness.py) and, when the context has
+    meaningfully changed or the user's been in the same one a long time
+    (2hr default), asks the fast/cheap tier whether there's something
+    genuinely worth saying, with an explicit NONE escape hatch so most
+    scans produce nothing. Delivered via the same non-blocking-lock
+    pattern as reminders (never barges into an active conversation) plus
+    a "curious" expression. Global on/off, and "don't ask me about this"
+    suppresses it per-window for the session.
 
 ### Lower priority / nice-to-have
 

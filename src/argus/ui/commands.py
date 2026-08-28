@@ -1,10 +1,15 @@
 import queue
 import threading
 
+from argus.config import settings
+
 _stop_listening_requested = threading.Event()
 _text_messages: "queue.Queue[str]" = queue.Queue()
 _ptt_active = threading.Event()
 _quiet_mode = threading.Event()
+_proactive_context = threading.Event()
+if settings.proactive_context_enabled:
+    _proactive_context.set()
 
 
 def request_stop_listening() -> None:
@@ -65,4 +70,24 @@ def toggle_quiet_mode() -> bool:
     """Returns the new state after toggling."""
     new_state = not _quiet_mode.is_set()
     set_quiet_mode(new_state)
+    return new_state
+
+
+def set_proactive_context_enabled(enabled: bool) -> None:
+    """Global on/off for unprompted check-ins based on what window's
+    active (argus/context_awareness.py). Defaults to
+    settings.proactive_context_enabled; this is the runtime override."""
+    if enabled:
+        _proactive_context.set()
+    else:
+        _proactive_context.clear()
+
+
+def is_proactive_context_enabled() -> bool:
+    return _proactive_context.is_set()
+
+
+def toggle_proactive_context_enabled() -> bool:
+    new_state = not _proactive_context.is_set()
+    set_proactive_context_enabled(new_state)
     return new_state

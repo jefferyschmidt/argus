@@ -78,6 +78,18 @@ def quiet_mode_status() -> dict:
     return {"quiet_mode": ui_commands.is_quiet_mode()}
 
 
+@app.post("/api/proactive_context/toggle")
+def proactive_context_toggle() -> dict:
+    new_state = ui_commands.toggle_proactive_context_enabled()
+    ui_events.publish({"type": "proactive_context", "value": new_state})
+    return {"proactive_context": new_state}
+
+
+@app.get("/api/proactive_context")
+def proactive_context_status() -> dict:
+    return {"proactive_context": ui_commands.is_proactive_context_enabled()}
+
+
 def _resolve_core_memory(memory_id: int, confirmed: bool) -> dict:
     """Direct DB access rather than routing through the live VoiceLoop's
     in-memory objects -- confirm/reject is just a row update, and going

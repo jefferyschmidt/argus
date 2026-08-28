@@ -260,6 +260,7 @@
     <div class="input-row">
       <button class="ptt-btn" id="pttBtn" title="Hold to talk">Hold to talk</button>
       <button class="quiet-btn" id="quietBtn" title="Text-only: Argus stops speaking replies out loud">Quiet mode</button>
+      <button class="quiet-btn" id="proactiveBtn" title="Unprompted check-ins based on your active window">Proactive: on</button>
       <form class="text-input-form" id="textInputForm">
         <input class="text-input" id="textInput" type="text" placeholder="Type instead of speaking&hellip;" autocomplete="off">
         <button class="text-send-btn" type="submit">Send</button>
@@ -651,6 +652,7 @@
       else if (event.type === "core_memory_resolved") removePendingMemoryCard(event.id);
       else if (event.type === "expression") setExpression(event.value, event.duration_ms);
       else if (event.type === "quiet_mode") setQuietButton(event.value);
+      else if (event.type === "proactive_context") setProactiveButton(event.value);
     };
   }
 
@@ -753,6 +755,22 @@
   });
   fetch("/api/quiet_mode").then(function (r) { return r.json(); }).then(function (data) {
     setQuietButton(data.quiet_mode);
+  }).catch(function () {});
+
+  // ---------- proactive context awareness ----------
+  var proactiveBtn = document.getElementById("proactiveBtn");
+  function setProactiveButton(active) {
+    proactiveBtn.classList.toggle("active", active);
+    proactiveBtn.textContent = active ? "Proactive: on" : "Proactive: off";
+  }
+  proactiveBtn.addEventListener("click", function () {
+    fetch("/api/proactive_context/toggle", { method: "POST" })
+      .then(function (r) { return r.json(); })
+      .then(function (data) { setProactiveButton(data.proactive_context); })
+      .catch(function () { showToast("Couldn't reach Argus -- is it still running?"); });
+  });
+  fetch("/api/proactive_context").then(function (r) { return r.json(); }).then(function (data) {
+    setProactiveButton(data.proactive_context);
   }).catch(function () {});
 
   connect();

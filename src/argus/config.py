@@ -79,6 +79,21 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_allowed_chat_id: str = ""
 
+    # Proactive context awareness: periodically glances at the active
+    # window and, when it seems genuinely worth it, says something
+    # unprompted -- see argus/context_awareness.py. On by default since
+    # it's opt-out-in-conversation ("quiet mode" / suppression phrases),
+    # not a separate thing you have to turn on.
+    proactive_context_enabled: bool = True
+    proactive_context_scan_seconds: float = 45.0
+    # How long in the same window before a same-context check-in becomes
+    # worth considering (still gated by the model's own judgment call on
+    # top of this -- most scans past this threshold still produce nothing).
+    proactive_context_idle_threshold_minutes: float = 120.0
+    # Floor between proactive prompts, regardless of trigger, so it can
+    # never feel like running commentary.
+    proactive_context_cooldown_minutes: float = 5.0
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir

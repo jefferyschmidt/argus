@@ -22,6 +22,9 @@ console = Console()
 _STOP_LISTENING_PHRASES = ("stop listening", "stop barging in", "quit interrupting")
 _QUIET_MODE_ON_PHRASES = ("quiet mode", "go quiet", "stop talking out loud", "mute yourself", "text only")
 _QUIET_MODE_OFF_PHRASES = ("unmute", "you can talk again", "quiet mode off", "talk out loud again")
+_SUPPRESS_CONTEXT_PHRASES = ("don't ask me about this", "don't bring that up", "stop asking about this")
+_PROACTIVE_CONTEXT_OFF_PHRASES = ("stop watching my screen", "proactive mode off", "stop checking in")
+_PROACTIVE_CONTEXT_ON_PHRASES = ("proactive mode on", "start checking in", "you can check in again")
 _BARGE_IN_HOLD_FRAMES = 3  # ~240ms of sustained energy (at 80ms/chunk) before hot-mic barge-in fires
 _LIKELY_ADDRESSED = re.compile(
     r"^(argus|hey\s+argus|can|could|would|will|are|do|does|did|is|"
@@ -88,6 +91,12 @@ class VoiceLoop:
         # blocked behind the main loop's wait for the wake word.
         threading.Thread(target=self._external_input_worker, daemon=True).start()
         threading.Thread(target=self._reminder_checker_worker, daemon=True).start()
+
+        from argus.context_awareness import ContextAwarenessWorker
+        self.context_awareness = ContextAwarenessWorker(
+            self.orchestrator, self._speak_with_barge_in, self._interaction_lock
+        )
+        threading.Thread(target=self.context_awareness.run, daemon=True).start()
 
     def _reminder_checker_worker(self) -> None:
         """Reminders are meant to be surfaced proactively, not just answered
@@ -321,6 +330,31 @@ class VoiceLoop:
             ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
             ui_events.publish({"type": "caption", "text": confirmation})
             self._speak_with_barge_in(confirmation)  # now actually audible -- proves quiet mode is really off
+            return True
+
+        if any(phrase in lowered for phrase in _SUPPRESS_CONTEXT_PHRASES):
+            self.context_awareness.suppress_current()
+            console.print("[dim](won't bring that up again for this window)[/dim]\n")
+            confirmation = "Got it, I won't bring that up again."
+            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
+            ui_events.publish({"type": "caption", "text": confirmation})
+            self._speak_with_barge_in(confirmation)
+            return True
+        if any(phrase in lowered for phrase in _PROACTIVE_CONTEXT_OFF_PHRASES):
+            ui_commands.set_proactive_context_enabled(False)
+            console.print("[dim](proactive check-ins off)[/dim]\n")
+            confirmation = "Okay, I'll stay quiet unless you talk to me first."
+            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
+            ui_events.publish({"type": "caption", "text": confirmation})
+            self._speak_with_barge_in(confirmation)
+            return True
+        if any(phrase in lowered for phrase in _PROACTIVE_CONTEXT_ON_PHRASES):
+            ui_commands.set_proactive_context_enabled(True)
+            console.print("[dim](proactive check-ins on)[/dim]\n")
+            confirmation = "Will do -- I'll speak up if something seems worth mentioning."
+            ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
+            ui_events.publish({"type": "caption", "text": confirmation})
+            self._speak_with_barge_in(confirmation)
             return True
 
         self._refresh_hot_mic()
