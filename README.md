@@ -291,9 +291,24 @@ calls (with real generated images), memory, and routing/spend.
 - "Teach me once" macros -- walk it through a multi-step task manually one
   time and it generalizes that into a replayable skill, instead of you
   re-describing the same task every time.
-- Ambient stuck-detection -- with desktop visibility already in place, it
+- ~~Ambient stuck-detection -- with desktop visibility already in place, it
   could notice you've been stuck on the same error for a while and offer
-  help unprompted, rather than only ever reacting to a direct ask.
+  help unprompted, rather than only ever reacting to a direct ask.~~ Done:
+  StuckDetectionWorker (argus/stuck_detection.py) -- its own worker rather
+  than folded into proactive context awareness, since it needs a much
+  shorter fuse (minutes, not the 2-hour idle threshold context awareness
+  uses) and looks at actual screen content via a real screenshot + vision
+  call (complete_with_image), not just the window title. Same
+  NONE-escape-hatch pattern: only assesses once the same window has been
+  active past a threshold (8 min default), offers at most once per
+  continuous stretch in that window (switching away and back resets it),
+  and stays quiet unless there's a clearly visible sign of being stuck
+  (an error, a stack trace, a blocked state). Live-verified against the
+  real Anthropic API with a real desktop screenshot -- caught and fixed a
+  real bug in the process: the screenshot is PNG (pyautogui) but
+  complete_with_image defaults to image/jpeg, which the Anthropic API
+  flatly rejects on a mismatch; a live round-trip surfaced the 400 before
+  it ever reached the user, fixed by passing media_type explicitly.
 - ~~"Second opinion" mode for big decisions -- reason from a few angles
   (skeptic, domain expert, risk-focused) internally before giving one
   synthesized recommendation on something consequential.~~ Done: the

@@ -152,6 +152,17 @@ class Settings(BaseSettings):
     research_digest_enabled: bool = True
     research_digest_poll_seconds: float = 21600.0  # 6 hours -- news-cadence, not chat-cadence
 
+    # Ambient stuck-detection (argus/stuck_detection.py): builds on the same
+    # active-window tracking as proactive context awareness, but on a much
+    # shorter fuse and looking at actual screen content (a real screenshot,
+    # not just the window title) -- "stuck on the same error for 8 minutes"
+    # is a meaningfully different signal than "been in the same app for two
+    # hours," which is what proactive_context_idle_threshold_minutes is
+    # tuned for.
+    stuck_detection_enabled: bool = True
+    stuck_detection_scan_seconds: float = 60.0
+    stuck_detection_idle_minutes: float = 8.0
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir
