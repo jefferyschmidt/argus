@@ -948,7 +948,13 @@
     if (current === "idle")      return { cohesion: 0.05, density: 0.30, jitter: 0.9, swirl: 0.15 };
     if (current === "listening") return { cohesion: 0.55, density: 0.60, jitter: 1.6, swirl: 0.35 };
     if (current === "thinking")  return { cohesion: 0.85, density: 0.75, jitter: 3.2, swirl: 1.6  };
-    return                              { cohesion: 1.00, density: 0.88, jitter: 1.8, swirl: 0.5  }; // speaking
+    // Speaking: fully formed and calm, same energy as listening -- only
+    // the mouth should visibly react to speech (see particleTarget's
+    // mouth-bulge displacement and drawLiquidLipSeam). Previously had its
+    // own higher jitter/swirl, which made the WHOLE swarm noticeably
+    // agitated while talking -- reported live as looking unnatural,
+    // independent of and distracting from the actual mouth articulation.
+    return { cohesion: 1.00, density: 0.88, jitter: 1.6, swirl: 0.35 };
   }
 
   function parseTintRgb(str) {

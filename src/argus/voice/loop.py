@@ -39,6 +39,13 @@ _BARGE_IN_HOLD_FRAMES = 3  # ~240ms of sustained energy (at 80ms/chunk) before h
 # window, only sustained deliberate speech interrupts) with RMS+VAD and a
 # longer hold than hot-mic's, since there's no wake-word-quality gate here.
 _NON_HOT_MIC_LOCAL_BARGE_IN_HOLD_FRAMES = 6  # ~480ms
+# How long _speak_with_barge_in waits for the barge-in watcher thread to
+# exit on its own after playback finishes, before giving up on it and
+# returning anyway. Confirmed live as a real bug: the watcher used to run
+# synchronously, so a stall in its own blocking mic read (no timeout on
+# sd.InputStream.read()) could hang the entire turn -- and the visible
+# "speaking" state with it -- forever, even with audio long since done.
+_BARGE_IN_WATCHER_GRACE_SECONDS = 5.0
 _LIKELY_ADDRESSED = re.compile(
     r"^(argus|hey\s+argus|can|could|would|will|are|do|does|did|is|"
     r"what|why|how|when|where|who|please)\b",
@@ -678,12 +685,44 @@ class VoiceLoop:
 
         play_thread = threading.Thread(target=_play_safely)
         play_thread.start()
-        interrupted = False
-        try:
-            interrupted = self._watch_for_barge_in(stop_event, play_thread)
-        except Exception:
-            log.exception("Barge-in watcher failed; continuing without it")
+
+        # _watch_for_barge_in used to run synchronously right here, which
+        # meant this whole call -- and with it, the visible "speaking"
+        # state, since nothing downstream ever runs to publish a new one
+        # until this returns -- blocked on however long ITS OWN blocking
+        # sd.InputStream.read() calls took. That read has no timeout; a
+        # mic-side hiccup (a device hiccup, or stream-open/close churn from
+        # the local wake-word engine's own separate InputStream cycling)
+        # could stall it indefinitely even after playback had genuinely
+        # finished, which is exactly the "stuck in speaking mode forever"
+        # bug reported live. Running it on its own thread means playback
+        # finishing is no longer gated on the watcher also finishing --
+        # play_thread.join() below returns as soon as audio is actually
+        # done, regardless of what the watcher is doing.
+        watcher_result: dict = {"interrupted": False}
+
+        def _watch_safely() -> None:
+            try:
+                watcher_result["interrupted"] = self._watch_for_barge_in(stop_event, play_thread)
+            except Exception:
+                log.exception("Barge-in watcher failed; continuing without it")
+
+        watcher_thread = threading.Thread(target=_watch_safely, daemon=True)
+        watcher_thread.start()
+
         play_thread.join()
+        # Playback is done -- give the watcher a brief grace period to
+        # notice (it polls in ~80ms chunks) and exit cleanly. If it's still
+        # not back, something's actually wrong with the input stream
+        # specifically, not with playback -- log it and move on rather
+        # than hanging this whole turn (and the visible "speaking" state)
+        # forever. daemon=True means an abandoned watcher can't block
+        # process exit either.
+        watcher_thread.join(timeout=_BARGE_IN_WATCHER_GRACE_SECONDS)
+        if watcher_thread.is_alive():
+            log.warning("Barge-in watcher didn't exit after playback finished -- abandoning it for this turn")
+
+        interrupted = watcher_result["interrupted"]
         if interrupted:
             self._refresh_hot_mic()
         return interrupted

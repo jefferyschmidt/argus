@@ -10,6 +10,30 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (still stuck after the frame-size fix)**: the
+wake-word frame-size fix above was real and necessary, but "stuck in
+speaking mode even when he's done speaking" persisted -- a genuinely
+separate bug. Root cause: `_watch_for_barge_in` ran synchronously inside
+`_speak_with_barge_in`, and its `sd.InputStream.read()` calls have no
+timeout. A mic-side hiccup there (a device stall, or stream-open/close
+churn from the local wake-word engine's own separate InputStream cycling)
+could block that call indefinitely -- and since nothing downstream ever
+runs to publish a new state until `_speak_with_barge_in` returns, the
+console stayed on "speaking" forever, well after actual audio playback had
+finished. Fixed by running the watcher on its own thread and joining
+`play_thread` directly instead of behind it -- playback finishing no
+longer waits on the watcher also finishing; the watcher gets a bounded
+5s grace period to exit cleanly, and if it's still stuck after that, it's
+abandoned (daemon thread) and the turn continues rather than hanging. Also
+fixed the reported "unnatural, jittering" mouth/swarm motion: `speaking`
+had its own higher jitter/swirl energy than every other state, making the
+WHOLE swarm visibly more agitated while talking, independent of and
+distracting from the actual mouth articulation -- now uses the same calm
+energy as `listening`, so only the mouth region visibly reacts to speech.
+Added a direct regression test (mocks the watcher to hang forever,
+forever) asserting `_speak_with_barge_in` still returns in well under the
+hang duration -- this test would have hung indefinitely before the fix.
+
 **Fixed live, 2026-08-28 (critical)**: the local wake-word engine added
 earlier this session could never actually detect the wake word --
 `LocalWakeWordListener` read the mic in 30ms/480-sample frames, but
