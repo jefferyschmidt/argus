@@ -10,6 +10,36 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed, 2026-08-28 (Argus was deaf between sentences -- barge-in only
+listened while audio was actually playing)**: reported live as "doesn't
+listen to wake word when he's talking." Measured from the day's own event
+log rather than guessed: across 182 spoken sentences, the gaps between
+consecutive sentences of a single reply had a median of 1837ms (mean
+2269ms, p90 3812ms) -- **Argus was deaf roughly 24% of the time he was
+"talking."** Those gaps are the synthesis call plus reopening the input
+stream (measured separately at ~113ms per sentence just to open a stream
+and get its first frame).
+
+Worse than 24% suggests: `_watch_for_barge_in` ran with
+`while play_thread.is_alive()`, so listening started only once playback
+began and stopped the moment it ended. The deaf windows therefore sat
+exactly ON the sentence boundaries -- precisely where a person naturally
+interrupts. The most natural moment to break in was the moment least
+likely to be heard.
+
+Fixed by making the watcher's lifetime a whole reply instead of one
+sentence: `_barge_in_session()` starts a single watcher (and a single
+input stream) before the first sentence and stops it after the last, with
+`_SpeechSession` carrying the interrupt state across the gaps.
+`_watch_for_barge_in` now takes `should_continue`/`on_detect` rather than
+assuming a playback thread, so the same loop serves both lifetimes -- the
+per-sentence form is still used for standalone one-off speech (reminders,
+proactive nudges, acknowledgements). A barge-in landing in a gap is
+remembered, so the next sentence isn't even synthesized, let alone
+spoken. Verified end to end on a simulated four-sentence reply: listening
+coverage went from 38.9% to 99.9%, and four input-stream opens collapsed
+to one.
+
 **Code review pass, 2026-08-28 (bugs, orphaned code, conversation-flow
 optimization, internal thoughts)**: a full read-through of the codebase
 looking for bugs, dead code and optimizations, plus two requested

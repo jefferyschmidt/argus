@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import queue
 import re
@@ -88,6 +89,43 @@ def _is_thought(sentence: str) -> bool:
     return False
 
 
+class _SpeechSession:
+    """Shared state for one continuous stretch of Argus talking, so a
+    SINGLE barge-in watcher can span every sentence of a reply instead of
+    one being started and torn down per sentence.
+
+    Measured on a real day's event log, the per-sentence arrangement left
+    Argus deaf about 24% of the time he was "talking" -- median 1.8s
+    between sentences (p90 3.8s), spent synthesizing the next one and
+    reopening the input stream, with nothing listening at all. Worse than
+    the raw percentage suggests: those gaps sit exactly ON the sentence
+    boundaries, which is precisely where a person naturally interrupts, so
+    the most natural moment to break in was the moment least likely to be
+    heard."""
+
+    def __init__(self):
+        self.stop = threading.Event()          # ends the watcher
+        self.interrupted = threading.Event()   # barge-in fired
+        self._lock = threading.Lock()
+        self._play_stop: threading.Event | None = None
+
+    def attach_playback(self, stop_event: threading.Event | None) -> None:
+        """Points the watcher at the sentence currently playing, so a
+        detection can cut that specific playback off mid-word."""
+        with self._lock:
+            self._play_stop = stop_event
+        # Barge-in may have fired in the gap BEFORE this sentence started;
+        # don't let it start playing now.
+        if stop_event is not None and self.interrupted.is_set():
+            stop_event.set()
+
+    def on_detect(self) -> None:
+        self.interrupted.set()
+        with self._lock:
+            if self._play_stop is not None:
+                self._play_stop.set()
+
+
 class _BargeInInterrupt(Exception):
     """Raised from the streaming callback to unwind out of the generation
     call early once barge-in has fired -- otherwise the model keeps
@@ -120,6 +158,11 @@ class VoiceLoop:
       needs to phonetically match.
     Say "stop listening" to end the hot-mic window early."""
 
+    # Class-level default so the attribute always exists, including on
+    # instances built without __init__ (which is how the barge-in and
+    # utterance tests construct a loop, to avoid loading real models).
+    _speech_session: "_SpeechSession | None" = None
+
     @staticmethod
     def _build_wake_word_listener():
         """settings.wake_word_engine picks between the two wake-word
@@ -147,6 +190,10 @@ class VoiceLoop:
         # typed, or push-to-talk) so two never run concurrently against the
         # same speaker/mic/orchestrator state.
         self._interaction_lock = threading.Lock()
+        # Set while a reply is being spoken, so one barge-in watcher covers
+        # the whole reply rather than one per sentence -- see
+        # _barge_in_session and _SpeechSession.
+        self._speech_session: _SpeechSession | None = None
 
         # Without this, a CONFIRM-tier tool call mid-task silently blocks on
         # a keyboard input() with no spoken prompt -- indistinguishable from
@@ -768,31 +815,35 @@ class VoiceLoop:
                     return
 
         consumer_thread = threading.Thread(target=consumer)
-        consumer_thread.start()
 
         def on_sentence(sentence: str) -> None:
             if interrupted.is_set():
                 raise _BargeInInterrupt()
             sentence_queue.put(sentence)
 
-        try:
-            self.orchestrator.handle_streaming(text, on_sentence=on_sentence)
-        except _BargeInInterrupt:
-            pass
-        except Exception:
-            # Previously uncaught here -- confirmed live that a single bad
-            # API response (e.g. a tool-result content-type mismatch) took
-            # down the entire `argus voice` process, not just that one
-            # turn. A turn failing is recoverable; the whole session dying
-            # because of it is not -- report it and keep listening instead.
-            log.exception("Turn failed unexpectedly: %r", text)
-            error_note = "Something went wrong on that one -- mind trying again?"
-            ui_events.publish({"type": "transcript", "role": "argus", "text": error_note})
-            ui_events.publish({"type": "caption", "text": error_note})
-            self._speak_with_barge_in(error_note)
-        finally:
-            sentence_queue.put(None)
-            consumer_thread.join()
+        # One watcher for the whole reply -- it keeps listening through the
+        # gaps between sentences, which is where interruptions were being
+        # missed (see _SpeechSession).
+        with self._barge_in_session():
+            consumer_thread.start()
+            try:
+                self.orchestrator.handle_streaming(text, on_sentence=on_sentence)
+            except _BargeInInterrupt:
+                pass
+            except Exception:
+                # Previously uncaught here -- confirmed live that a single bad
+                # API response (e.g. a tool-result content-type mismatch) took
+                # down the entire `argus voice` process, not just that one
+                # turn. A turn failing is recoverable; the whole session dying
+                # because of it is not -- report it and keep listening instead.
+                log.exception("Turn failed unexpectedly: %r", text)
+                error_note = "Something went wrong on that one -- mind trying again?"
+                ui_events.publish({"type": "transcript", "role": "argus", "text": error_note})
+                ui_events.publish({"type": "caption", "text": error_note})
+                self._speak_with_barge_in(error_note)
+            finally:
+                sentence_queue.put(None)
+                consumer_thread.join()
 
         if self.orchestrator.last_tier is not None:
             tag = f"[dim]({self.orchestrator.last_tier.value}: {self.orchestrator.last_model})[/dim]"
@@ -801,6 +852,50 @@ class VoiceLoop:
         if pending_unspoken:
             return self._resume_after_interruption(pending_unspoken)
         return True
+
+    @contextlib.contextmanager
+    def _barge_in_session(self):
+        """Keeps one barge-in watcher (and one input stream) listening for
+        the WHOLE reply, across the gaps between sentences -- see
+        _SpeechSession for why those gaps mattered so much.
+
+        No-ops when there'd be nothing to interrupt (barge-in disabled, or
+        quiet mode, where nothing is played aloud at all) and when a
+        session is already open, so nesting is harmless."""
+        if (
+            self._speech_session is not None
+            or not settings.voice_barge_in_enabled
+            or ui_commands.is_quiet_mode()
+        ):
+            yield
+            return
+
+        session = _SpeechSession()
+        self._speech_session = session
+
+        def _watch_safely() -> None:
+            try:
+                self._watch_for_barge_in(
+                    should_continue=lambda: not session.stop.is_set(),
+                    on_detect=session.on_detect,
+                )
+            except Exception:
+                log.exception("Barge-in watcher failed; continuing without it")
+
+        watcher = threading.Thread(target=_watch_safely, daemon=True)
+        watcher.start()
+        try:
+            yield
+        finally:
+            self._speech_session = None
+            session.stop.set()
+            # Same bounded wait as the per-sentence watcher: a stalled
+            # blocking read on the input stream must never hold the turn
+            # (or the visible "speaking" state) open. daemon=True means an
+            # abandoned watcher can't block process exit either.
+            watcher.join(timeout=_BARGE_IN_WATCHER_GRACE_SECONDS)
+            if watcher.is_alive():
+                log.warning("Barge-in watcher didn't exit after the reply finished -- abandoning it")
 
     def _speak_unless_thought(self, sentence: str) -> bool:
         """Displays a reply sentence, and speaks it unless it's an internal
@@ -840,9 +935,10 @@ class VoiceLoop:
         each in full -- no partial-sentence tracking) that were NOT spoken
         because playback was interrupted again partway through; empty if
         every sentence played to completion."""
-        for i, sentence in enumerate(sentences):
-            if self._speak_unless_thought(sentence):
-                return sentences[i:]
+        with self._barge_in_session():
+            for i, sentence in enumerate(sentences):
+                if self._speak_unless_thought(sentence):
+                    return sentences[i:]
         return []
 
     def _resume_after_interruption(self, pending: list[str], depth: int = 0) -> bool:
@@ -931,6 +1027,13 @@ class VoiceLoop:
             # barge-in can't have interrupted anything.
             return False
 
+        session = self._speech_session
+        if session is not None and session.interrupted.is_set():
+            # Barged in during the gap before this sentence -- the caller
+            # was already cut off, so don't spend a synthesis call (or say
+            # anything) on it.
+            return True
+
         # Synthesize BEFORE starting the watcher -- Piper's synthesis is
         # itself onnxruntime compute, and letting it overlap with the
         # watcher's continuous wake-word inference was starving the CPU on
@@ -986,6 +1089,22 @@ class VoiceLoop:
             _play_safely()
             return False
 
+        if session is not None:
+            # A session watcher is already listening, and has been right
+            # through the gap before this sentence -- just hand it this
+            # playback to cut off, play, and report what it saw.
+            session.attach_playback(stop_event)
+            try:
+                play_thread = threading.Thread(target=_play_safely)
+                play_thread.start()
+                play_thread.join()
+            finally:
+                session.attach_playback(None)
+            if session.interrupted.is_set():
+                self._refresh_hot_mic()
+                return True
+            return False
+
         play_thread = threading.Thread(target=_play_safely)
         play_thread.start()
 
@@ -1006,7 +1125,9 @@ class VoiceLoop:
 
         def _watch_safely() -> None:
             try:
-                watcher_result["interrupted"] = self._watch_for_barge_in(stop_event, play_thread)
+                watcher_result["interrupted"] = self._watch_for_barge_in(
+                    should_continue=play_thread.is_alive, on_detect=stop_event.set
+                )
             except Exception:
                 log.exception("Barge-in watcher failed; continuing without it")
 
@@ -1030,7 +1151,15 @@ class VoiceLoop:
             self._refresh_hot_mic()
         return interrupted
 
-    def _watch_for_barge_in(self, stop_event: threading.Event, play_thread: threading.Thread) -> bool:
+    def _watch_for_barge_in(self, should_continue, on_detect) -> bool:
+        """Listens for an interruption and calls on_detect() when it hears
+        one, for as long as should_continue() stays true.
+
+        Both are injected rather than assumed so the same loop serves two
+        lifetimes: one sentence's playback (should_continue =
+        play_thread.is_alive), or a whole reply including the gaps between
+        sentences (see _barge_in_session, which is the normal case -- those
+        gaps were where most interruptions were being missed)."""
         hot_mic = self._hot_mic_active()
         # The local wake-word engine has no per-frame classifier at all
         # (see LocalWakeWordListener) -- it only ever knows the wake word
@@ -1066,12 +1195,12 @@ class VoiceLoop:
         non_hot_mic_speech_run = 0
         with sd.InputStream(samplerate=16000, channels=1, dtype="int16", blocksize=chunk) as stream:
             for _ in range(warmup_chunks):
-                if not play_thread.is_alive():
+                if not should_continue():
                     return False
                 frame, _ = stream.read(chunk)
                 self.wake_word.score_frame(frame.reshape(-1))
 
-            while play_thread.is_alive():
+            while should_continue():
                 frame, _ = stream.read(chunk)
                 frame = frame.reshape(-1)
 
@@ -1086,7 +1215,7 @@ class VoiceLoop:
                         if hot_mic_speech_run >= _BARGE_IN_HOLD_FRAMES:
                             console.print("[yellow](barge-in: hot mic heard you)[/yellow]")
                             log.info("hot-mic barge-in triggered at rms=%.1f", rms)
-                            stop_event.set()
+                            on_detect()
                             return True
                     else:
                         hot_mic_speech_run = 0
@@ -1099,7 +1228,7 @@ class VoiceLoop:
                         if non_hot_mic_speech_run >= _NON_HOT_MIC_LOCAL_BARGE_IN_HOLD_FRAMES:
                             console.print("[yellow](barge-in: heard you)[/yellow]")
                             log.info("local-engine barge-in triggered at rms=%.1f", rms)
-                            stop_event.set()
+                            on_detect()
                             return True
                     else:
                         non_hot_mic_speech_run = 0
@@ -1111,6 +1240,6 @@ class VoiceLoop:
                 if score > 0.6:
                     console.print("[yellow](barge-in: stopping speech)[/yellow]")
                     log.info("barge-in triggered at score=%.3f", score)
-                    stop_event.set()
+                    on_detect()
                     return True
         return False
