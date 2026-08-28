@@ -255,6 +255,7 @@
     <div class="top-status">
       <button class="stop-listening-btn" id="stopListeningBtn" title="Turn off hot-mic barge-in">Stop listening</button>
       <button class="restart-btn" id="restartBtn" title="Restart Argus (picks up code changes)">Restart</button>
+      <button class="restart-btn" id="testEmoteBtn" title="Manually fire a random idle emote now, instead of waiting up to ~60s">Test emote</button>
       <span><span class="dot-live" id="liveDot"></span><span id="liveLabel">Connecting</span></span>
       <span class="clock" id="clock">--:--:--</span>
     </div>
@@ -555,6 +556,7 @@
     captionLines = [];
     captionTextEl.textContent = "…";
     captionTextEl.classList.remove("placeholder");
+    idleEmoteCaptionShown = false; // a real turn starting always wins over an idle-emote name
   }
   function addCaption(text) {
     // Accumulates the WHOLE current reply -- cleared only at the start of
@@ -584,6 +586,7 @@
   }).catch(function () {});
 
   // ---------- transcript ----------
+  var TRANSCRIPT_MAX_LINES = 300;
   var transcriptBody = document.getElementById("transcriptBody");
   var transcriptEmpty = true;
   function addTranscriptLine(role, text, tier, model) {
@@ -597,6 +600,14 @@
       '<span class="who">' + (role === "you" ? "You" : "Argus") + '</span>' +
       '<span class="text">' + esc(text) + tierTag + '</span>';
     transcriptBody.appendChild(line);
+    // Caps DOM growth for a console meant to run continuously for days --
+    // unbounded appends here would slowly accumulate thousands of nodes
+    // with no functional benefit (nobody's scrolling back that far in a
+    // live console; real history search belongs in the journal/memory
+    // tools, not this view).
+    while (transcriptBody.children.length > TRANSCRIPT_MAX_LINES) {
+      transcriptBody.removeChild(transcriptBody.firstChild);
+    }
     transcriptBody.scrollTop = transcriptBody.scrollHeight;
   }
 
@@ -771,6 +782,14 @@
     fetch("/api/restart", { method: "POST" }).catch(function () {
       showToast("Couldn't reach Argus -- is it still running?");
     });
+  });
+
+  document.getElementById("testEmoteBtn").addEventListener("click", function () {
+    if (current !== "idle") {
+      showToast("Only fires while idle -- Argus is currently " + current + ".");
+      return;
+    }
+    triggerRandomIdleBeat();
   });
 
   // ---------- text input ----------
@@ -1069,25 +1088,49 @@
   var activeIdleEmote = null; // { def, startedAt } | null
   var EMOTE_RAMP_MS = 1100, EMOTE_HOLD_MS = 4500;
 
+  // Shows the emote's own name briefly in the caption box (reusing it
+  // rather than adding a new element -- it's already idle/placeholder
+  // whenever an idle emote could fire) so it's obvious what the swarm's
+  // supposed to be, not just an ambiguous shape.
+  var idleEmoteCaptionShown = false;
+  function announceIdleEmote(name) {
+    captionTextEl.classList.remove("placeholder");
+    captionTextEl.textContent = "( " + name + " )";
+    idleEmoteCaptionShown = true;
+  }
+  function clearIdleEmoteCaptionIfShown() {
+    if (!idleEmoteCaptionShown) return;
+    idleEmoteCaptionShown = false;
+    captionLines = [];
+    captionTextEl.textContent = "Say the wake word to begin.";
+    captionTextEl.classList.add("placeholder");
+  }
+
+  function triggerRandomIdleBeat() {
+    if (current !== "idle" || reduceMotion) return;
+    if (Math.random() < 0.4) {
+      var name = IDLE_FACE_EXPRESSIONS[Math.floor(Math.random() * IDLE_FACE_EXPRESSIONS.length)];
+      setExpression(name, EMOTE_HOLD_MS);
+      announceIdleEmote(name);
+    } else {
+      // Truly one-off: asks the backend to invent a fresh accessory scene
+      // on the fly (see argus/idle_emote.py) rather than replaying from a
+      // fixed local set. Best-effort -- if the fetch fails or the console
+      // isn't wired to a live orchestrator yet, this cycle is just
+      // silently skipped, no fallback UI needed.
+      fetch("/api/idle_emote").then(function (r) { return r.json(); }).then(function (spec) {
+        if (current === "idle" && spec && spec.name && spec.parts) {
+          activeIdleEmote = { def: buildEmoteDef(spec), startedAt: performance.now() };
+          announceIdleEmote(spec.name);
+        }
+      }).catch(function () {});
+    }
+  }
+
   function scheduleNextIdleEmote() {
     var delay = 22000 + Math.random() * 40000; // 22-62s
     setTimeout(function () {
-      if (current === "idle" && !reduceMotion) {
-        if (Math.random() < 0.4) {
-          setExpression(IDLE_FACE_EXPRESSIONS[Math.floor(Math.random() * IDLE_FACE_EXPRESSIONS.length)], EMOTE_HOLD_MS);
-        } else {
-          // Truly one-off: asks the backend to invent a fresh accessory
-          // scene on the fly (see argus/idle_emote.py) rather than
-          // replaying from a fixed local set. Best-effort -- if the fetch
-          // fails or the console isn't wired to a live orchestrator yet,
-          // this cycle is just silently skipped, no fallback UI needed.
-          fetch("/api/idle_emote").then(function (r) { return r.json(); }).then(function (spec) {
-            if (current === "idle" && spec && spec.name && spec.parts) {
-              activeIdleEmote = { def: buildEmoteDef(spec), startedAt: performance.now() };
-            }
-          }).catch(function () {});
-        }
-      }
+      triggerRandomIdleBeat();
       scheduleNextIdleEmote();
     }, delay);
   }
@@ -1098,7 +1141,7 @@
     if (current !== "idle") { activeIdleEmote = null; return null; } // real interaction always wins
     var elapsed = performance.now() - activeIdleEmote.startedAt;
     var total = EMOTE_RAMP_MS * 2 + EMOTE_HOLD_MS;
-    if (elapsed >= total) { activeIdleEmote = null; return null; }
+    if (elapsed >= total) { activeIdleEmote = null; clearIdleEmoteCaptionIfShown(); return null; }
     if (elapsed < EMOTE_RAMP_MS) return elapsed / EMOTE_RAMP_MS;
     if (elapsed < EMOTE_RAMP_MS + EMOTE_HOLD_MS) return 1;
     return 1 - (elapsed - EMOTE_RAMP_MS - EMOTE_HOLD_MS) / EMOTE_RAMP_MS;

@@ -36,9 +36,8 @@ avatar briefly do or wear when nobody's talking to it?
 Coordinate system: everything is a fraction of the face's own scale, relative \
 to the face center at (0, 0). Negative y is up, positive y is down. The face \
 itself already occupies roughly x in [-0.6, 0.6], y in [-0.8, 0.8] -- design \
-your accessory to sit ON or NEAR that silhouette (e.g. glasses around y=-0.30, \
-a held object around x=0.4-0.7, a hat around y=-0.75), not covering the whole \
-canvas.
+your accessory to sit ON or NEAR that silhouette (above it, beside it, in \
+front of it, held next to it -- your call), not covering the whole canvas.
 
 Available part shapes (use ONLY these "type" values):
 - "ring": a circle outline. Fields: cx, cy, r (all fractions of scale).
@@ -52,10 +51,17 @@ Reply with ONLY JSON, no markdown fences, no commentary, matching exactly:
 
 2-5 parts. Each part's "share" is roughly how many of the accessory's \
 particles it gets (they should sum to somewhere around 0.3-0.5 total -- \
-the rest of the swarm is always the face itself, not yours to use). Be \
-genuinely creative and varied -- a party hat, a tiny umbrella, cat ears, a \
-speech bubble, a bowtie, headphones, whatever's funny -- not just the most \
-obvious "glasses" or "coffee" default every time."""
+the rest of the swarm is always the face itself, not yours to use).
+
+Pick ONE idea from a genuinely different category each time, not the most \
+obvious default -- vary where it sits, not just what it is:
+- worn on the head (NOT always a hat -- antennae, a halo, a bandana, a crown)
+- held or floating beside the face (an umbrella, a balloon, a magic wand, a fishing rod)
+- on the face itself (glasses, a monocle, a mustache, a single raised eyebrow made literal)
+- around the body/neck (a bowtie, a scarf, a cape corner, a name tag)
+- an emitted/ambient effect (musical notes, sparkles, a thought-bubble question mark, sweat drops)
+Be genuinely surprising -- if your first instinct is a hat or glasses, pick \
+something else instead."""
 
 # Fallbacks if generation fails or the response can't be trusted -- the
 # idle experience should never break because of this, and these use the
