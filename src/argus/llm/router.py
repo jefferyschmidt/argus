@@ -1,7 +1,9 @@
 import logging
 import re
+import time
 
 import anthropic
+import groq
 
 from argus.config import settings
 from argus.llm.anthropic_client import AnthropicClient
@@ -109,6 +111,24 @@ class ModelRouter:
             if self.local.is_available():
                 try:
                     return self.local.complete(messages, system=system)
+                except groq.RateLimitError:
+                    # Confirmed live: Groq's free tier is a tight shared
+                    # budget (8000 TPM) across every LOCAL-tier caller --
+                    # idle emotes, memory consolidation, small talk -- and
+                    # its own error message routinely says "try again in
+                    # ~360ms." Escalating straight to the paid frontier
+                    # tier on the very first rate-limit hit defeats the
+                    # entire point of the free local tier for what's
+                    # usually a very short-lived contention spike. One
+                    # quick retry after a short pause avoids that cost in
+                    # the common case; if it's still rate-limited, the
+                    # existing escalation below is still the safety net.
+                    log.warning("Local tier rate-limited; retrying once before escalating")
+                    time.sleep(1.5)
+                    try:
+                        return self.local.complete(messages, system=system)
+                    except Exception:
+                        log.exception("Local completion still failing after rate-limit retry; escalating")
                 except Exception:
                     # is_available() can be stale (Ollama was up a moment
                     # ago, isn't now) -- don't let that raise all the way

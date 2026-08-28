@@ -10,6 +10,26 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed, 2026-08-28 (log review -- local tier rate-limits escalated
+straight to the paid frontier, no retry)**: went looking through
+`data/argus.log` for anything worth fixing beyond live reports. Found
+`ModelRouter.complete()`'s LOCAL path treating a `groq.RateLimitError`
+the same as any other local-tier failure -- escalating straight to the
+paid Anthropic frontier tier on the very first hit. Groq's free tier is
+a tight shared budget (8000 TPM) across every LOCAL-tier caller now
+(idle emotes, memory consolidation, ordinary small talk), and its own
+error message routinely says "try again in ~360ms" -- a real, short-lived
+contention spike, not genuine unavailability. Escalating immediately
+defeats the whole point of the free local tier and directly works against
+today's memory-system "stay cheap" goal, since consolidation adds a new
+regular consumer of that same budget. Now retries once after a 1.5s pause
+before falling through to the existing escalation safety net. (Also
+checked: recurring idle-emote JSON parse failures and occasional Groq STT
+failures -- both already have working graceful fallbacks by design, left
+alone; a one-off `pyscreeze`/Pillow import error and a `PathEscapesAllowedRoots`
+on the project directory via the general `list_dir` tool -- neither has
+recurred/mattered since, not touched.)
+
 **Fixed live, 2026-08-28 ("Stop listening" still wasn't a real mute)**:
 reported live -- "it needs to basically be a mute input button for
 Argus." The earlier persistent-pause redesign (see below) made pause
