@@ -91,12 +91,20 @@ calls (with real generated images), memory, and routing/spend.
    hardest of the three -- continuous gesture recognition, not single-
    frame classification, and good open models for it are scarce; treat as
    a stretch goal, not a near-term deliverable.
-9. Proactive daily briefing -- greets you (morning / when you sit down) with
-   weather, calendar, relevant overnight news, anything flagged while away,
-   instead of only ever responding when spoken to.
-10. Scheduled routines/automations -- "every morning at 7, check X and tell
-    me": recurring tasks it just does on a schedule, tied into the agent
-    loop rather than requiring you to ask each time.
+9. ~~Proactive daily briefing~~ -- not a separate feature, just an easy
+    routine (see item 10): "every morning at 7, give me a briefing" sets
+    up a routine whose goal naturally pulls in weather (web search),
+    today's reminders, and anything notable in email. Calendar isn't in
+    the briefing yet -- still needs OAuth (see item 7's other half).
+10. ~~Scheduled routines/automations~~ -- create_scheduled_routine/
+    list_scheduled_routines/cancel_scheduled_routine (argus/tools/
+    routines.py + argus/routine_worker.py). A routine fires once per
+    calendar day at its time_of_day, running its goal through the FULL
+    tool-using conversational pipeline (not the cheap local tier the
+    other background workers use, since a briefing needs real tool
+    calls), then speaks the result. Same non-blocking-lock delivery
+    pattern as reminders/context-awareness/email -- never barges into an
+    active conversation, tries again next poll if busy.
 11. ~~Reminders & a real task list~~ -- persisted (sqlite), surfaced
     proactively (a background poll speaks a due reminder even outside an
     active conversation), not just answered once and forgotten.

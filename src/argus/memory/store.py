@@ -38,6 +38,15 @@ CREATE TABLE IF NOT EXISTS journal_entries (
     ts TEXT NOT NULL DEFAULT (datetime('now')),
     text TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS routines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    time_of_day TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_run_date TEXT
+);
 """
 
 

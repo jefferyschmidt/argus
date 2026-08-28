@@ -110,6 +110,12 @@ class VoiceLoop:
         )
         threading.Thread(target=self.email_watcher.run, daemon=True).start()
 
+        from argus.routine_worker import RoutineWorker
+        self.routine_worker = RoutineWorker(
+            self.orchestrator, self._speak_with_barge_in, self._interaction_lock
+        )
+        threading.Thread(target=self.routine_worker.run, daemon=True).start()
+
     def _reminder_checker_worker(self) -> None:
         """Reminders are meant to be surfaced proactively, not just answered
         once and forgotten -- polls for due-and-not-yet-announced reminders
