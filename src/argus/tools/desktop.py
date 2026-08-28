@@ -13,6 +13,36 @@ def _take_screenshot(args: dict) -> bytes:
     return buf.getvalue()
 
 
+def _capture_camera(args: dict) -> bytes | str:
+    """One-shot webcam frame, same bytes-result pipeline as the screenshot
+    tool (Orchestrator._on_tool_call base64-encodes bytes as an image
+    content block the model can actually see). CONFIRM-tier, unlike the
+    screenshot tool -- this captures the physical room/person rather than
+    the screen, which is a meaningfully more sensitive thing to send off
+    to a frontier model without the user explicitly saying yes each time."""
+    import cv2
+
+    cap = cv2.VideoCapture(0)
+    try:
+        if not cap.isOpened():
+            return "error: no camera available (failed to open device 0)"
+        # Discard the first couple of frames -- most webcams need a beat to
+        # auto-adjust exposure/white-balance after opening, so frame 0 is
+        # often too dark or washed out to be useful.
+        for _ in range(3):
+            cap.read()
+        ok, frame = cap.read()
+        if not ok:
+            return "error: camera opened but failed to capture a frame"
+    finally:
+        cap.release()
+
+    ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    if not ok:
+        return "error: failed to encode captured frame"
+    return encoded.tobytes()
+
+
 def _list_windows(args: dict) -> str:
     import pygetwindow as gw
 
@@ -73,6 +103,20 @@ take_screenshot_tool = Tool(
     input_schema={"type": "object", "properties": {}},
     tier=PermissionTier.ALLOW,
     handler=_take_screenshot,
+)
+
+capture_camera_tool = Tool(
+    name="capture_camera",
+    description=(
+        "Takes a single photo from the webcam and returns it so you can see what's "
+        "physically in front of the computer -- the room, the user, an object they're "
+        "holding up, etc. Distinct from take_screenshot (that's the screen, this is the "
+        "camera). Requires the user's confirmation each time since it captures the "
+        "physical space, not just the screen."
+    ),
+    input_schema={"type": "object", "properties": {}},
+    tier=PermissionTier.CONFIRM,
+    handler=_capture_camera,
 )
 
 list_windows_tool = Tool(

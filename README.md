@@ -76,15 +76,19 @@ calls (with real generated images), memory, and routing/spend.
    depends on this being solid first, since both are about Argus taking
    action with less direct supervision.
 7. Email/calendar, smart home (Home Assistant) -- need OAuth/app setup first
-8. Camera/vision: periodic frame capture + Claude vision for general scene
-   and object description (straightforward, same pattern as the screenshot
-   tool). Face *recognition* (identifying specific known people, not just
-   "a face is present") is a distinct, harder capability -- needs a local
-   enrollment/embedding system since that's biometric matching, and carries
-   real privacy considerations to think through explicitly before building.
-   ASL translation is the hardest of the three -- continuous gesture
-   recognition, not single-frame classification, and good open models for
-   it are scarce; treat as a stretch goal, not a near-term deliverable.
+8. ~~Camera/vision~~ (single-shot, on request): capture_camera tool
+   (opencv-python-headless), same bytes-result pipeline as the screenshot
+   tool. CONFIRM-tier -- more sensitive than a screenshot since it captures
+   the physical room/person. *Periodic* ambient capture is a further step
+   not yet built (this is on-request only, like "what does this look like"
+   or "hold that up to the camera"). Face *recognition* (identifying
+   specific known people, not just "a face is present") is a distinct,
+   harder capability -- needs a local enrollment/embedding system since
+   that's biometric matching, and carries real privacy considerations to
+   think through explicitly before building. ASL translation is the
+   hardest of the three -- continuous gesture recognition, not single-
+   frame classification, and good open models for it are scarce; treat as
+   a stretch goal, not a near-term deliverable.
 9. Proactive daily briefing -- greets you (morning / when you sit down) with
    weather, calendar, relevant overnight news, anything flagged while away,
    instead of only ever responding when spoken to.

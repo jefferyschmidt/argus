@@ -1,5 +1,6 @@
 from argus.tools.base import PermissionTier, Tool
 from argus.tools.desktop import (
+    capture_camera_tool,
     click_tool,
     list_windows_tool,
     open_app_tool,
@@ -21,6 +22,7 @@ def build_default_registry() -> ToolRegistry:
         write_file_tool,
         run_shell_tool,
         take_screenshot_tool,
+        capture_camera_tool,
         list_windows_tool,
         click_tool,
         type_text_tool,
