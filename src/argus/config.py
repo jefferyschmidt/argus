@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # reply). 'low' keeps latency near-instant (~0.3-0.7s measured) while
     # still returning real text -- see GroqClient.complete().
     groq_model: str = "openai/gpt-oss-20b"
+    # Hosted Whisper -- when GROQ_API_KEY is set, this replaces local
+    # faster-whisper for STT (same CPU-bound-cold-hardware problem as
+    # Ollama had). Local faster-whisper is kept as the offline fallback,
+    # loaded lazily only if actually needed.
+    groq_whisper_model: str = "whisper-large-v3-turbo"
 
     anthropic_model: str = "claude-haiku-4-5-20251001"
     anthropic_advanced_model: str = "claude-sonnet-5"
