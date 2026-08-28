@@ -36,7 +36,7 @@ class WakeWordListener:
                     return
 
     def listen_for_wake_and_command(
-        self, on_wake=None, chunks_out: list | None = None, on_checking=None
+        self, on_wake=None, chunks_out: list | None = None, on_checking=None, hot_mic_check=None
     ) -> tuple[np.ndarray, str | None]:
         """Blocks for the wake word, then records the command that follows
         on the SAME audio stream (no reopen gap, so nothing spoken right
@@ -54,7 +54,13 @@ class WakeWordListener:
         on_checking: accepted for interface parity with LocalWakeWordListener
         but never called here -- openWakeWord scores every frame directly
         (no separate slow transcription step to signal), so there's no
-        "checking" phase distinct from normal listening."""
+        "checking" phase distinct from normal listening.
+
+        hot_mic_check: accepted for interface parity but never called here
+        -- this engine has no transcript to fall back on if it skipped the
+        wake-word check (see listen_for_wake_and_command's docstring on
+        LocalWakeWordListener), so honoring it would require transcribing
+        every utterance anyway, defeating the point of this engine."""
         from collections import deque
 
         self._model.reset()

@@ -10,6 +10,27 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed live, 2026-08-28 (replies to Argus's own unprompted speech got
+silently dropped)**: reported live -- Argus asked "sounds like there's
+something else on your mind about tomorrow, what's up?" (a proactive
+context nudge), the user answered directly, and the console showed only
+a fragment ("expensive.") stuck on "checking whether that was really
+meant for me," never actually responding -- described as Argus
+"disregarding" what was said. Root cause: only the normal reply path
+(`_process_utterance`) refreshed the hot-mic hands-free window; anything
+Argus said on its OWN initiative -- proactive check-ins, email alerts,
+reminders, scheduled routines -- spoke via `_speak_with_barge_in`
+directly and never opened that window, so answering it still required
+saying the wake word first. Any reply given without it just fragmented
+against the strict wake-word check and got silently discarded. Fixed
+with `VoiceLoop._speak_and_open_mic` (wraps `_speak_with_barge_in` +
+`_refresh_hot_mic`, now used by every background worker instead of
+`_speak_with_barge_in` directly) plus a new `hot_mic_check` callback on
+`LocalWakeWordListener.listen_for_wake_and_command`: when the hot-mic
+window is open, a captured utterance is treated as addressed to Argus
+without the wake-word requirement at all -- the same hands-free
+follow-up a normal reply already gets.
+
 **Added live, 2026-08-28 (direct email unsubscribe + a scroll tool for
 desktop control)**: reported live -- Argus was "still struggling to get
 it to unsubscribe" from a marketing email via desktop-automation clicking

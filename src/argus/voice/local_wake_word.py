@@ -89,7 +89,7 @@ class LocalWakeWordListener:
         self._vad.reset()
 
     def listen_for_wake_and_command(
-        self, on_wake=None, chunks_out: list | None = None, on_checking=None
+        self, on_wake=None, chunks_out: list | None = None, on_checking=None, hot_mic_check=None
     ) -> tuple[np.ndarray, str | None]:
         """Blocks until an utterance containing the wake word is heard.
         Returns (samples, command_text): samples is the full captured
@@ -109,7 +109,15 @@ class LocalWakeWordListener:
         console gave zero feedback during that window -- it just kept
         showing "waiting for the wake word" the whole time, even though
         real speech had already been captured and was actively being
-        checked. Reported live as "it heard me but isn't doing anything."""
+        checked. Reported live as "it heard me but isn't doing anything."
+
+        hot_mic_check, if given, is called once per candidate utterance;
+        when it returns True, that utterance is treated as addressed to
+        Argus without requiring the wake word at all. Confirmed live as a
+        real gap: anything Argus said on its own initiative (a proactive
+        check-in, an email alert) never opened a hands-free follow-up
+        window the way a normal reply did, so answering it directly with
+        no wake word looked like Argus silently ignoring what was said."""
         sr = settings.audio_sample_rate
         frame_len = _FRAME_SAMPLES
         silence_hang_frames = int(_SILENCE_HANG_MS // _FRAME_MS)
@@ -144,6 +152,12 @@ class LocalWakeWordListener:
                 if on_checking is not None:
                     on_checking()
                 text = self._transcriber.transcribe_local(utterance)
+
+                if hot_mic_check is not None and hot_mic_check():
+                    if on_wake is not None:
+                        on_wake()
+                    return utterance, (text.strip() or None)
+
                 end_idx = _find_wake_word(text)
                 if end_idx is None:
                     continue

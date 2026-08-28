@@ -127,35 +127,35 @@ class VoiceLoop:
 
         from argus.context_awareness import ContextAwarenessWorker
         self.context_awareness = ContextAwarenessWorker(
-            self.orchestrator, self._speak_with_barge_in, self._interaction_lock
+            self.orchestrator, self._speak_and_open_mic, self._interaction_lock
         )
         threading.Thread(target=self.context_awareness.run, daemon=True).start()
 
         from argus.email_watcher import EmailWatcher
         self.email_watcher = EmailWatcher(
-            self.orchestrator, self._speak_with_barge_in, self._interaction_lock
+            self.orchestrator, self._speak_and_open_mic, self._interaction_lock
         )
         threading.Thread(target=self.email_watcher.run, daemon=True).start()
 
         from argus.routine_worker import RoutineWorker
         self.routine_worker = RoutineWorker(
-            self.orchestrator, self._speak_with_barge_in, self._interaction_lock
+            self.orchestrator, self._speak_and_open_mic, self._interaction_lock
         )
         threading.Thread(target=self.routine_worker.run, daemon=True).start()
 
         from argus.knowledge_watcher import KnowledgeWatcher
-        self.knowledge_watcher = KnowledgeWatcher(self._speak_with_barge_in, self._interaction_lock)
+        self.knowledge_watcher = KnowledgeWatcher(self._speak_and_open_mic, self._interaction_lock)
         threading.Thread(target=self.knowledge_watcher.run, daemon=True).start()
 
         from argus.research_digest import ResearchDigestWorker
         self.research_digest = ResearchDigestWorker(
-            self.orchestrator.router, self._speak_with_barge_in, self._interaction_lock
+            self.orchestrator.router, self._speak_and_open_mic, self._interaction_lock
         )
         threading.Thread(target=self.research_digest.run, daemon=True).start()
 
         from argus.stuck_detection import StuckDetectionWorker
         self.stuck_detection = StuckDetectionWorker(
-            self.orchestrator.router, self._speak_with_barge_in, self._interaction_lock
+            self.orchestrator.router, self._speak_and_open_mic, self._interaction_lock
         )
         threading.Thread(target=self.stuck_detection.run, daemon=True).start()
 
@@ -201,7 +201,7 @@ class VoiceLoop:
         console.print(f"[bold yellow]argus (reminder)>[/bold yellow] {text}")
         ui_events.publish({"type": "caption", "text": text})
         ui_events.publish({"type": "transcript", "role": "argus", "text": text})
-        self._speak_with_barge_in(text)  # publishes its own "speaking" state event with real timing
+        self._speak_and_open_mic(text)  # publishes its own "speaking" state event with real timing
 
     def _external_input_worker(self) -> None:
         from argus.voice.audio_io import record_while
@@ -281,6 +281,22 @@ class VoiceLoop:
             return False
         return time.monotonic() < self._hot_mic_until
 
+    def _speak_and_open_mic(self, text: str) -> bool:
+        """Wraps _speak_with_barge_in for anything Argus says on its own
+        initiative -- proactive context nudges, email alerts, reminders,
+        scheduled routines, etc. Confirmed live as a real gap: only the
+        normal reply flow (_process_utterance) refreshed the hot-mic
+        window, so replying to one of these unprompted messages still
+        needed the wake word first -- reported live as Argus "disregarding"
+        a direct answer to a question it had just asked. Refreshing the
+        window here, and having the wake-word listener honor it (see
+        hot_mic_check in LocalWakeWordListener.listen_for_wake_and_command),
+        means anything Argus says opens the same hands-free follow-up a
+        normal reply does."""
+        interrupted = self._speak_with_barge_in(text)
+        self._refresh_hot_mic()
+        return interrupted
+
     def _wait_while_listening_paused(self) -> None:
         """Blocks here, doing no audio capture or transcription at all,
         for as long as "Stop listening" is active -- this is the real
@@ -328,7 +344,8 @@ class VoiceLoop:
                 wake_chunks: list = []
                 stop_watcher = self._start_hearing_watcher(wake_chunks)
                 samples, wake_command_text = self.wake_word.listen_for_wake_and_command(
-                    on_wake=_on_wake, chunks_out=wake_chunks, on_checking=_on_checking
+                    on_wake=_on_wake, chunks_out=wake_chunks, on_checking=_on_checking,
+                    hot_mic_check=self._hot_mic_active,
                 )
                 stop_watcher.set()
             except KeyboardInterrupt:
