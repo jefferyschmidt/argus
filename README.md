@@ -10,6 +10,17 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Added, 2026-08-28 (skip embedding filler turns -- second piece of the
+memory system's "stay cheap and relevant" goal)**: `remember_turn` used to
+embed every single turn indiscriminately, confirmed by an earlier live
+diagnostic (300 filler documents like "okay"/"thanks"/"sounds good"
+against 1 real fact) to measurably dilute semantic recall at realistic
+scale. Added `_is_worth_embedding` (too short, or an exact filler match
+after normalizing) -- filler turns still go into episodic storage (short-
+term recency is unaffected), they're just never embedded/searched.
+Complements memory consolidation: fewer, more relevant embeddings now,
+denser durable facts distilled over time.
+
 **Added, 2026-08-28 (memory consolidation -- first piece of the
 "best-ever memory system")**: implements two of the four explicit design
 goals agreed on 2026-08-28 ("feels like accumulated knowledge, not a

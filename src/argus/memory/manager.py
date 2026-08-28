@@ -6,6 +6,29 @@ from argus.memory.episodic import EpisodicStore
 from argus.memory.semantic import SemanticStore
 from argus.memory.store import get_connection
 
+# remember_turn used to embed EVERY turn indiscriminately -- confirmed by a
+# live diagnostic (300 filler documents like "okay"/"thanks"/"sounds good"
+# against 1 real fact) that this measurably dilutes semantic recall at
+# realistic scale, part of the "stay cheap and relevant as it grows" memory
+# design goal. Episodic storage (recent-turns context) is untouched --
+# every turn is still kept there for short-term recency, this only skips
+# the embedding pass for turns that would never be worth searching for.
+_MIN_EMBED_CHARS = 12
+_FILLER_TURNS = {
+    "ok", "okay", "thanks", "thank you", "sounds good", "got it", "yeah",
+    "sure", "no problem", "sure thing", "alright", "cool", "great", "yep",
+    "you're welcome", "youre welcome", "glad to help", "have a good one",
+    "catch you later", "bye", "goodbye", "hi", "hello", "hey",
+    "is there anything else", "anything else",
+}
+
+
+def _is_worth_embedding(content: str) -> bool:
+    text = content.strip()
+    if len(text) < _MIN_EMBED_CHARS:
+        return False
+    return text.lower().strip(" .!?") not in _FILLER_TURNS
+
 
 class MemoryManager:
     def __init__(self, session_id: str | None = None):
@@ -21,6 +44,8 @@ class MemoryManager:
 
     def remember_turn(self, role: str, content: str) -> None:
         episode_id = self.episodic.add(self.session_id, role, content)
+        if not _is_worth_embedding(content):
+            return
         future = self._embed_pool.submit(
             self.semantic.add,
             doc_id=f"episode-{episode_id}",
