@@ -30,7 +30,11 @@ def _maybe_start_ui_server(port: int = 8765) -> None:
     url = f"http://127.0.0.1:{port}"
     console.print(f"[dim]Visual console: {url}[/dim]")
     try:
-        webbrowser.open(url)
+        # open_new(), not open() -- open() lets the browser decide, which in
+        # practice almost always means a new tab in whatever window's
+        # already focused, burying the console behind chat/terminal windows.
+        # open_new() asks for an actual separate window instead.
+        webbrowser.open_new(url)
     except Exception:
         pass
 

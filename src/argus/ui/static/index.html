@@ -99,9 +99,9 @@
     box-shadow: 0 0 0 1px #000, 0 20px 60px -20px color-mix(in srgb, var(--accent) 45%, transparent);
   }
   .caption-box {
-    position: relative; flex: 1 1 280px; max-width: 380px; min-height: 264px;
+    position: relative; flex: 1 1 280px; max-width: 380px; min-height: 264px; max-height: 264px;
     border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-panel);
-    display: flex; align-items: center; padding: 20px;
+    display: flex; align-items: stretch; padding: 20px;
     box-shadow: 0 0 0 1px #000, 0 20px 60px -20px color-mix(in srgb, var(--accent) 30%, transparent);
   }
   .caption-box .caption-eyebrow {
@@ -110,9 +110,18 @@
   }
   .caption-box .caption-text {
     font-family: var(--font-body); font-size: 17px; line-height: 1.5; color: var(--ink);
-    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+    /* Grows to the FULL current reply (not just the last couple of
+       sentences) and scrolls internally, auto-following the newest line
+       -- previously capped at 2 sentences with hard overflow:hidden, so
+       anything said earlier in a longer reply just vanished with no way
+       to read it back until the whole turn finished and landed in the
+       transcript panel below. */
+    width: 100%; overflow-y: auto; padding-top: 14px; scrollbar-width: thin;
   }
-  .caption-box .caption-text.placeholder { color: var(--ink-dim); font-style: italic; font-size: 14px; }
+  .caption-box .caption-text.placeholder {
+    color: var(--ink-dim); font-style: italic; font-size: 14px;
+    display: flex; align-items: center; justify-content: center; height: 100%; padding-top: 0;
+  }
   .hearing-line {
     font-size: 13px; color: var(--ink-dim); min-height: 18px; max-width: 480px;
     text-align: center; padding: 0 16px; font-style: italic; opacity: 0;
@@ -266,7 +275,7 @@
       </div>
       <div class="caption-box">
         <span class="caption-eyebrow">Caption</span>
-        <div class="caption-text placeholder" id="captionText">Say the wake word to begin.</div>
+        <div class="caption-text placeholder" id="captionText" aria-live="polite">Say the wake word to begin.</div>
       </div>
     </div>
     <div class="state-label" id="stateLabel">Idle</div>
@@ -337,7 +346,7 @@
 
   <div class="transcript">
     <div class="eyebrow">Transcript</div>
-    <div class="transcript-body" id="transcriptBody">
+    <div class="transcript-body" id="transcriptBody" role="log" aria-live="polite">
       <div class="empty-note">Nothing said yet.</div>
     </div>
   </div>
@@ -548,10 +557,15 @@
     captionTextEl.classList.remove("placeholder");
   }
   function addCaption(text) {
+    // Accumulates the WHOLE current reply -- cleared only at the start of
+    // the next turn (clearCaptions(), on entering "thinking") -- and the
+    // box scrolls internally rather than discarding older sentences, so a
+    // long reply stays fully readable instead of only ever showing the
+    // last couple of sentences.
     captionLines.push(text);
-    if (captionLines.length > 2) captionLines.shift();
     captionTextEl.classList.remove("placeholder");
     captionTextEl.textContent = captionLines.join(" ");
+    captionTextEl.scrollTop = captionTextEl.scrollHeight;
     applyMoodFromCaption(text);
   }
 
@@ -562,8 +576,9 @@
       ? "Cartesia " + (cfg.cartesia_voice_id || "").slice(0, 8)
       : "Piper " + cfg.piper_voice;
     var flags = document.getElementById("voiceFlags");
+    var wakeWordFlag = cfg.wake_word_engine === "local" ? "Wake word: local VAD" : esc(cfg.wake_word_model);
     flags.innerHTML =
-      '<span class="flag">' + esc(cfg.wake_word_model) + '</span>' +
+      '<span class="flag">' + wakeWordFlag + '</span>' +
       '<span class="flag">Follow-up ' + esc(cfg.followup_window_seconds) + 's</span>';
     document.getElementById("budgetFill").dataset.cap = cfg.daily_budget_usd;
   }).catch(function () {});
@@ -860,17 +875,36 @@
   var hctx = headCanvas.getContext("2d");
   var dpr = Math.min(window.devicePixelRatio || 1, 2);
 
-  var OUTLINE = [
-    [0.00, -1.00], [0.38, -0.92], [0.68, -0.60], [0.80, -0.05],
-    [0.62, 0.45], [0.30, 0.85], [0.00, 1.00], [-0.30, 0.85],
-    [-0.62, 0.45], [-0.80, -0.05], [-0.68, -0.60], [-0.38, -0.92]
-  ];
-  var GUIDES = [
-    [[-0.34, -0.40], [0.34, -0.40]],
-    [[0.00, -0.40], [0.00, 0.25]],
-    [[0.34, -0.40], [0.80, -0.05]],
-    [[-0.34, -0.40], [-0.80, -0.05]]
-  ];
+  // Bio-luminescent ferrofluid face (design by Gemini, ported from a
+  // fixed-600x500-canvas mockup to this canvas's own proportional cx/cy/s
+  // coordinate system -- see fit() below). Dissipates to a loose cloud at
+  // idle, coalesces into a face as engagement ramps up, particles tint
+  // toward the active named expression's color.
+  var FACE_PARTICLE_COUNT = 900;
+  var faceParticles = Array.from({ length: FACE_PARTICLE_COUNT }, function () {
+    return {
+      u: Math.random(), v: Math.random(),
+      seedX: (Math.random() - 0.5) * 1.7,  // idle-drift offset, in units of s
+      seedY: (Math.random() - 0.5) * 1.7,
+      size: Math.random() * 1.6 + 0.9,
+      speed: Math.random() * 0.8 + 0.6,
+      tintSensitivity: Math.random()
+    };
+  });
+  var FACE_BASE_RGB = { r: 79, g: 225, b: 255 }; // Argus's established cyan
+  var faceEnergy = { cohesion: 0, density: 0.30, jitter: 0.9, swirl: 0.15 }; // smoothed each frame
+
+  function faceStateTarget() {
+    if (current === "idle")      return { cohesion: 0.05, density: 0.30, jitter: 0.9, swirl: 0.15 };
+    if (current === "listening") return { cohesion: 0.55, density: 0.60, jitter: 1.6, swirl: 0.35 };
+    if (current === "thinking")  return { cohesion: 0.85, density: 0.75, jitter: 3.2, swirl: 1.6  };
+    return                              { cohesion: 1.00, density: 0.88, jitter: 1.8, swirl: 0.5  }; // speaking
+  }
+
+  function parseTintRgb(str) {
+    var m = /rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/.exec(str || "");
+    return m ? { r: +m[1], g: +m[2], b: +m[3] } : FACE_BASE_RGB;
+  }
 
   function fit(canvas, ctx) {
     var rect = canvas.getBoundingClientRect();
@@ -881,24 +915,203 @@
 
   var t = 0;
 
-  function stateParams() {
-    if (current === "idle")      return { split: 0.3, jitter: 0.6, tearProb: 0.001, mouthAmp: 0.02, scanSpeed: 0.25, flicker: 0.02 };
-    if (current === "listening") return { split: 0.8, jitter: 1.1, tearProb: 0.004, mouthAmp: 0.05, scanSpeed: 0.6,  flicker: 0.05 };
-    if (current === "thinking")  return { split: 1.6, jitter: 2.2, tearProb: 0.02,  mouthAmp: 0.08, scanSpeed: 1.4,  flicker: 0.14 };
-    return                              { split: 3.2, jitter: 3.6, tearProb: 0.05,  mouthAmp: 0.34, scanSpeed: 2.2,  flicker: 0.22 };
+  function driftPosition(pt, cx, cy, s, timeSec) {
+    // Dissipated idle-cloud position, well outside the face silhouette --
+    // shared by the normal face target and idle emotes so coalescing in/out
+    // of an emote looks continuous with the ordinary idle cloud.
+    return {
+      x: cx + pt.seedX * s + Math.sin(timeSec * pt.speed + pt.u * 10) * s * 0.22,
+      y: cy + pt.seedY * s + Math.cos(timeSec * pt.speed + pt.v * 10) * s * 0.22
+    };
   }
 
-  function pathHead(ctx, cx, cy, s, ox, oy) {
-    ctx.beginPath();
-    OUTLINE.forEach(function (p, i) {
-      var x = cx + p[0] * s + ox, y = cy + p[1] * s + oy;
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  function particleTarget(pt, cx, cy, s, timeSec, swirl, mouthOpenPx) {
+    var phi = pt.u * Math.PI * 2;
+    var theta = pt.v * Math.PI;
+    var radX = s * 0.58 * Math.sin(theta);
+    var radY = s * 0.80 * Math.cos(theta);
+    var targetX = cx + radX * Math.cos(phi);
+    var targetY = cy + radY;
+
+    // Mouth region bulges open with real speech.
+    if (targetY > cy + s * 0.20 && Math.abs(targetX - cx) < s * 0.42) {
+      targetY += Math.sin((targetY - (cy + s * 0.30)) / (s * 0.5) * Math.PI) * mouthOpenPx;
+    }
+
+    // Ferrofluid jitter -- amplitude from state energy, speed from swirl
+    // (thinking churns visibly faster than idle's slow drift).
+    var jAmp = faceEnergy.jitter * (reduceMotion ? 0 : 1);
+    targetX += Math.sin(timeSec * (2 + swirl * 3) + pt.u * 20) * jAmp;
+    targetY += Math.cos(timeSec * (2 + swirl * 3) + pt.v * 20) * jAmp;
+
+    var drift = driftPosition(pt, cx, cy, s, timeSec);
+    var cohesion = faceEnergy.cohesion;
+    return {
+      x: drift.x * (1 - cohesion) + targetX * cohesion,
+      y: drift.y * (1 - cohesion) + targetY * cohesion,
+      depth: Math.sin(phi)
+    };
+  }
+
+  function drawLiquidLipSeam(cx, cy, s, mouthOpenPx, tint, cohesion, browAngle) {
+    if (cohesion < 0.1) return;
+    var y = cy + s * 0.55;
+    var halfW = s * 0.20;
+    var curve = browAngle * s * 0.5; // a touch of the same brow-angle bias as the old brow-driven mouth curve
+    hctx.save();
+    hctx.globalAlpha = cohesion;
+    hctx.fillStyle = tint;
+    hctx.shadowColor = tint;
+    hctx.shadowBlur = 16 * cohesion;
+    hctx.beginPath();
+    hctx.moveTo(cx - halfW, y);
+    hctx.bezierCurveTo(cx - halfW * 0.35, y - mouthOpenPx * 0.5 + curve, cx + halfW * 0.35, y - mouthOpenPx * 0.5 + curve, cx + halfW, y);
+    hctx.bezierCurveTo(cx + halfW * 0.35, y + mouthOpenPx * 1.4 - curve * 0.5, cx - halfW * 0.35, y + mouthOpenPx * 1.4 - curve * 0.5, cx - halfW, y);
+    hctx.fill();
+    hctx.restore();
+  }
+
+  function drawFaceEyes(cx, cy, s, cohesion, expr, blink) {
+    if (cohesion < 0.2) return;
+    var eyeY = cy - s * 0.30;
+    var eyeDX = s * 0.16;
+    var eyeRX = s * 0.055 * expr.eyeScaleX;
+    var eyeRY = s * 0.075 * expr.eyeScaleY * Math.max(0.12, blink);
+    hctx.save();
+    hctx.globalAlpha = cohesion;
+    hctx.fillStyle = "#ffffff";
+    hctx.shadowColor = expr.tint;
+    hctx.shadowBlur = 12 * cohesion;
+    [-1, 1].forEach(function (side, i) {
+      var raise = expr.asymmetric && i === 0 ? expr.browRaise * s * 0.4 : 0;
+      hctx.beginPath();
+      hctx.ellipse(cx + side * eyeDX, eyeY - raise, eyeRX, eyeRY, 0, 0, Math.PI * 2);
+      hctx.fill();
     });
-    ctx.closePath();
-    GUIDES.forEach(function (g) {
-      ctx.moveTo(cx + g[0][0] * s + ox, cy + g[0][1] * s + oy);
-      ctx.lineTo(cx + g[1][0] * s + ox, cy + g[1][1] * s + oy);
+    hctx.restore();
+  }
+
+  // ---------- idle emotes ----------
+  // Random one-off "bits" the particle swarm performs while genuinely
+  // idle, for personality -- never during a real conversation. Each emote
+  // is a set of weighted parts; a particle's fixed index picks its part,
+  // and the part's place() maps that particle's own stable (u,v) onto a
+  // point on the part's shape, in the same cx/cy/s-proportional space
+  // everything else here uses.
+  function ringPoint(cx0, cy0, r, u) {
+    var a = u * Math.PI * 2;
+    return { x: cx0 + Math.cos(a) * r, y: cy0 + Math.sin(a) * r };
+  }
+  function rectEdgePoint(cx0, cy0, w0, h0, u, v) {
+    var edge = u * 4;
+    if (edge < 1) return { x: cx0 - w0 / 2 + v * w0, y: cy0 - h0 / 2 };
+    if (edge < 2) return { x: cx0 + w0 / 2, y: cy0 - h0 / 2 + v * h0 };
+    if (edge < 3) return { x: cx0 + w0 / 2 - v * w0, y: cy0 + h0 / 2 };
+    return { x: cx0 - w0 / 2, y: cy0 + h0 / 2 - v * h0 };
+  }
+  function headOvalPoint(pt, cx0, cy0, s0, yScale, yOffset) {
+    var phi = pt.u * Math.PI * 2, theta = pt.v * Math.PI;
+    var radX = s0 * 0.58 * Math.sin(theta), radY = s0 * 0.80 * Math.cos(theta) * (yScale || 1);
+    return { x: cx0 + radX * Math.cos(phi), y: cy0 + radY + (yOffset || 0) };
+  }
+
+  // The head silhouette is ALWAYS present in an emote (a safety/quality
+  // bound on server-generated specs -- see argus/idle_emote.py's docstring
+  // for why: worst case a generated accessory looks odd, never an
+  // unrecognizable blob, and it's true to what was actually asked for --
+  // an accessory on a recognizable Argus, not a replacement for him).
+  var HEAD_PART = { share: 0.55, place: function (pt, cx0, cy0, s0) { return headOvalPoint(pt, cx0, cy0, s0, 1, 0); } };
+
+  // Interprets one part of a spec (either a built-in fallback or a fresh
+  // one generated server-side by an LLM call through argus/idle_emote.py)
+  // against the same small primitive vocabulary the generation prompt
+  // documents -- ring/rect/arc/line/blob. An unrecognized "type" (a future
+  // model output this client doesn't understand yet) safely collapses to
+  // the face center rather than erroring.
+  function interpretPart(part, pt, cx0, cy0, s0, timeSec) {
+    var cx1 = cx0 + (part.cx || 0) * s0, cy1 = cy0 + (part.cy || 0) * s0;
+    if (part.type === "ring") return ringPoint(cx1, cy1, (part.r || 0.1) * s0, pt.u);
+    if (part.type === "rect") return rectEdgePoint(cx1, cy1, (part.w || 0.2) * s0, (part.h || 0.2) * s0, pt.u, pt.v);
+    if (part.type === "arc") {
+      var a0 = part.a0 || 0, a1 = (part.a1 !== undefined ? part.a1 : Math.PI * 2);
+      var a = a0 + pt.u * (a1 - a0);
+      return { x: cx1 + Math.cos(a) * (part.r || 0.1) * s0, y: cy1 + Math.sin(a) * (part.r || 0.1) * s0 };
+    }
+    if (part.type === "line") {
+      var x1 = cx0 + (part.x1 || 0) * s0, y1 = cy0 + (part.y1 || 0) * s0;
+      var x2 = cx0 + (part.x2 || 0) * s0, y2 = cy0 + (part.y2 || 0) * s0;
+      return { x: x1 + (x2 - x1) * pt.u, y: y1 + (y2 - y1) * pt.u };
+    }
+    if (part.type === "blob") {
+      var ang = pt.u * Math.PI * 2, rad = pt.v * (part.r || 0.1) * s0;
+      // A gentle animated wobble so a blob (steam, a puff) doesn't read as
+      // a static, obviously-computed disc.
+      var wobble = Math.sin(timeSec * 2 + pt.u * 6) * 0.08 + 1;
+      return { x: cx1 + Math.cos(ang) * rad * wobble, y: cy1 + Math.sin(ang) * rad * wobble };
+    }
+    return { x: cx0, y: cy0 };
+  }
+
+  function buildEmoteDef(spec) {
+    var parts = [HEAD_PART];
+    (spec.parts || []).forEach(function (part) {
+      parts.push({ share: part.share, place: function (pt, cx0, cy0, s0, idx, timeSec) { return interpretPart(part, pt, cx0, cy0, s0, timeSec); } });
     });
+    return { name: spec.name, parts: parts };
+  }
+
+  // A couple of cheap "funny face" beats reuse the existing named-expression
+  // system entirely (no new geometry, no network call) -- just held a beat
+  // longer than a conversational expression would be, for idle personality
+  // variety in between the fresh generated ones.
+  var IDLE_FACE_EXPRESSIONS = ["surprised", "curious", "happy"];
+
+  var activeIdleEmote = null; // { def, startedAt } | null
+  var EMOTE_RAMP_MS = 1100, EMOTE_HOLD_MS = 4500;
+
+  function scheduleNextIdleEmote() {
+    var delay = 22000 + Math.random() * 40000; // 22-62s
+    setTimeout(function () {
+      if (current === "idle" && !reduceMotion) {
+        if (Math.random() < 0.4) {
+          setExpression(IDLE_FACE_EXPRESSIONS[Math.floor(Math.random() * IDLE_FACE_EXPRESSIONS.length)], EMOTE_HOLD_MS);
+        } else {
+          // Truly one-off: asks the backend to invent a fresh accessory
+          // scene on the fly (see argus/idle_emote.py) rather than
+          // replaying from a fixed local set. Best-effort -- if the fetch
+          // fails or the console isn't wired to a live orchestrator yet,
+          // this cycle is just silently skipped, no fallback UI needed.
+          fetch("/api/idle_emote").then(function (r) { return r.json(); }).then(function (spec) {
+            if (current === "idle" && spec && spec.name && spec.parts) {
+              activeIdleEmote = { def: buildEmoteDef(spec), startedAt: performance.now() };
+            }
+          }).catch(function () {});
+        }
+      }
+      scheduleNextIdleEmote();
+    }, delay);
+  }
+  scheduleNextIdleEmote();
+
+  function idleEmoteCohesion() {
+    if (!activeIdleEmote) return null;
+    if (current !== "idle") { activeIdleEmote = null; return null; } // real interaction always wins
+    var elapsed = performance.now() - activeIdleEmote.startedAt;
+    var total = EMOTE_RAMP_MS * 2 + EMOTE_HOLD_MS;
+    if (elapsed >= total) { activeIdleEmote = null; return null; }
+    if (elapsed < EMOTE_RAMP_MS) return elapsed / EMOTE_RAMP_MS;
+    if (elapsed < EMOTE_RAMP_MS + EMOTE_HOLD_MS) return 1;
+    return 1 - (elapsed - EMOTE_RAMP_MS - EMOTE_HOLD_MS) / EMOTE_RAMP_MS;
+  }
+
+  function placeOnEmote(def, pt, idx, cx0, cy0, s0, timeSec) {
+    var roll = pt.tintSensitivity; // stable per-particle, reused as a part-picker
+    var acc = 0;
+    for (var pi = 0; pi < def.parts.length; pi++) {
+      acc += def.parts[pi].share;
+      if (roll < acc) return def.parts[pi].place(pt, cx0, cy0, s0, idx, timeSec);
+    }
+    return { x: cx0, y: cy0 };
   }
 
   function drawHead() {
@@ -906,36 +1119,20 @@
     var w = rect.width, h = rect.height;
     var cx = w / 2, cy = h / 2 + h * 0.03;
     var s = Math.min(w, h) * 0.42;
-    var p = stateParams();
+    var timeSec = t * 0.016;
+    var targetEnergy = faceStateTarget();
+    var lerpRate = reduceMotion ? 0.2 : 0.08;
+    faceEnergy.cohesion += (targetEnergy.cohesion - faceEnergy.cohesion) * lerpRate;
+    faceEnergy.density += (targetEnergy.density - faceEnergy.density) * lerpRate;
+    faceEnergy.jitter += (targetEnergy.jitter - faceEnergy.jitter) * lerpRate;
+    faceEnergy.swirl += (targetEnergy.swirl - faceEnergy.swirl) * lerpRate;
 
     hctx.clearRect(0, 0, w, h);
     hctx.fillStyle = "#030405";
     hctx.fillRect(0, 0, w, h);
 
-    var jx = (Math.random() - 0.5) * p.jitter * (reduceMotion ? 0 : 1);
-    var jy = (Math.random() - 0.5) * p.jitter * 0.4 * (reduceMotion ? 0 : 1);
     var bob = Math.sin(t * 0.02) * (current === "idle" ? 3 : 1.4);
-
-    hctx.save();
-    hctx.globalAlpha = 0.05;
-    hctx.fillStyle = "#4FE1FF";
-    pathHead(hctx, cx, cy + bob, s, jx, jy);
-    hctx.fill();
-    hctx.restore();
-
-    var split = reduceMotion ? 0 : p.split;
-    hctx.globalCompositeOperation = "lighter";
-    hctx.lineWidth = 1.3;
-    [
-      { dx: -split, color: "rgba(79,225,255,0.85)" },
-      { dx: split, color: "rgba(255,62,94,0.75)" },
-      { dx: 0, color: "rgba(234,243,255,0.95)" }
-    ].forEach(function (layer) {
-      hctx.strokeStyle = layer.color;
-      pathHead(hctx, cx, cy + bob, s, jx + layer.dx, jy);
-      hctx.stroke();
-    });
-    hctx.globalCompositeOperation = "source-over";
+    var cyBobbed = cy + bob;
 
     // Mouth: real IPA-phoneme-derived shape (Cartesia) when available, else
     // a real amplitude envelope, else a brief synthetic fallback for the
@@ -956,86 +1153,48 @@
     var smoothing = current === "speaking" ? 0.4 : 0.15;
     mouthShape.open += (target.open - mouthShape.open) * smoothing;
     mouthShape.width += (target.width - mouthShape.width) * smoothing;
+    var mouthOpenPx = mouthShape.open * s * 0.55;
 
-    var mouthY = cy + bob + 0.55 * s;
-    var mouthW = Math.max(0.08, mouthShape.width) * s * 0.85;
-    var mouthH = Math.max(0.03, mouthShape.open) * s * 0.34 * p.mouthAmp / 0.34;
-    hctx.fillStyle = "#8FD4FF";
-    hctx.shadowColor = "#4FE1FF";
-    hctx.shadowBlur = current === "speaking" ? 10 : 3;
-    hctx.fillRect(cx - mouthW / 2 + jx, mouthY - mouthH / 2, mouthW, Math.max(1.5, mouthH));
-    hctx.shadowBlur = 0;
-
-    // Eyes: two small filled shapes with an idle blink cycle plus a cheap
-    // expression boost (wider on "!", a touch wider+longer on "?") from
-    // whatever's actually being said -- no sentiment ML, just immediate,
-    // legible feedback.
     var mood = currentMoodFactor();
     var blink = blinkFactor();
     var expr = currentExpressionParams();
-    var eyeY = cy + bob - 0.40 * s;
-    var eyeDX = 0.30 * s;
-    var eyeRX = 0.045 * s * (1 + mood * 0.35) * expr.eyeScaleX;
-    var eyeRY = 0.045 * s * (1 + mood * 0.35) * expr.eyeScaleY;
-    var eyeH = Math.max(0.6, blink) * eyeRY;
-    hctx.fillStyle = expr.tint;
-    hctx.shadowColor = expr.tint;
-    hctx.shadowBlur = 4;
-    [-1, 1].forEach(function (side) {
-      hctx.beginPath();
-      hctx.ellipse(cx + side * eyeDX + jx, eyeY + jy, eyeRX, eyeH, 0, 0, Math.PI * 2);
-      hctx.fill();
-    });
-    hctx.shadowBlur = 0;
+    var isNeutral = expr.tint === EXPRESSIONS.neutral.tint;
+    var tintColor = isNeutral ? FACE_BASE_RGB : parseTintRgb(expr.tint);
+    var tintRatio = isNeutral ? 0 : 0.62;
+    var emoteCohesion = idleEmoteCohesion();
+    var visibleCount = Math.floor(FACE_PARTICLE_COUNT * Math.max(faceEnergy.density, emoteCohesion ? 0.78 : 0));
 
-    // Brows: two independently-tiltable segments above each eye, driven by
-    // the same named-expression params -- angry pinches them down toward
-    // center, scared/surprised raise them, curious raises only one side.
-    var browY = eyeY - 0.16 * s;
-    var browLen = 0.16 * s;
-    hctx.strokeStyle = expr.tint;
-    hctx.lineWidth = 2;
-    hctx.lineCap = "round";
-    [-1, 1].forEach(function (side, i) {
-      var angle = expr.browAngle * side * (expr.asymmetric && i === 0 ? -1 : 1);
-      var raise = expr.browRaise * s * (expr.asymmetric && i === 0 ? 0.2 : 1);
-      var bx = cx + side * eyeDX + jx;
-      var by = browY + jy - raise;
-      var innerX = bx - side * browLen / 2, innerY = by + Math.sin(angle) * browLen / 2;
-      var outerX = bx + side * browLen / 2, outerY = by - Math.sin(angle) * browLen / 2;
-      hctx.beginPath();
-      hctx.moveTo(innerX, innerY);
-      hctx.lineTo(outerX, outerY);
-      hctx.stroke();
-    });
-
-    hctx.globalAlpha = 1;
-    var lineGap = 3;
-    hctx.fillStyle = "rgba(0,0,0,0.35)";
-    for (var y = 0; y < h; y += lineGap) hctx.fillRect(0, y, w, 1);
-
-    var bandY = ((t * p.scanSpeed) % (h + 60)) - 30;
-    var grad = hctx.createLinearGradient(0, bandY - 20, 0, bandY + 20);
-    grad.addColorStop(0, "rgba(143,212,255,0)");
-    grad.addColorStop(0.5, "rgba(143,212,255,0.10)");
-    grad.addColorStop(1, "rgba(143,212,255,0)");
-    hctx.fillStyle = grad;
-    hctx.fillRect(0, bandY - 20, w, 40);
-
-    if (!reduceMotion && Math.random() < p.flicker * 0.15) {
-      hctx.fillStyle = "rgba(234,243,255,0.06)";
-      hctx.fillRect(0, 0, w, h);
+    for (var i = 0; i < visibleCount; i++) {
+      var pt = faceParticles[i];
+      var pos;
+      if (emoteCohesion !== null) {
+        // A random idle-only bit is performing -- particles target the
+        // emote's own shape (glasses+book, a mug, etc.) instead of the
+        // normal face, blended in/out through the same idle-drift cloud
+        // the ordinary idle state already dissipates into.
+        var emoteTarget = placeOnEmote(activeIdleEmote.def, pt, i, cx, cyBobbed, s, timeSec);
+        var drift = driftPosition(pt, cx, cyBobbed, s, timeSec);
+        pos = {
+          x: drift.x * (1 - emoteCohesion) + emoteTarget.x * emoteCohesion,
+          y: drift.y * (1 - emoteCohesion) + emoteTarget.y * emoteCohesion,
+          depth: Math.sin(pt.u * Math.PI * 2)
+        };
+      } else {
+        pos = particleTarget(pt, cx, cyBobbed, s, timeSec, faceEnergy.swirl, mouthOpenPx);
+      }
+      var useTint = pt.tintSensitivity < tintRatio;
+      var r = useTint ? tintColor.r : FACE_BASE_RGB.r;
+      var g = useTint ? tintColor.g : FACE_BASE_RGB.g;
+      var b = useTint ? tintColor.b : FACE_BASE_RGB.b;
+      var cohesionForAlpha = emoteCohesion !== null ? emoteCohesion : faceEnergy.cohesion;
+      var alpha = ((pos.depth + 1) / 2 * 0.6 + 0.35) * (cohesionForAlpha * 0.4 + 0.6) * (1 + mood * 0.15);
+      hctx.fillStyle = "rgba(" + r + "," + g + "," + b + "," + Math.min(1, alpha) + ")";
+      hctx.fillRect(pos.x - pt.size / 2, pos.y - pt.size / 2, pt.size, pt.size);
     }
 
-    if (!reduceMotion && Math.random() < p.tearProb) {
-      var bandH = 6 + Math.random() * 22;
-      var by = Math.random() * (h - bandH);
-      var shift = (Math.random() - 0.5) * 26;
-      try {
-        hctx.drawImage(headCanvas, 0, by * dpr, w * dpr, bandH * dpr, shift, by, w, bandH);
-      } catch (e) { /* ignore if canvas not ready */ }
-      hctx.fillStyle = Math.random() < 0.5 ? "rgba(79,225,255,0.5)" : "rgba(255,62,94,0.4)";
-      hctx.fillRect(0, by, w, 1.4);
+    if (emoteCohesion === null) {
+      drawFaceEyes(cx, cyBobbed, s, faceEnergy.cohesion, expr, blink);
+      drawLiquidLipSeam(cx, cyBobbed, s, mouthOpenPx, expr.tint, faceEnergy.cohesion, expr.browAngle);
     }
 
     t += 1;

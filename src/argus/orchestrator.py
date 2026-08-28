@@ -240,6 +240,13 @@ class Orchestrator:
         self.last_model: str | None = None
         self.last_expression: str | None = None
 
+        # Lets UI-server endpoints that need their own LLM call (e.g. idle
+        # emote generation) reach the SAME router this conversation uses,
+        # not a second untracked one -- see ui/commands.py's active-router
+        # registry for why that matters (shared cost governor).
+        from argus.ui import commands as ui_commands
+        ui_commands.set_active_router(self.router)
+
     def _show_expression(self, name: str) -> None:
         self.last_expression = name
         ui_events.publish({"type": "expression", "value": name})

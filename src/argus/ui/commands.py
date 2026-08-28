@@ -170,3 +170,25 @@ def wait_for_confirmation(request_id: int, timeout: float) -> bool | None:
             continue
         if resp_id == request_id:
             return allowed
+
+
+# ---------- active router registry ----------
+# The UI server (argus/ui/server.py) runs fully decoupled from any specific
+# Orchestrator -- it only ever reads the in-memory event bus, and whichever
+# process actually creates an Orchestrator (chat, voice) does so on its own.
+# For a server endpoint that needs to make its own LLM call (idle-emote
+# generation), it needs SOME live router to call through -- and it must be
+# THE SAME router the running conversation uses, not a second one, so spend
+# stays on the one shared cost governor/daily cap. Orchestrator.__init__
+# registers itself here; the endpoint reads it back, defensively, since a
+# bare UI-only preview (no orchestrator running yet) has none.
+_active_router = None
+
+
+def set_active_router(router) -> None:
+    global _active_router
+    _active_router = router
+
+
+def get_active_router():
+    return _active_router

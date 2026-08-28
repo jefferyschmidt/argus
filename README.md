@@ -23,6 +23,29 @@ turn, reports it, and keeps the session alive instead of dying. Live-verified
 end to end against the real Anthropic API with a real camera capture (the
 exact reported scenario) -- correct description back, no crash.
 
+**Console UI pass, 2026-08-28**: rebuilt Argus's face
+(`argus/ui/static/index.html`) as a bio-luminescent particle-swarm
+avatar -- ported from a design explored with Gemini, replacing the
+wireframe/CRT-glitch head. ~900 particles dissipate to a loose cloud at
+idle and coalesce into a face as engagement ramps up (idle -> listening ->
+thinking -> speaking, each with its own cohesion/density/jitter/swirl
+energy), tint toward the active named expression's color, and the mouth is
+still driven by the same real Cartesia viseme/amplitude data as before.
+Also added **idle emotes**: while genuinely idle, Argus occasionally forms
+a small one-off "accessory" scene -- a hat, glasses, whatever -- generated
+FRESH by an LLM call each time (`argus/idle_emote.py`, `/api/idle_emote`),
+not replayed from a fixed set, with the base head silhouette always kept
+client-side as a safety/quality bound on what a generation can do, and a
+hand-authored fallback spec used if generation fails or the console isn't
+wired to a live orchestrator. Also fixed three real UX papercuts flagged
+live: the console now opens in a real new window (`webbrowser.open_new`,
+not `.open`, which just let the browser decide and usually meant a buried
+tab); the live caption box now shows the FULL current reply and scrolls
+internally instead of discarding everything but the last two sentences;
+and the console's wake-word flag no longer claims `hey_jarvis_v0.1` is
+active when the local engine (which uses no trained model at all) is
+actually running.
+
 Phase 1: core orchestration loop + memory, text-only chat. See the roadmap
 below for what's next.
 

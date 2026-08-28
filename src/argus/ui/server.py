@@ -28,10 +28,35 @@ def config() -> dict:
         "piper_voice": settings.piper_voice,
         "cartesia_active": bool(settings.cartesia_api_key),
         "cartesia_voice_id": settings.cartesia_voice_id if settings.cartesia_api_key else None,
-        "wake_word_model": settings.wake_word_model,
+        "wake_word_engine": settings.wake_word_engine,
+        # Only meaningful for the openwakeword engine -- reporting this
+        # unconditionally used to leave the console showing "hey_jarvis_v0.1"
+        # even after the local engine (which doesn't use any trained model
+        # at all) became the default, actively misleading about what's
+        # actually running.
+        "wake_word_model": settings.wake_word_model if settings.wake_word_engine == "openwakeword" else None,
         "followup_window_seconds": settings.followup_window_seconds,
         "daily_budget_usd": settings.daily_budget_usd,
     }
+
+
+@app.get("/api/idle_emote")
+def idle_emote() -> dict:
+    """Generates one fresh, one-off idle-emote spec (see argus/idle_emote.py)
+    for the console's particle face to briefly form while genuinely idle.
+    No orchestrator running yet (e.g. a bare UI preview) -- fall back to a
+    random built-in spec rather than erroring; the console already treats
+    this as best-effort."""
+    from argus.idle_emote import generate_idle_emote
+
+    router = ui_commands.get_active_router()
+    if router is None:
+        import random
+
+        from argus.idle_emote import _FALLBACK_SPECS
+
+        return random.choice(_FALLBACK_SPECS)
+    return generate_idle_emote(router)
 
 
 @app.post("/api/stop_listening")
