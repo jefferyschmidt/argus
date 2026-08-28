@@ -1,6 +1,7 @@
 import logging
 
 from argus.tools.base import PermissionTier, Tool
+from argus.tools.calendar import create_calendar_event_tool, list_calendar_events_tool
 from argus.tools.desktop import (
     capture_camera_tool,
     click_tool,
@@ -55,6 +56,8 @@ def build_default_registry() -> ToolRegistry:
         search_journal_tool,
         list_recent_emails_tool,
         send_email_tool,
+        list_calendar_events_tool,
+        create_calendar_event_tool,
         create_scheduled_routine_tool,
         list_scheduled_routines_tool,
         cancel_scheduled_routine_tool,

@@ -123,6 +123,16 @@ class Settings(BaseSettings):
     email_watch_enabled: bool = True
     email_watch_poll_seconds: float = 120.0
 
+    # Google Calendar (argus/google_calendar.py) -- real OAuth2, not the
+    # browser-automation approach used for the rest of Google Calendar's
+    # sibling features here; the user asked for the API specifically once
+    # they saw the tradeoff. From a Google Cloud Console OAuth client
+    # (type: Desktop app) with the Calendar API enabled. One-time setup:
+    # `argus calendar auth` opens a browser once for consent, then stores
+    # a refresh token in data/ -- never re-prompts after that.
+    google_calendar_client_id: str = ""
+    google_calendar_client_secret: str = ""
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir

@@ -78,12 +78,12 @@ calls (with real generated images), memory, and routing/spend.
 7. ~~Email~~ -- read (IMAP, argus/email_watcher.py -- see the proactive-
    context-style writeup further down) and send (SMTP, send_email tool in
    argus/tools/email.py, same app-password credentials work for both, no
-   extra setup). ~~Google Calendar~~ -- no dedicated tool/OAuth; at the
-   user's direction, uses desktop control against calendar.google.com in
-   an already-signed-in browser instead (system prompt guidance in
-   orchestrator.py), trading a real API's reliability for zero setup
-   friction. Yahoo Calendar has no viable third-party API anymore,
-   skipped. ~~Amazon order tracking~~ -- same browser-automation pattern
+   extra setup). ~~Google Calendar~~ -- real OAuth2 API access
+   (argus/google_calendar.py, list_calendar_events/create_calendar_event
+   tools), not browser automation -- one-time `argus calendar auth` after
+   setting GOOGLE_CALENDAR_CLIENT_ID/SECRET from a Cloud Console OAuth
+   client, then silent after that. Yahoo Calendar has no viable third-
+   party API anymore, skipped. ~~Amazon order tracking~~ -- same browser-automation pattern
    (amazon.com/gp/css/order-history): checking status/delivery/tracking
    is fine unsupervised, but placing or completing any purchase is a hard
    no regardless of how it's asked -- that's a real financial transaction

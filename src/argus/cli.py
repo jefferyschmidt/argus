@@ -207,6 +207,25 @@ def backup_restore(path: str) -> None:
     console.print(f"Restored {result['entries']} files from backup.")
 
 
+def calendar_auth() -> None:
+    from argus.google_calendar import NotAuthorized, is_configured, run_oauth_flow
+
+    if not is_configured():
+        console.print(
+            "[red]GOOGLE_CALENDAR_CLIENT_ID and GOOGLE_CALENDAR_CLIENT_SECRET must be set in .env first.[/red]\n"
+            "From Google Cloud Console: enable the Calendar API, create an OAuth client "
+            "(type: Desktop app), and put the client ID/secret in .env."
+        )
+        return
+    console.print("Opening a browser for Google sign-in and consent...")
+    try:
+        run_oauth_flow()
+    except NotAuthorized as e:
+        console.print(f"[red]{e}[/red]")
+        return
+    console.print("[green]Authorized.[/green] Argus can now read and create calendar events.")
+
+
 def _make_dpi_aware() -> None:
     """Without this, a scaled Windows display (anything above 100%) puts
     pyautogui's screenshot/click coordinates in two DIFFERENT spaces --
@@ -254,6 +273,10 @@ def main() -> None:
     restore_parser = sub.add_parser("restore", help="Restore memory from an encrypted backup")
     restore_parser.add_argument("path", help="Path to the backup file")
 
+    calendar_parser = sub.add_parser("calendar", help="Google Calendar setup")
+    calendar_sub = calendar_parser.add_subparsers(dest="calendar_command")
+    calendar_sub.add_parser("auth", help="One-time OAuth authorization for Google Calendar")
+
     args = parser.parse_args()
 
     if args.command == "memory" and args.memory_command == "review":
@@ -270,6 +293,10 @@ def main() -> None:
         backup_create(args.path)
     elif args.command == "restore":
         backup_restore(args.path)
+    elif args.command == "calendar" and args.calendar_command == "auth":
+        calendar_auth()
+    elif args.command == "calendar":
+        calendar_parser.print_help()
     elif args.command == "voice":
         voice()
     elif args.command == "agent":
