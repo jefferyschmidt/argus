@@ -40,8 +40,16 @@ class Settings(BaseSettings):
     user_location: str = ""
 
     # Voice (Phase 3). openWakeWord ships a few pretrained wake words but not
-    # "Argus" -- hey_jarvis_v0.1 is the closest bundled model until a custom
-    # one is trained (see README). Swap via WAKE_WORD_MODEL once you have one.
+    # "Argus" -- hey_jarvis_v0.1 is the closest bundled model, and training a
+    # real custom one needs hours of CPU training + multi-GB downloads (see
+    # README). "local" is the default instead: no trained model at all,
+    # Silero VAD + local (never cloud) Whisper transcription-and-match on
+    # each detected speech burst -- zero ongoing API cost, zero training,
+    # at the cost of a beat of latency vs. a streaming classifier. See
+    # argus/voice/local_wake_word.py. Set to "openwakeword" to use the
+    # trained-classifier path instead (lower latency, needs wake_word_model
+    # to actually be "argus" once/if a custom one gets trained).
+    wake_word_engine: str = "local"
     wake_word_model: str = "hey_jarvis_v0.1"
     wake_word_threshold: float = 0.5
     # "base" (multilingual), not "base.en" -- the ".en" variants are

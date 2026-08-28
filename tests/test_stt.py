@@ -41,6 +41,20 @@ def test_falls_back_to_local_when_groq_raises():
     assert result == "fallback text"
 
 
+def test_transcribe_local_is_public_and_callable_directly():
+    """LocalWakeWordListener calls this directly and deliberately, never
+    through transcribe()/Groq -- confirms the public rename didn't just
+    move the name but kept it independently callable."""
+    t = Transcriber.__new__(Transcriber)
+    fake_segment = MagicMock(text="argus what time is it")
+    t._local_model = MagicMock()
+    t._local_model.transcribe.return_value = ([fake_segment], None)
+
+    result = t.transcribe_local(_samples())
+
+    assert result == "argus what time is it"
+
+
 def test_to_wav_bytes_produces_a_valid_wav_header():
     wav_bytes = _to_wav_bytes(_samples(), sample_rate=16000)
     assert wav_bytes[:4] == b"RIFF"

@@ -32,6 +32,13 @@ _EMAIL_CHECK_PHRASES = ("check my email", "check my mail", "any new email", "any
 _EMAIL_WATCH_OFF_PHRASES = ("stop checking my email", "stop watching my email", "email watch off")
 _EMAIL_WATCH_ON_PHRASES = ("check my email again", "start checking my email", "email watch on")
 _BARGE_IN_HOLD_FRAMES = 3  # ~240ms of sustained energy (at 80ms/chunk) before hot-mic barge-in fires
+# Local wake-word engine has no streaming per-frame classifier to reuse for
+# non-hot-mic barge-in (it only ever knows the wake word after transcribing
+# a full utterance -- see LocalWakeWordListener). Approximates the same
+# intent as the openWakeWord score threshold (outside the hot-mic grace
+# window, only sustained deliberate speech interrupts) with RMS+VAD and a
+# longer hold than hot-mic's, since there's no wake-word-quality gate here.
+_NON_HOT_MIC_LOCAL_BARGE_IN_HOLD_FRAMES = 6  # ~480ms
 _LIKELY_ADDRESSED = re.compile(
     r"^(argus|hey\s+argus|can|could|would|will|are|do|does|did|is|"
     r"what|why|how|when|where|who|please)\b",
@@ -71,10 +78,23 @@ class VoiceLoop:
       needs to phonetically match.
     Say "stop listening" to end the hot-mic window early."""
 
+    @staticmethod
+    def _build_wake_word_listener():
+        """settings.wake_word_engine picks between the two wake-word
+        implementations: "local" (default) needs no trained model and
+        makes zero ongoing API calls (see LocalWakeWordListener),
+        "openwakeword" uses the trained-classifier path (lower latency,
+        needs wake_word_model to actually be an "argus" model once/if one
+        gets trained -- currently still the bundled hey_jarvis placeholder)."""
+        if settings.wake_word_engine == "local":
+            from argus.voice.local_wake_word import LocalWakeWordListener
+            return LocalWakeWordListener()
+        return WakeWordListener()
+
     def __init__(self, orchestrator: Orchestrator | None = None):
         console.print("[dim]Loading voice models (wake word, STT, TTS)...[/dim]")
         self.orchestrator = orchestrator or Orchestrator()
-        self.wake_word = WakeWordListener()
+        self.wake_word = self._build_wake_word_listener()
         self.transcriber = Transcriber()
         self.speaker = build_speaker()
         from argus.voice.speech_detector import SpeechDetector
@@ -246,15 +266,27 @@ class VoiceLoop:
 
                 wake_chunks: list = []
                 stop_watcher = self._start_hearing_watcher(wake_chunks)
-                samples = self.wake_word.listen_for_wake_and_command(on_wake=_on_wake, chunks_out=wake_chunks)
+                samples, wake_command_text = self.wake_word.listen_for_wake_and_command(
+                    on_wake=_on_wake, chunks_out=wake_chunks
+                )
                 stop_watcher.set()
             except KeyboardInterrupt:
                 break
 
             # The wake-word-triggered command is always explicit intent --
-            # no addressee check needed.
+            # no addressee check needed. wake_command_text is only ever set
+            # by the local engine (see LocalWakeWordListener) -- it means
+            # the command was already said in the SAME breath as the wake
+            # word ("Argus, what time is it") and already transcribed
+            # locally as part of detecting the wake word itself, so pass it
+            # straight through instead of transcribing samples all over
+            # again (that second pass would otherwise hit Groq, defeating
+            # the entire point of the local engine).
             with self._interaction_lock:
-                processed = self._process_utterance(samples, check_addressee=False)
+                if wake_command_text:
+                    processed = self._process_utterance(text=wake_command_text, check_addressee=False)
+                else:
+                    processed = self._process_utterance(samples, check_addressee=False)
             if not processed:
                 console.print("[dim](heard nothing, back to listening)[/dim]\n")
                 continue
@@ -661,12 +693,20 @@ class VoiceLoop:
         import sounddevice as sd
 
         hot_mic = self._hot_mic_active()
+        # The local wake-word engine has no per-frame classifier at all
+        # (see LocalWakeWordListener) -- it only ever knows the wake word
+        # after transcribing a whole utterance, far too slow to drive
+        # frame-by-frame barge-in. Falls back to the same RMS+VAD approach
+        # hot-mic mode already uses, just with a stricter hold requirement
+        # (see _NON_HOT_MIC_LOCAL_BARGE_IN_HOLD_FRAMES) standing in for the
+        # "must sound wake-word-quality" gate openWakeWord's score provided.
+        using_local_engine = settings.wake_word_engine == "local"
 
         # Without this, leftover prediction state from the wake-word model's
         # (or the VAD's own recurrent state's) last real detection can
         # cause an immediate spurious trigger here.
         self.wake_word.reset()
-        if hot_mic:
+        if hot_mic or using_local_engine:
             self.speech_detector.reset()
 
         # openWakeWord's embedding model scores over a rolling ~1.3s window.
@@ -674,8 +714,9 @@ class VoiceLoop:
         # against it produced sharp spurious near-1.0 triggers within the
         # first 1-2 frames in testing -- an artifact of the cold buffer, not
         # real audio. Feed the model during warm-up without acting on scores
-        # (skip entirely in hot-mic mode -- it doesn't use wake-word scoring).
-        warmup_chunks = 0 if hot_mic else 16  # ~1.28s at 80ms/chunk
+        # (skip entirely in hot-mic mode, or when there's no such model to
+        # warm up at all).
+        warmup_chunks = 0 if (hot_mic or using_local_engine) else 16  # ~1.28s at 80ms/chunk
         chunk = 1280
         # A single loud 80ms frame (a cough, a click, speaker/echo bleed) was
         # enough to stop Argus mid-sentence -- reported live as "he keeps
@@ -683,6 +724,7 @@ class VoiceLoop:
         # for a few consecutive frames before treating it as real speech;
         # genuine speech onset easily clears this, transient noise doesn't.
         hot_mic_speech_run = 0
+        non_hot_mic_speech_run = 0
         with sd.InputStream(samplerate=16000, channels=1, dtype="int16", blocksize=chunk) as stream:
             for _ in range(warmup_chunks):
                 if not play_thread.is_alive():
@@ -709,6 +751,19 @@ class VoiceLoop:
                             return True
                     else:
                         hot_mic_speech_run = 0
+                    continue
+
+                if using_local_engine:
+                    rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
+                    if rms > settings.voice_silence_rms_threshold and self.speech_detector.is_speech(frame):
+                        non_hot_mic_speech_run += 1
+                        if non_hot_mic_speech_run >= _NON_HOT_MIC_LOCAL_BARGE_IN_HOLD_FRAMES:
+                            console.print("[yellow](barge-in: heard you)[/yellow]")
+                            log.info("local-engine barge-in triggered at rms=%.1f", rms)
+                            stop_event.set()
+                            return True
+                    else:
+                        non_hot_mic_speech_run = 0
                     continue
 
                 score = self.wake_word.score_frame(frame)

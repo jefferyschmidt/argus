@@ -35,10 +35,15 @@ class WakeWordListener:
                 if any(score > settings.wake_word_threshold for score in scores.values()):
                     return
 
-    def listen_for_wake_and_command(self, on_wake=None, chunks_out: list | None = None) -> np.ndarray:
+    def listen_for_wake_and_command(self, on_wake=None, chunks_out: list | None = None) -> tuple[np.ndarray, str | None]:
         """Blocks for the wake word, then records the command that follows
         on the SAME audio stream (no reopen gap, so nothing spoken right
-        after the wake word gets clipped). Returns int16 mono samples.
+        after the wake word gets clipped). Returns (samples, None) -- int16
+        mono samples plus a command-text slot that's always None here
+        (openWakeWord only ever detects the wake word itself, never
+        transcribes anything, so it has no pre-transcribed text to offer;
+        the None just keeps this engine's return shape interchangeable
+        with LocalWakeWordListener's, which sometimes does).
 
         chunks_out: optional list that command-phase frames are appended
         into as they're captured, so a caller running on another thread can
@@ -88,7 +93,8 @@ class WakeWordListener:
                     if silence_run >= _SILENCE_HANG_CHUNKS:
                         break
 
-        return np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)
+        samples = np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)
+        return samples, None
 
     def reset(self) -> None:
         """Clears the model's internal rolling-prediction state. Call this

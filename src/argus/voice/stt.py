@@ -56,7 +56,7 @@ class Transcriber:
             except Exception:
                 log.exception("Groq STT failed; falling back to local Whisper for this utterance")
 
-        return self._transcribe_local(samples)
+        return self.transcribe_local(samples)
 
     def _transcribe_groq(self, samples: np.ndarray) -> str:
         wav_bytes = _to_wav_bytes(samples, settings.audio_sample_rate)
@@ -68,7 +68,11 @@ class Transcriber:
         )
         return (response.text or "").strip()
 
-    def _transcribe_local(self, samples: np.ndarray) -> str:
+    def transcribe_local(self, samples: np.ndarray) -> str:
+        """Public (not just an internal fallback) -- LocalWakeWordListener
+        calls this directly and deliberately, never Groq, since the entire
+        point of local wake-word detection is zero ongoing cloud API calls
+        while idle."""
         audio = samples.astype(np.float32) / 32768.0
         kwargs = {"language": settings.stt_language} if settings.stt_language else {}
         segments, _ = self._local().transcribe(audio, **kwargs)

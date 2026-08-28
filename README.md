@@ -365,13 +365,47 @@ calls (with real generated images), memory, and routing/spend.
 
 ### Later / not yet scoped
 
-- Smarter conversational listening: after the wake word, distinguish speech
+- ~~Smarter conversational listening: after the wake word, distinguish speech
   actually directed at Argus from ambient conversation/background noise,
-  rather than relying on a fixed follow-up timeout. Likely needs the LLM
-  itself judging addressee intent from the transcript, not just VAD timing.
-- Custom "Argus" wake-word model (currently using openWakeWord's bundled
+  rather than relying on a fixed follow-up timeout.~~ The addressee-judgment
+  half was already done (`_seems_addressed_to_argus`, heuristic + local-LLM
+  fallback, gates every follow-up-window utterance). Confirmed against a
+  real precedent (a family member's own similar assistant project) that
+  this is genuinely the same pattern other real implementations converge
+  on -- no further work needed here specifically.
+- ~~Custom "Argus" wake-word model (currently using openWakeWord's bundled
   hey_jarvis_v0.1 as a placeholder) -- deferred; real chunk of work
-  (synthetic training data, negative-audio dataset, slow CPU training).
+  (synthetic training data, negative-audio dataset, slow CPU training).~~
+  Solved differently, and better-fit to the actual constraint that
+  mattered: no continued external API calls monitoring for the wake word,
+  ever, not even a cheap one. `WAKE_WORD_ENGINE=local` (new default --
+  argus/voice/local_wake_word.py) runs Silero VAD continuously (already a
+  dependency for barge-in, ~0.5ms/chunk on this hardware -- effectively
+  free) to notice real speech, and only then runs *local* faster-whisper
+  (never Groq) on that clip and regex-matches "argus"/"argos"/"arcus"
+  (common mishearings) as a whole word. Zero training, zero downloads
+  beyond what Whisper needed anyway, zero ongoing cost or cloud exposure
+  while idle. Trade-off, stated plainly: a beat of transcribe-then-match
+  latency vs. a streaming classifier's near-instant per-frame score --
+  accepted deliberately once the cost/privacy profile of the alternatives
+  (custom training, or continuous cloud STT) were weighed against it.
+  A real side benefit, not just a workaround: since the wake word is
+  detected by transcribing the WHOLE utterance it was spoken in, "Argus,
+  what time is it" arrives as one already-transcribed clip -- no separate
+  command-recording phase needed when the command's said in the same
+  breath as the wake word (see VoiceLoop.run's wake_command_text
+  passthrough). The openWakeWord path is kept intact and selectable
+  (`WAKE_WORD_ENGINE=openwakeword`) for lower latency if a real "argus"
+  model ever does get trained later. Non-hot-mic barge-in (interrupting
+  Argus mid-reply outside the post-interaction grace window) needed its
+  own fallback under the local engine, since there's no streaming
+  classifier to reuse there either -- approximated with the same RMS+VAD
+  gate hot-mic mode already used, just a stricter hold requirement.
+  Live-verified end to end on real synthesized speech ("Argus, what time
+  is it," via Windows SAPI TTS, not a mock): Silero VAD correctly flagged
+  it as speech and true silence as not; the real local Whisper model
+  transcribed it exactly, the wake pattern matched, and "What time is it?"
+  was correctly extracted as the command.
 - ~~Investigate why time-to-first-sentence in streaming mode is slower than
   expected (~13s in one live test) -- likely system-prompt size or API
   latency, not a code regression, but worth profiling separately.~~
