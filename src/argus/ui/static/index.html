@@ -1415,25 +1415,52 @@
     var cyBobbed = cy + bob;
 
     // Mouth: real IPA-phoneme-derived shape (Cartesia) when available, else
-    // a real amplitude envelope, else a brief synthetic fallback for the
-    // first frame or two before either arrives. Smoothed toward its target
-    // each frame rather than snapping, so shape changes read as motion.
-    var target = current === "speaking" ? currentVisemeTarget() : null;
-    if (!target) {
-      var realAmp = current === "speaking" ? currentMouthAmp() : null;
-      if (realAmp !== null) {
-        target = { open: Math.max(0.04, realAmp) * 2.2, width: 0.45 };
-      } else if (current === "speaking") {
-        var synth = Math.abs(Math.sin(t * 0.9) * 0.5 + Math.sin(t * 2.3 + 1.4) * 0.35 + Math.sin(t * 5.1) * 0.15);
-        target = { open: Math.max(0.05, synth), width: 0.45 };
-      } else {
-        target = { open: 0.15 * (0.5 + 0.5 * Math.sin(t * 0.05)), width: 0.4 };
+    // the real amplitude envelope, else -- only when neither has arrived yet
+    // -- a gentle synthetic cadence. Smoothed toward its target each frame
+    // rather than snapping, so shape changes read as motion.
+    var target = null;
+    if (current === "speaking") {
+      target = currentVisemeTarget();
+      if (!target) {
+        var realAmp = currentMouthAmp();
+        if (realAmp !== null) {
+          // Capped at open_wide's own value. The envelope is normalized to
+          // this utterance's peak, so the old bare *2.2 drove the loudest
+          // syllable of every reply to more than twice the widest real
+          // viseme -- a ~150px gape on a ~250px face, which is what "his
+          // mouth opens too big" was.
+          target = { open: Math.min(1, Math.max(0.04, realAmp) * 1.5), width: 0.45 };
+        } else if (speakVisemes || speakEnvelope) {
+          // We have real timing for this utterance and it says the audio
+          // already finished -- rest the mouth. This is the big one: the
+          // "speaking" state persists through the gap between sentences
+          // (measured median 1.8s), and falling through to the synthetic
+          // cadence there is exactly the "rapidly oscillates open and
+          // closed while he's NOT talking" report.
+          target = VISEME_SHAPES.silence;
+        } else {
+          // Genuinely nothing to go on yet -- the first frames before the
+          // speaking event's viseme/envelope data arrives. Driven off
+          // timeSec (real seconds) rather than the raw frame counter: the
+          // old version summed sin(t*0.9)+sin(t*2.3)+sin(t*5.1) on a
+          // per-FRAME t, which at 60fps is 8.6Hz + 22Hz + 48.7Hz -- the
+          // last two above the 30Hz Nyquist limit, so they aliased into
+          // per-frame noise rather than anything mouth-like.
+          target = { open: 0.30 + 0.14 * Math.sin(timeSec * 11), width: 0.45 };
+        }
       }
+    }
+    if (!target) {
+      target = { open: 0.15 * (0.5 + 0.5 * Math.sin(timeSec * 3)), width: 0.4 };
     }
     var smoothing = current === "speaking" ? 0.4 : 0.15;
     mouthShape.open += (target.open - mouthShape.open) * smoothing;
     mouthShape.width += (target.width - mouthShape.width) * smoothing;
-    var mouthOpenPx = mouthShape.open * s * 0.55;
+    // 0.40, not the original 0.55: drawLiquidLipSeam extends the lower lip
+    // another 1.4x below this, so 0.55 put a fully-open "ah" nearly 100px
+    // down a ~250px face. This keeps the full viseme range intact, just at
+    // a mouth-sized scale.
+    var mouthOpenPx = mouthShape.open * s * 0.40;
 
     var mood = currentMoodFactor();
     var blink = blinkFactor();

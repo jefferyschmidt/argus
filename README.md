@@ -10,6 +10,38 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed, 2026-08-28 (mouth opened far too wide, and flapped constantly
+while silent)**: reported live. Argus had diagnosed parts of this himself
+in an earlier session but never landed a fix; one of his three claims was
+also wrong (he blamed the 0.15 smoothing factor for "overshooting" --
+exponential smoothing with a factor in (0,1) approaches monotonically and
+cannot overshoot).
+
+The oscillation-while-silent had a specific, findable cause. The
+synthetic fallback mouth motion was
+`sin(t*0.9) + sin(t*2.3) + sin(t*5.1)` on a per-FRAME counter, which at
+60fps is 8.6Hz + 22Hz + 48.7Hz -- the last two above the 30Hz Nyquist
+limit, so they aliased into per-frame noise rather than anything
+mouth-shaped. Worse, that branch wasn't just running "for a frame or two
+before real data arrives" as its comment claimed: it ran whenever the
+state was still `speaking` but the viseme/envelope timeline had already
+run out -- which is exactly the gap between sentences of a reply,
+measured elsewhere in this log at a median of 1.8s. Simulated over that
+gap, the old code moved the mouth an average of 6.2px *every frame*;
+it now rests at the `silence` viseme instead (0px). The genuine
+no-data-yet fallback is still there but driven off real seconds at a
+single gentle 1.75Hz.
+
+The over-opening was two compounding factors: the amplitude path did
+`Math.max(0.04, realAmp) * 2.2` on an envelope already normalized to the
+utterance's own peak, so the loudest syllable of every reply drove the
+mouth to more than twice the widest real viseme; and the px scale
+(`* 0.55`, with `drawLiquidLipSeam` extending the lower lip another 1.4x
+below that) put a fully-open "ah" nearly 100px down a ~250px face. The
+amplitude path is now capped at `open_wide`'s own value and the scale is
+0.40, taking the peak opening from ~152px to ~50px with the full viseme
+range intact.
+
 **Fixed, 2026-08-28 (Argus was deaf between sentences -- barge-in only
 listened while audio was actually playing)**: reported live as "doesn't
 listen to wake word when he's talking." Measured from the day's own event
