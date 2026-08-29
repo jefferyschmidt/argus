@@ -5,9 +5,33 @@ from argus.tools.desktop import (
     _click,
     _detect_faces,
     _draw_target_reticle,
+    _list_ui_elements,
     _scroll,
     _stylize_vision,
 )
+
+
+def _mock_element(name="", control_type="Button", rect=(10, 10, 110, 40), visible=True, enabled=True):
+    el = MagicMock()
+    el.window_text.return_value = name
+    el.element_info.control_type = control_type
+    el.is_visible.return_value = visible
+    el.is_enabled.return_value = enabled
+    rect_mock = MagicMock()
+    x0, y0, x1, y1 = rect
+    rect_mock.width.return_value = x1 - x0
+    rect_mock.height.return_value = y1 - y0
+    rect_mock.mid_point.return_value = ((x0 + x1) // 2, (y0 + y1) // 2)
+    el.rectangle.return_value = rect_mock
+    return el
+
+
+def _mock_desktop(elements):
+    window = MagicMock()
+    window.descendants.return_value = elements
+    desktop_cls = MagicMock()
+    desktop_cls.return_value.window.return_value = window
+    return desktop_cls
 
 
 def test_click_rejects_malformed_coordinate_string():
@@ -190,3 +214,63 @@ def test_capture_camera_returns_the_real_frame_to_the_model_even_when_stylized_f
     decoded = cv2.imdecode(np.frombuffer(result, dtype=np.uint8), cv2.IMREAD_COLOR)
     assert decoded is not None
     assert tuple(decoded[0, 0]) != (0, 0, 0)  # the real (non-black) frame, not the stylized one
+
+
+def test_list_ui_elements_returns_labeled_targets_with_coordinates():
+    els = [
+        _mock_element(name="Delete", control_type="Button", rect=(100, 200, 160, 230)),
+        _mock_element(name="", control_type="Pane", rect=(0, 0, 1000, 1000)),  # unlabeled noise, skipped
+    ]
+    with patch("pywinauto.Desktop", _mock_desktop(els)):
+        result = _list_ui_elements({})
+
+    assert '[1] Button "Delete" at (130, 215)' in result
+    assert "Pane" not in result
+
+
+def test_list_ui_elements_skips_invisible_and_disabled_elements():
+    els = [
+        _mock_element(name="Hidden", visible=False),
+        _mock_element(name="Disabled", enabled=False),
+        _mock_element(name="Visible", rect=(0, 0, 50, 20)),
+    ]
+    with patch("pywinauto.Desktop", _mock_desktop(els)):
+        result = _list_ui_elements({})
+
+    assert "Hidden" not in result
+    assert "Disabled" not in result
+    assert "Visible" in result
+
+
+def test_list_ui_elements_skips_zero_size_elements():
+    els = [_mock_element(name="Zero", rect=(10, 10, 10, 10))]
+    with patch("pywinauto.Desktop", _mock_desktop(els)):
+        result = _list_ui_elements({})
+
+    assert "Zero" not in result
+
+
+def test_list_ui_elements_reports_when_nothing_found():
+    with patch("pywinauto.Desktop", _mock_desktop([])):
+        result = _list_ui_elements({})
+
+    assert "No labeled UI elements found" in result
+
+
+def test_list_ui_elements_reports_error_when_no_active_window():
+    desktop_cls = MagicMock()
+    desktop_cls.return_value.window.side_effect = RuntimeError("no active window")
+    with patch("pywinauto.Desktop", desktop_cls):
+        result = _list_ui_elements({})
+
+    assert result.startswith("error:")
+
+
+def test_list_ui_elements_one_flaky_element_does_not_break_the_whole_listing():
+    good = _mock_element(name="Good", rect=(0, 0, 50, 20))
+    bad = _mock_element(name="Bad")
+    bad.rectangle.side_effect = RuntimeError("boom")
+    with patch("pywinauto.Desktop", _mock_desktop([bad, good])):
+        result = _list_ui_elements({})
+
+    assert "Good" in result

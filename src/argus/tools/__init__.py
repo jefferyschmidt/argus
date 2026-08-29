@@ -5,6 +5,7 @@ from argus.tools.calendar import create_calendar_event_tool, list_calendar_event
 from argus.tools.desktop import (
     capture_camera_tool,
     click_tool,
+    list_ui_elements_tool,
     list_windows_tool,
     open_app_tool,
     press_key_tool,
@@ -69,6 +70,7 @@ def build_default_registry(router=None) -> ToolRegistry:
         take_screenshot_tool,
         capture_camera_tool,
         list_windows_tool,
+        list_ui_elements_tool,
         click_tool,
         type_text_tool,
         press_key_tool,

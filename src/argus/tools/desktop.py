@@ -142,6 +142,68 @@ def _capture_camera(args: dict) -> bytes | str:
     return encoded.tobytes()
 
 
+_MAX_UI_ELEMENTS = 60  # a dense window (a spreadsheet, a long form) shouldn't produce an unusably long list
+_LABELED_CONTROL_TYPES = ("Button", "Edit", "CheckBox", "MenuItem", "Hyperlink", "ListItem", "TabItem", "RadioButton")
+
+
+def _list_ui_elements(args: dict) -> str:
+    """Enumerates real, labeled clickable elements from the OS accessibility
+    tree (Windows UI Automation, via pywinauto) for the active window --
+    exact bounding boxes and names straight from the app itself, instead
+    of guessing pixel coordinates off a screenshot.
+
+    Confirmed live as a real gap: pure screenshot-and-guess clicking
+    produced a malformed click call (x parsed as a string containing part
+    of the JSON) and burned 20+ tool-call iterations failing to find a
+    small delete button in a webmail UI. This is the "Set-of-Mark"
+    pattern used by GUI-agent research generally (label real targets,
+    pick one, don't guess coordinates) -- but doesn't need a vision model
+    or GPU at all, since Windows already exposes this tree for free.
+
+    Falls back to telling the model to use take_screenshot + click when
+    the foreground app doesn't expose a usable tree (canvas-rendered
+    apps, some games, some custom-drawn UI)."""
+    from pywinauto import Desktop
+
+    try:
+        window = Desktop(backend="uia").window(active_only=True)
+        window.set_focus()
+    except Exception as e:
+        return f"error: couldn't find the active window: {type(e).__name__}: {e}"
+
+    try:
+        elements = window.descendants()
+    except Exception as e:
+        return f"error: couldn't read UI elements from this window: {type(e).__name__}: {e}"
+
+    lines = []
+    for el in elements:
+        if len(lines) >= _MAX_UI_ELEMENTS:
+            break
+        try:
+            if not el.is_visible() or not el.is_enabled():
+                continue
+            rect = el.rectangle()
+            if rect.width() <= 0 or rect.height() <= 0:
+                continue
+            name = (el.window_text() or "").strip()
+            control_type = el.element_info.control_type
+            if not name and control_type not in _LABELED_CONTROL_TYPES:
+                continue  # unlabeled, non-actionable noise (generic panes/groups)
+            cx, cy = rect.mid_point()
+            lines.append(f'[{len(lines) + 1}] {control_type} "{name}" at ({cx}, {cy})')
+        except Exception:
+            continue  # one flaky element must not break the whole listing
+
+    if not lines:
+        return (
+            "No labeled UI elements found in the active window -- it may not expose a "
+            "standard accessibility tree (common in canvas-rendered apps/games). Fall back "
+            "to take_screenshot + click with pixel coordinates."
+        )
+    return "\n".join(lines)
+
+
 def _list_windows(args: dict) -> str:
     import pygetwindow as gw
 
@@ -252,11 +314,28 @@ list_windows_tool = Tool(
     handler=_list_windows,
 )
 
+list_ui_elements_tool = Tool(
+    name="list_ui_elements",
+    description=(
+        "Lists real, labeled clickable elements (buttons, links, fields, menu items) in the "
+        "active window with their exact coordinates, read directly from the OS accessibility "
+        "tree -- no guessing. Prefer this over take_screenshot+click for interacting with a "
+        "specific control (finding a button, a link, a form field) in a normal desktop app or "
+        "browser -- it's faster and far more reliable than pixel-coordinate guessing off a "
+        "screenshot. Falls back to take_screenshot if it reports no elements found (some "
+        "canvas-rendered apps/games don't expose this tree). After listing, click using the "
+        "click tool with the (x, y) shown for the element you want."
+    ),
+    input_schema={"type": "object", "properties": {}},
+    tier=PermissionTier.ALLOW,
+    handler=_list_ui_elements,
+)
+
 click_tool = Tool(
     name="click",
     description=(
-        "Click at pixel coordinates (x, y) on screen. Take a screenshot first to see where "
-        "to click -- coordinates are absolute screen pixels, origin top-left."
+        "Click at pixel coordinates (x, y) on screen. Prefer list_ui_elements first to get "
+        "exact coordinates for a specific control rather than guessing from a screenshot."
     ),
     input_schema={
         "type": "object",

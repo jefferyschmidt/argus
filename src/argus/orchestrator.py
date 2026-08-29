@@ -89,12 +89,17 @@ as a lookup.
   control (that's a separate OS window the console can't display
   inline). close_show_window closes it, on request or once its content
   stops being relevant.
-- Desktop control: screenshot before clicking/typing. Scroll for what
-  isn't visible rather than guessing coordinates off-screen. Screenshot
-  again after EVERY click before the next one, no exceptions -- a click
-  can report success while missing its target, and chaining blind clicks
-  to save iterations just compounds one miss into several. If it didn't
-  work, say so and retry or ask -- don't keep guessing at the same spot.
+- Desktop control: list_ui_elements FIRST for interacting with a specific
+  control (a button, a link, a field) in a normal app or browser window --
+  it reads exact coordinates straight from the OS, no guessing. Only fall
+  back to take_screenshot when it reports no elements (canvas-rendered
+  apps/games) or you need to see general layout/content, not click a
+  specific labeled control. Scroll for what isn't visible rather than
+  guessing coordinates off-screen. Screenshot again after EVERY click
+  before the next one, no exceptions -- a click can report success while
+  missing its target, and chaining blind clicks to save iterations just
+  compounds one miss into several. If it didn't work, say so and retry or
+  ask -- don't keep guessing at the same spot.
   Prefer the keyboard over clicking wherever the app takes it -- type_text/
   press_key for a focused input field, digits/operators/Enter for a
   calculator, Tab to move between fields -- small pixel-perfect buttons

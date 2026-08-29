@@ -10,6 +10,35 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Added, 2026-08-29 (list_ui_elements -- Set-of-Mark desktop control
+without a vision model)**: discussed live after a failed email-deletion
+task burned 20+ tool-call iterations and $0.26 pixel-coordinate-guessing
+through a webmail UI, including one malformed click call where `x`
+parsed as a string containing part of the JSON payload. Considered a full
+OmniParser-style vision-grounding model (Microsoft's OmniParser, or
+UI-TARS) but this machine is CPU-only (`torch 2.13.0+cpu`, no CUDA) and
+those pull multi-GB checkpoints for meaningfully slower inference than
+the alternative below.
+
+Instead: Windows already exposes a full accessibility tree (UI
+Automation) for every standard app and browser -- exact element names and
+bounding boxes, no inference, no model download, effectively zero
+latency. Added `list_ui_elements` (`tools/desktop.py`, via the
+`pywinauto` UIA backend) -- returns a numbered list of real, labeled,
+clickable elements (`[1] Button "Delete" at (130, 215)`) instead of a
+raw screenshot to guess coordinates from. This is the same "Set-of-Mark"
+principle used across the GUI-agent research space (pick a labeled
+target, don't guess pixels), just grounded in the OS's own tree instead
+of a vision model -- a better fit given the hardware, and arguably more
+reliable than vision-based detection for standard controls since it's
+reading the app's actual accessibility metadata, not inferring it from
+pixels. Falls back to take_screenshot when a window doesn't expose a
+usable tree (canvas-rendered apps, some games). System prompt updated to
+prefer it over screenshot-and-guess for any specific-control interaction.
+Smoke-tested live against a real window (this session's own Claude Code
+window) before wiring in, confirmed exact real coordinates returned; unit
+tests mock the pywinauto layer.
+
 **Fixed, 2026-08-29 (wake word completely dead, thought glued to the next
 sentence with no space, PTT couldn't interrupt or missed audio, no
 delete_email tool, tool-loop failures silently swallowed, live-narrated
