@@ -12,7 +12,12 @@ from argus.tools.desktop import (
     take_screenshot_tool,
     type_text_tool,
 )
-from argus.tools.email import list_recent_emails_tool, send_email_tool, unsubscribe_from_email_tool
+from argus.tools.email import (
+    delete_email_tool,
+    list_recent_emails_tool,
+    send_email_tool,
+    unsubscribe_from_email_tool,
+)
 from argus.tools.filesystem import list_dir_tool, read_file_tool, run_shell_tool, write_file_tool
 from argus.tools.ingest import ingest_document_tool
 from argus.tools.journal import search_journal_tool
@@ -79,6 +84,7 @@ def build_default_registry(router=None) -> ToolRegistry:
         list_recent_emails_tool,
         send_email_tool,
         unsubscribe_from_email_tool,
+        delete_email_tool,
         list_calendar_events_tool,
         create_calendar_event_tool,
         create_scheduled_routine_tool,

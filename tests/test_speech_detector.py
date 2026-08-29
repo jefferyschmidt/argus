@@ -66,3 +66,23 @@ def test_short_utterance_with_heavy_trailing_silence_is_still_speech():
     detector._model = fake_model
     frame = np.zeros(512 * 40, dtype=np.int16)
     assert detector.is_speech(frame) is True
+
+
+def test_single_chunk_frame_still_works_for_real_time_wake_word_detection():
+    """Regression test for a real regression the fix above introduced: a
+    FIXED absolute floor broke local_wake_word.py's passive listener,
+    which calls is_speech() once per single 32ms frame (exactly one
+    Silero sub-chunk, total == 1) to decide moment-to-moment whether
+    speech has started. A fixed floor of 4 can never be reached when
+    total is 1, so wake-word detection died completely -- confirmed live
+    ("doesn't pick me up at all," while push-to-talk, a separate RMS-only
+    path, kept working). The floor must be capped at the call's own
+    total so a single speech-flagged chunk is still enough on its own."""
+    detector = SpeechDetector()
+
+    def speech_model(_sub, _sr):
+        return type("P", (), {"item": lambda self: 0.95})()
+
+    detector._model = speech_model
+    frame = np.zeros(512, dtype=np.int16)  # exactly one 32ms sub-chunk
+    assert detector.is_speech(frame) is True

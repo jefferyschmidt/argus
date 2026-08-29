@@ -77,7 +77,15 @@ def test_max_iterations_cap_stops_infinite_tool_loop():
     )
 
     assert fake_messages.create.call_count == 3
-    assert "too many tool iterations" in result.text
+    assert "got stuck" in result.text
+
+    # Confirmed live as a real bug: the old message
+    # ("(stopped: too many tool iterations without a final answer)") was
+    # fully wrapped in parens, which made _is_thought classify it as an
+    # internal thought and silently swallow it -- the user got zero
+    # feedback that a task had failed. Must not be a bare parenthetical.
+    from argus.voice.loop import _is_thought
+    assert _is_thought(result.text) is False
 
 
 def test_on_tool_call_exception_propagates_and_aborts_the_loop():

@@ -234,6 +234,68 @@ def _unsubscribe_from_email(args: dict) -> str:
     return "Couldn't find a matching email in the configured accounts."
 
 
+def _delete_email(args: dict) -> str:
+    """Confirmed live as a real gap: there was no internal way to delete an
+    email at all, so a request to delete one fell back to desktop control
+    -- clicking through the actual webmail UI -- which burned 20+ tool
+    iterations and $0.26 finding/clicking a delete button before hitting
+    the tool-iteration safety cutoff and failing outright. Same
+    find-by-sender/subject pattern as _unsubscribe_from_email, since the
+    model only has a sender/subject to go on (from list_recent_emails),
+    not a raw UID."""
+    account_filter = (args.get("account") or "").strip().lower()
+    sender_query = (args.get("sender") or "").strip().lower()
+    subject_query = (args.get("subject") or "").strip().lower()
+    if not sender_query and not subject_query:
+        return "error: need at least a sender or subject to find the right email"
+
+    for account in _ACCOUNTS:
+        if account_filter and account_filter != account["name"].lower():
+            continue
+        user = getattr(settings, account["user_setting"])
+        password = getattr(settings, account["password_setting"])
+        if not user or not password:
+            continue
+
+        conn = imaplib.IMAP4_SSL(account["host"])
+        try:
+            conn.login(user, password)
+            # Not readonly -- deleting requires write access to INBOX.
+            conn.select("INBOX")
+            status, data = conn.uid("search", None, "ALL")
+            if status != "OK" or not data or not data[0]:
+                continue
+            uids = data[0].split()[-_UNSUBSCRIBE_SEARCH_LIMIT:]
+            uids.reverse()  # most recent first -- the match the user means
+
+            for uid in uids:
+                status, msg_data = conn.uid("fetch", uid, "(BODY.PEEK[HEADER])")
+                if status != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
+                    continue
+                msg = email.message_from_bytes(msg_data[0][1])
+                sender = _decode(msg.get("From", "")).lower()
+                subject = _decode(msg.get("Subject", "")).lower()
+                if sender_query and sender_query not in sender:
+                    continue
+                if subject_query and subject_query not in subject:
+                    continue
+
+                display_subject = _decode(msg.get("Subject"))
+                display_sender = _decode(msg.get("From"))
+                status, _ = conn.uid("store", uid, "+FLAGS", "\\Deleted")
+                if status != "OK":
+                    return f"error: failed to mark '{display_subject}' as deleted"
+                conn.expunge()
+                return f"Deleted '{display_subject}' from {display_sender}."
+        finally:
+            try:
+                conn.logout()
+            except Exception:
+                pass
+
+    return "Couldn't find a matching email in the configured accounts."
+
+
 list_recent_emails_tool = Tool(
     name="list_recent_emails",
     description=(
@@ -299,4 +361,26 @@ unsubscribe_from_email_tool = Tool(
     },
     tier=PermissionTier.CONFIRM,
     handler=_unsubscribe_from_email,
+)
+
+delete_email_tool = Tool(
+    name="delete_email",
+    description=(
+        "Deletes an email by finding it (match by sender and/or subject substring, "
+        "case-insensitive, from the account's recent inbox) and removing it via IMAP -- "
+        "prefer this over desktop/browser clicking for any delete request, it's a direct "
+        "reliable action instead of guessing where a delete button is on screen. "
+        "Irreversible once expunged -- always requires explicit confirmation."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "account": {"type": "string", "description": "Optional: 'gmail' or 'yahoo' to check just one account."},
+            "sender": {"type": "string", "description": "Sender name/address substring to match."},
+            "subject": {"type": "string", "description": "Subject substring to match."},
+        },
+    },
+    tier=PermissionTier.CONFIRM,
+    high_risk=True,  # irreversible once expunged -- asked twice, not once
+    handler=_delete_email,
 )

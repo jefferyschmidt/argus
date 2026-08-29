@@ -309,12 +309,36 @@ class VoiceLoop:
                     self._process_utterance(text=text)
                 continue
             if ui_commands.is_push_to_talk_active():
+                # Confirmed live as a real bug ("I can't interrupt him with
+                # the hold to talk button" / "he cut me off before I
+                # finished talking"): this used to hold _interaction_lock
+                # for the ENTIRE press, including the recording itself.
+                # If Argus was already mid-turn, the button press just
+                # blocked here waiting for the lock -- no interruption at
+                # all, and recording didn't even START until whatever was
+                # busy finished. A user who pressed, talked, and released
+                # entirely within that busy window got is_push_to_talk_active()
+                # already False by the time record_while finally ran, so it
+                # captured nothing.
+                #
+                # Fixed two ways: (1) explicitly interrupt any in-progress
+                # speech the instant the button is pressed, the same
+                # signal voice barge-in uses, so holding PTT stops Argus
+                # talking immediately instead of waiting its turn; (2)
+                # recording itself happens OUTSIDE the lock, so capture
+                # starts the moment the button is pressed regardless of
+                # whether a previous turn is still wrapping up -- only
+                # actually processing the captured utterance is serialized
+                # via the lock, which is the part that genuinely needs it.
+                session = self._speech_session
+                if session is not None:
+                    session.on_detect()
+                ui_events.publish({"type": "state", "value": "listening", "mode": "push_to_talk"})
+                chunks_out: list = []
+                stop_watcher = self._start_hearing_watcher(chunks_out)
+                samples = record_while(ui_commands.is_push_to_talk_active, chunks_out=chunks_out)
+                stop_watcher.set()
                 with self._interaction_lock:
-                    ui_events.publish({"type": "state", "value": "listening", "mode": "push_to_talk"})
-                    chunks_out: list = []
-                    stop_watcher = self._start_hearing_watcher(chunks_out)
-                    samples = record_while(ui_commands.is_push_to_talk_active, chunks_out=chunks_out)
-                    stop_watcher.set()
                     self._process_utterance(samples)
 
     def _start_hearing_watcher(self, chunks_out: list) -> threading.Event:

@@ -10,6 +10,72 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed, 2026-08-29 (wake word completely dead, thought glued to the next
+sentence with no space, PTT couldn't interrupt or missed audio, no
+delete_email tool, tool-loop failures silently swallowed, live-narrated
+work that already finished)**: a live-monitored batch session -- watched
+a real conversation via the event log in real time rather than diagnosing
+after the fact.
+
+**Wake word regression (self-inflicted, same session):** the VAD fix
+below (majority-vote -> absolute floor) broke `local_wake_word.py`'s
+passive listener, which calls `is_speech()` once per single 32ms frame
+(one Silero sub-chunk, `total == 1`) to decide moment-to-moment whether
+speech has started. A FIXED floor of 4 can never be reached when only 1
+chunk is available, so wake-word detection died completely --
+confirmed live ("doesn't pick me up at all," while push-to-talk, a
+separate RMS-only path, kept working). Fixed by capping the floor at
+`min(_MIN_SPEECH_VOTES, total)` so a single speech-flagged chunk is still
+enough on its own, while the long-clip fix is unaffected.
+
+**Thought merged into the next sentence with no space:** the earlier
+paren-depth-aware splitter still required `_SENTENCE_END`'s trailing
+whitespace to find a boundary at all. The model sometimes emits a
+thought immediately followed by the reply with zero whitespace --
+`"(Pulling weather, reminders...)Tonight's partly cloudy..."` -- which
+that regex can never match. Added a second, independent scan: a
+top-level parenthetical that reads as its own complete sentence (ends in
+.!? right before its closing paren) is now always a split point once it
+closes, whitespace or not -- restricted to sentence-shaped parens so an
+ordinary aside like "(just to be safe)" is left alone.
+
+**Push-to-talk couldn't interrupt, and sometimes captured nothing:**
+`_external_input_worker`'s PTT branch held `_interaction_lock` for the
+entire button press, including the recording itself -- if Argus was
+already mid-turn, holding PTT just blocked waiting for the lock (no
+interruption at all), and if the user pressed-talked-released entirely
+within that busy window, recording didn't start until the lock freed,
+by which point `is_push_to_talk_active()` was already false and nothing
+was captured. Fixed: PTT now explicitly interrupts any in-progress
+speech immediately (same signal voice barge-in uses) and recording
+happens *outside* the lock -- only processing the captured utterance is
+serialized, which is the part that actually needs it.
+
+**No delete_email tool:** a delete request had no internal tool to use
+at all (only list/send/unsubscribe existed) and fell back to desktop
+control -- 20+ tool-call iterations clicking through Yahoo's webmail UI,
+$0.26, and it still failed by hitting the iteration cap. Added
+`delete_email` (same IMAP find-by-sender/subject pattern as
+`unsubscribe_from_email`).
+
+**Tool-loop failures silently swallowed:** the safety-net message for
+hitting the tool-iteration cap was `"(stopped: too many tool iterations
+without a final answer)"` -- fully wrapped in parens, which made
+`_is_thought` classify it as an internal thought and silently eat it. The
+email-deletion failure above produced exactly zero feedback: no speech,
+no caption, just silence where a failure report should have been.
+Changed to plain sentence text with no wrapping parens.
+
+**Narrating already-finished work as if live:** the "don't narrate each
+tool call, summarize at the end" prompt rule didn't say that summary
+should be a past-tense report -- reported live as work that had already
+happened silently, then got narrated as if it were happening in the
+moment, reading as performative rather than honest.
+
+Also added a real `delete_email`-shaped test suite gap check: confirmed
+via `_is_thought` directly that the new tool-loop-cutoff message is never
+misclassified as a thought.
+
 **Fixed, 2026-08-29 (test suite polluting the real production event log,
 verbose/robotic personality, content-free proactive filler spoken
 aloud)**: reported live -- "talking like a computer, not a person,"

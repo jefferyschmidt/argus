@@ -55,18 +55,24 @@ class SpeechDetector:
             return False
         # Confirmed live as a real, recurring cause of "he doesn't
         # understand half of what I say": this used to require a MAJORITY
-        # of 32ms sub-chunks to be speech-flagged. But every clip this is
-        # called on (see loop.py's use over record_followup's output) has
-        # a fixed ~900ms of trailing silence baked in by design (the
-        # silence-hang that lets recording end), plus normal mid-utterance
-        # pauses -- so a short, genuine utterance ("what time is it") can
-        # easily have well under half its frames speech-flagged even
-        # though it's unambiguously real speech. That's not a signal of
-        # "this recording is mostly not speech," it's just how much
-        # silence padding a short clip always carries -- so a proportion
-        # of the WHOLE clip is the wrong test. An absolute floor -- did
-        # Silero flag a meaningful run of frames as speech at all -- isn't
-        # skewed by clip length or padding, and still rejects a one-off
-        # spurious chunk on pure noise/echo (the actual thing this needs
-        # to guard against, per this class's docstring).
-        return votes >= _MIN_SPEECH_VOTES
+        # of 32ms sub-chunks to be speech-flagged. But every whole-clip
+        # caller (loop.py, over record_followup's output) has a fixed
+        # ~900ms of trailing silence baked in by design (the silence-hang
+        # that lets recording end), plus normal mid-utterance pauses -- so
+        # a short, genuine utterance ("what time is it") can easily have
+        # well under half its frames speech-flagged even though it's
+        # unambiguously real speech. An absolute floor -- did Silero flag
+        # a meaningful run of frames as speech at all -- isn't skewed by
+        # clip length or padding.
+        #
+        # But a FIXED absolute floor broke a second, real caller:
+        # local_wake_word.py's passive listener calls this once per single
+        # 32ms frame (total == 1) to decide moment-to-moment whether
+        # speech has started -- with total always 1 there, a fixed floor
+        # of 4 can never be reached, so wake-word detection silently died
+        # completely (confirmed live: "doesn't pick me up at all," push-
+        # to-talk -- a separate, RMS-only path -- still worked). Capping
+        # the floor at whatever this call's total actually is restores
+        # the old single-chunk behavior (needs just that one chunk) while
+        # keeping the real fix for long, padded clips.
+        return votes >= min(_MIN_SPEECH_VOTES, total)

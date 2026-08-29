@@ -69,3 +69,33 @@ def test_splitter_also_breaks_after_a_closing_quote():
     buf = SentenceBuffer()
     out = buf.add('He said "hello." Then he left. ')
     assert out == ['He said "hello."', "Then he left."]
+
+
+def test_splitter_breaks_after_a_thought_even_with_no_trailing_space():
+    """Confirmed live as a real bug: the model sometimes runs a thought
+    straight into the next sentence with zero whitespace in between --
+    "(Pulling weather, reminders...)Tonight's partly cloudy..." -- which
+    the whitespace-anchored _SENTENCE_END regex can never match. Without
+    a dedicated check for this, the thought and the reply merge into one
+    blob that fails _is_thought's balanced-paren check and gets spoken in
+    full, thought included."""
+    buf = SentenceBuffer()
+    out = buf.add(
+        "(Pulling weather, reminders, and recent emails all at once for "
+        "a quick briefing.)Tonight's partly cloudy. "
+    )
+    assert out == [
+        "(Pulling weather, reminders, and recent emails all at once for a quick briefing.)",
+        "Tonight's partly cloudy.",
+    ]
+    assert _is_thought(out[0]) is True
+    assert _is_thought(out[1]) is False
+
+
+def test_ordinary_mid_sentence_aside_is_not_force_split():
+    """A parenthetical aside that doesn't read as its own complete
+    sentence (no terminal punctuation before the closing paren) shouldn't
+    get chopped out of the sentence it's part of."""
+    buf = SentenceBuffer()
+    out = buf.add("I checked (just to be safe) and it's fine. ")
+    assert out == ["I checked (just to be safe) and it's fine."]

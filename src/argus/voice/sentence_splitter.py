@@ -32,17 +32,40 @@ def _split_respecting_parens(text: str) -> list[str]:
     unbalanced at that point."""
     depth = 0
     scanned_to = 0
-    splits = []
+    splits = set()
     for m in _SENTENCE_END.finditer(text):
         segment = text[scanned_to:m.start() + 1]
         depth = max(0, depth + segment.count("(") - segment.count(")"))
         scanned_to = m.start() + 1
         if depth == 0:
-            splits.append(m.end())
+            splits.add(m.end())
+
+    # A second, independent pass: a top-level parenthetical that reads as
+    # its own complete sentence (ends in .!? right before its closing
+    # paren) is always a split point once it closes, whether or not
+    # whitespace follows. Confirmed live: the model sometimes runs a
+    # thought straight into the next sentence with NO space in between --
+    # "(Pulling weather, reminders, and recent emails all at once for a
+    # quick briefing.)Tonight's partly cloudy..." -- which _SENTENCE_END
+    # can never match (it requires trailing whitespace), so without this
+    # the thought and the reply merge into one blob that fails
+    # _is_thought's balanced-paren check and gets spoken in full, thought
+    # included. Restricted to parens that look sentence-shaped (end in
+    # .!?) so an ordinary mid-sentence aside like "(just to be safe)" --
+    # not meant to be its own chunk -- is left alone.
+    paren_depth = 0
+    for i, ch in enumerate(text):
+        if ch == "(":
+            paren_depth += 1
+        elif ch == ")":
+            paren_depth = max(0, paren_depth - 1)
+            if paren_depth == 0 and i > 0 and text[i - 1] in ".!?":
+                splits.add(i + 1)
+
     if not splits:
         return [text]
     parts, prev = [], 0
-    for end in splits:
+    for end in sorted(splits):
         parts.append(text[prev:end])
         prev = end
     parts.append(text[prev:])

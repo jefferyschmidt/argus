@@ -225,8 +225,17 @@ class AnthropicClient:
                 })
             history.append({"role": "user", "content": tool_results})
 
+        # Confirmed live as a real bug: this used to be
+        # "(stopped: too many tool iterations without a final answer)" --
+        # fully wrapped in parens, which made _is_thought (voice/loop.py)
+        # classify it as an internal thought and silently swallow it. A
+        # desktop-automation task (deleting emails via webmail clicking)
+        # hit this exact cutoff after 20+ iterations and the user got zero
+        # feedback that it had failed -- not even a caption, just silence.
+        # Plain sentence text, no wrapping parens, so it's spoken like any
+        # other reply.
         return CompletionResult(
-            text="(stopped: too many tool iterations without a final answer)",
+            text="I got stuck working through that and had to stop -- want me to try again?",
             tier=tier, model=model, input_tokens=total_in, output_tokens=total_out,
         )
 
@@ -300,7 +309,16 @@ class AnthropicClient:
                 })
             history.append({"role": "user", "content": tool_results})
 
+        # Confirmed live as a real bug: this used to be
+        # "(stopped: too many tool iterations without a final answer)" --
+        # fully wrapped in parens, which made _is_thought (voice/loop.py)
+        # classify it as an internal thought and silently swallow it. A
+        # desktop-automation task (deleting emails via webmail clicking)
+        # hit this exact cutoff after 20+ iterations and the user got zero
+        # feedback that it had failed -- not even a caption, just silence.
+        # Plain sentence text, no wrapping parens, so it's spoken like any
+        # other reply.
         return CompletionResult(
-            text="(stopped: too many tool iterations without a final answer)",
+            text="I got stuck working through that and had to stop -- want me to try again?",
             tier=tier, model=model, input_tokens=total_in, output_tokens=total_out,
         )
