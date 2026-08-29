@@ -64,7 +64,7 @@ def test_long_duration_with_real_reply_is_delivered():
 
 
 def test_only_offers_once_per_continuous_window_stretch():
-    worker, router, speak_fn = _worker(reply_text="something worth saying")
+    worker, router, speak_fn = _worker(reply_text="Stuck on that same error for a while now.")
     worker._current_title = "VS Code"
     _past_threshold(worker)
 
@@ -78,7 +78,7 @@ def test_only_offers_once_per_continuous_window_stretch():
 
 
 def test_switching_away_and_back_resets_the_offer_flag():
-    worker, router, speak_fn = _worker(reply_text="something worth saying")
+    worker, router, speak_fn = _worker(reply_text="Stuck on that same error for a while now.")
     worker._current_title = "VS Code"
     _past_threshold(worker)
 

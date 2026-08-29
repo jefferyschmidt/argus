@@ -30,3 +30,20 @@ def test_empty_text_is_none():
 
 def test_a_real_reply_is_not_none():
     assert is_none_reply("Sounds like a deep dive -- need any help with those settings?") is False
+
+
+def test_content_free_hedge_is_recognized():
+    """Confirmed live, several times in a row: the model doesn't say NONE
+    or a "nothing" paraphrase, but also doesn't generate an actual
+    observation -- it produces a generic, contentless hedge that used to
+    sail through and get spoken as if it were a real check-in."""
+    assert is_none_reply("worth saying") is True
+    assert is_none_reply("something worth saying") is True
+    assert is_none_reply("Something genuinely new happened.") is True
+    assert is_none_reply("Something new.") is True
+
+
+def test_something_new_as_substring_of_real_content_is_not_none():
+    """"something new" alone shouldn't reject a real, specific sentence
+    that happens to contain it -- only a short, generic hedge."""
+    assert is_none_reply("I noticed something new in your inbox worth a look.") is False

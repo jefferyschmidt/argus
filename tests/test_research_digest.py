@@ -56,15 +56,15 @@ def test_none_reply_does_not_speak_and_preserves_no_digest(conn, db_path):
 def test_real_digest_is_spoken_and_recorded(conn, db_path):
     store = ResearchTopicStore(conn)
     store.add("topic a")
-    worker, router, speak_fn = _worker("Something genuinely new happened.")
+    worker, router, speak_fn = _worker("There's a new paper out on this that's worth a look.")
 
     with _patched_get_connection(db_path):
         worker.check_now()
 
     speak_fn.assert_called_once()
-    assert "genuinely new" in speak_fn.call_args[0][0]
+    assert "new paper" in speak_fn.call_args[0][0]
     row = store.list_all()[0]
-    assert row["last_digest"] == "Something genuinely new happened."
+    assert row["last_digest"] == "There's a new paper out on this that's worth a look."
 
 
 def test_disabled_topics_are_skipped(conn, db_path):
@@ -118,20 +118,20 @@ def test_delivery_is_deferred_not_dropped_when_busy(conn, db_path):
     meant losing it outright; it has to be queued and retried."""
     store = ResearchTopicStore(conn)
     store.add("topic a")
-    worker, router, speak_fn = _worker("Something new.")
+    worker, router, speak_fn = _worker("Found a solid comparison writeup on this.")
     worker._interaction_lock.acquire()  # simulate Argus mid-turn
 
     with _patched_get_connection(db_path):
         worker.check_now()
 
     speak_fn.assert_not_called()
-    assert worker._pending_delivery == [("topic a", "Something new.")]
+    assert worker._pending_delivery == [("topic a", "Found a solid comparison writeup on this.")]
 
     # Argus frees up -- the next poll announces it without re-searching.
     worker._interaction_lock.release()
     worker._flush_pending_delivery()
 
-    speak_fn.assert_called_once_with("Something new.")
+    speak_fn.assert_called_once_with("Found a solid comparison writeup on this.")
     assert worker._pending_delivery == []
     assert router.complete_with_tools.call_count == 1
 

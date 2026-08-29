@@ -46,7 +46,7 @@ def test_suppressed_title_never_triggers_generation():
 
 
 def test_cooldown_blocks_a_second_trigger_immediately_after():
-    worker, speak_fn = _worker(reply_text="worth saying")
+    worker, speak_fn = _worker(reply_text="Jumping around a lot today, huh?")
     with patch("argus.context_awareness._active_window_title", return_value="A"):
         worker._scan_once()
     assert speak_fn.call_count == 1

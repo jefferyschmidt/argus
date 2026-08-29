@@ -14,6 +14,21 @@ as silence, observed live as Argus randomly saying "worth saying" or
 
 _NONE_PARAPHRASES = ("nothing worth", "nothing genuinely", "nothing new", "nothing noteworthy")
 
+# A second, distinct failure mode from the NONE-paraphrase list above: the
+# model doesn't say a "nothing" paraphrase, but doesn't generate a genuine
+# observation either -- it produces a generic, content-free hedge that
+# technically isn't a NONE-paraphrase, so it used to sail straight through
+# and get spoken as if it were a real check-in. Observed live, several
+# times in a row, with zero connection to whatever actually triggered the
+# scan: "worth saying", "something worth saying", "Something genuinely new
+# happened.", "Something new." -- exactly the kind of contentless remark
+# that makes a proactive check-in feel like a broken script instead of a
+# person actually noticing something. "something new" alone is only
+# rejected when it's most of the reply (<=6 words) -- as a substring it's
+# also legitimate inside real, specific sentences ("I noticed something
+# new in your inbox"), which shouldn't get silently dropped.
+_CONTENT_FREE_HEDGES = ("worth saying", "genuinely new happened")
+
 
 def is_none_reply(text: str) -> bool:
     if not text:
@@ -22,4 +37,10 @@ def is_none_reply(text: str) -> bool:
     if normalized == "NONE":
         return True
     lowered = text.lower()
-    return any(phrase in lowered for phrase in _NONE_PARAPHRASES)
+    if any(phrase in lowered for phrase in _NONE_PARAPHRASES):
+        return True
+    if any(phrase in lowered for phrase in _CONTENT_FREE_HEDGES):
+        return True
+    if "something new" in lowered and len(text.split()) <= 6:
+        return True
+    return False

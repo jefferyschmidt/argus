@@ -10,6 +10,54 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed, 2026-08-29 (test suite polluting the real production event log,
+verbose/robotic personality, content-free proactive filler spoken
+aloud)**: reported live -- "talking like a computer, not a person,"
+"gets really verbose sometimes when there's no reason to."
+
+While live-monitoring a conversation (tailing today's event log to watch
+addressee-gate/transcript events as they happened -- see below), a run of
+`pytest` mid-session made fabricated test placeholder text ("Jumping
+around a lot today, huh?", research-digest fixture strings) show up
+verbatim in the live event stream, indistinguishable from genuine
+conversation. Root cause: `ui_events.publish()` -- the low-level choke
+point almost every feature routes through -- unconditionally appends to
+the real `data/events/events-YYYY-MM-DD.jsonl` file with no test-mode
+override; only one existing test file happened to patch that path
+locally. This had been silently corrupting the exact diagnostic log this
+whole debugging methodology depends on, for as long as the suite existed.
+Fixed with an autoused `tests/conftest.py` fixture that isolates
+`_event_log_path` to a tmp_path for the whole suite; confirmed by
+counting lines in today's real log before/after a full test run (836 ->
+836, unchanged).
+
+The verbosity/personality complaint: measured real replies from today's
+event log at up to 224 words against the system prompt's own "40 words
+or fewer" rule, and found most `fast`-tier replies opened with an
+analytical parenthetical restating what the user just said before
+answering ("(They're asking about X...)") -- a habit that reads as a
+call-center script, not a person. Strengthened `SYSTEM_PROMPT` in
+`orchestrator.py`: made the length rule explicitly self-diagnostic
+("treat any reply creeping toward a paragraph as a bug"), and made
+internal thoughts opt-in for genuine task play-by-play rather than a
+default preamble on ordinary conversational replies.
+
+Separately, found `context_awareness.py`/`stuck_detection.py`/
+`research_digest.py`'s shared `is_none_reply()` filter (which is supposed
+to catch a cheap local model failing to say the literal "NONE" escape
+hatch) only caught *negative* paraphrases ("nothing worth saying"). It
+missed a second failure mode confirmed live, repeatedly, in the same
+log: a *positive*-sounding but content-free hedge ("worth saying",
+"Something genuinely new happened.", "Something new.") that isn't a
+NONE-paraphrase and so sailed through and got spoken as if it were a
+real, specific observation. Extended the filter to catch these too (with
+a length-gated exception so "something new" doesn't reject real
+sentences that happen to contain the phrase). In fixing this, found that
+several existing tests had been using these exact garbage strings as
+their generic "some real reply" placeholder text -- updated those
+fixtures to realistic content so they test what they're meant to (cooldown/
+dedup logic), not accidentally re-encode the bug they're unrelated to.
+
 **Fixed, 2026-08-29 (VAD wrongly rejecting real speech as "not_speech",
 sentence-splitter fragmenting internal thoughts, stray punctuation spoken
 aloud)**: reported live -- "doesn't understand what I'm saying half the
