@@ -44,3 +44,25 @@ def test_reset_does_not_raise():
     detector.is_speech(np.zeros(1280, dtype=np.int16))
     detector.reset()
     detector.is_speech(np.zeros(1280, dtype=np.int16))
+
+
+def test_short_utterance_with_heavy_trailing_silence_is_still_speech():
+    """Regression test for a real, recurring live complaint ("he doesn't
+    understand half of what I say"): record_followup always appends a
+    fixed ~900ms trailing silence-hang to every capture, so a short real
+    utterance is easily <50% speech-flagged frames overall even though
+    it's genuine speech. The old majority-vote rule rejected this; the
+    fix (an absolute floor on speech-flagged chunks) must accept it."""
+    detector = SpeechDetector()
+    # Fake model: first 5 of 40 sub-chunks (160ms) "speech", rest silence --
+    # 12.5% overall, comfortably below the old 50% majority threshold but
+    # a real, sustained run of speech-flagged frames.
+    calls = {"n": 0}
+
+    def fake_model(_sub, _sr):
+        calls["n"] += 1
+        return type("P", (), {"item": lambda self: 0.9 if calls["n"] <= 5 else 0.0})()
+
+    detector._model = fake_model
+    frame = np.zeros(512 * 40, dtype=np.int16)
+    assert detector.is_speech(frame) is True

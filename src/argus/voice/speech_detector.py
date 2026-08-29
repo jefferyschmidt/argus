@@ -3,6 +3,9 @@ import torch
 from silero_vad import load_silero_vad
 
 _CHUNK_SAMPLES = 512  # Silero's required chunk size at 16kHz
+# ~128ms of Silero-flagged speech (4 * 32ms sub-chunks). See is_speech()
+# for why this is an ABSOLUTE floor, not a proportion of the clip.
+_MIN_SPEECH_VOTES = 4
 
 
 class SpeechDetector:
@@ -50,4 +53,20 @@ class SpeechDetector:
                 votes += 1
         if total == 0:
             return False
-        return votes / total >= 0.5
+        # Confirmed live as a real, recurring cause of "he doesn't
+        # understand half of what I say": this used to require a MAJORITY
+        # of 32ms sub-chunks to be speech-flagged. But every clip this is
+        # called on (see loop.py's use over record_followup's output) has
+        # a fixed ~900ms of trailing silence baked in by design (the
+        # silence-hang that lets recording end), plus normal mid-utterance
+        # pauses -- so a short, genuine utterance ("what time is it") can
+        # easily have well under half its frames speech-flagged even
+        # though it's unambiguously real speech. That's not a signal of
+        # "this recording is mostly not speech," it's just how much
+        # silence padding a short clip always carries -- so a proportion
+        # of the WHOLE clip is the wrong test. An absolute floor -- did
+        # Silero flag a meaningful run of frames as speech at all -- isn't
+        # skewed by clip length or padding, and still rejects a one-off
+        # spurious chunk on pure noise/echo (the actual thing this needs
+        # to guard against, per this class's docstring).
+        return votes >= _MIN_SPEECH_VOTES

@@ -10,6 +10,49 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed, 2026-08-29 (VAD wrongly rejecting real speech as "not_speech",
+sentence-splitter fragmenting internal thoughts, stray punctuation spoken
+aloud)**: reported live -- "doesn't understand what I'm saying half the
+time," "thinks I'm not talking to him," and "argus is speaking his
+'thoughts' out loud."
+
+The first was the real driver: `data/events/events-2026-08-28.jsonl`
+showed a single ~6-minute stretch with 55+ `addressee_gate: not_speech`
+drops in a row -- essentially every utterance in that window silently
+rejected before transcription ever ran. Root cause was in
+`SpeechDetector.is_speech()` (`src/argus/voice/speech_detector.py`): it
+required a MAJORITY of 32ms Silero sub-chunks across the whole clip to be
+speech-flagged. But `record_followup` always appends a fixed ~900ms
+trailing silence-hang to every capture by design (so it knows when the
+user stopped talking) -- for a short utterance that's a large, fixed
+fraction of the clip that's guaranteed non-speech, on top of normal
+mid-sentence pauses. A real "what time is it" can easily land under 50%
+speech-flagged and get dropped with zero transcription attempt --
+indistinguishable from Argus genuinely not hearing anything, which is
+exactly what got reported. Fixed by replacing the majority-vote rule with
+an absolute floor (>=4 speech-flagged sub-chunks, ~128ms) -- not skewed by
+clip length/padding, still rejects a one-off spurious chunk on pure
+noise/echo, the actual failure mode the majority rule was trying to guard
+against per its own docstring. Regression test simulates a 40-chunk clip
+with only 5 (12.5%) speech-flagged -- confirmed rejected under the old
+rule, accepted under the new one.
+
+The thoughts-spoken-aloud bug was a real, separate defect in
+`sentence_splitter.py`: `_SENTENCE_END`'s regex had zero awareness of
+parenthesis nesting, so a reply with two adjacent thoughts and little/no
+space between them -- `"(...)(...)"` -- split INSIDE the first thought at
+its internal "." instead of at the boundary between them. That produced
+unbalanced fragments that failed `_is_thought`'s strict balanced-paren
+check, so they got spoken aloud, parens and all. Confirmed against real
+production captions from the event log. Fixed with
+`_split_respecting_parens()`, a depth-aware pass that only accepts a
+sentence boundary once every open "(" up to that point has closed. As a
+second-layer backstop, `clean_for_speech()` now also strips stray `()[]`
+characters from anything that does reach TTS (content kept, just the
+bracket characters removed) -- anything reaching that function has
+already been decided NOT a thought upstream, so there's never a reason to
+literally vocalize a paren character.
+
 **Fixed, 2026-08-28 (mouth opened far too wide, and flapped constantly
 while silent)**: reported live. Argus had diagnosed parts of this himself
 in an earlier session but never landed a fix; one of his three claims was
