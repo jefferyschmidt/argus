@@ -67,7 +67,7 @@ class RealtimeVoiceLoop:
     the normal STT -> text -> TTS chain feels especially mechanical.
     """
 
-    def __init__(self):
+    def __init__(self, tool_registry=None):
         if not settings.openai_api_key:
             raise ImportError("OPENAI_API_KEY is required when VOICE_MODE=realtime")
         self._stop = threading.Event()
@@ -81,7 +81,13 @@ class RealtimeVoiceLoop:
         self._connection_error: str | None = None
         self._send_lock = threading.Lock()
         self._pending_calls: list[dict] = []
-        self.tools = build_default_registry()
+        # Accepts an externally-built registry (ROADMAP.md Phase 1: a
+        # single ToolServer shared across every consumer -- chat, this
+        # realtime loop, and eventually the proactive engine -- instead of
+        # each one silently building its own with no shared task-approval
+        # or cost-governor state). Falls back to a fresh one so this class
+        # still works standalone, same as before.
+        self.tools = tool_registry if tool_registry is not None else build_default_registry()
         self.tools.confirmer = _make_ui_confirmer()
         self._response_active = False
         self._speech_lock = threading.Lock()

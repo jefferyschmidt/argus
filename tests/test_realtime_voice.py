@@ -22,6 +22,24 @@ def test_realtime_session_uses_native_audio_vad_and_interruption(monkeypatch):
     assert session["audio"]["output"]["voice"] == "marin"
 
 
+def test_accepts_an_externally_built_tool_registry():
+    """ROADMAP.md Phase 1: a single tool registry shared across every
+    consumer (chat, this realtime loop, and eventually the proactive
+    engine) instead of each one silently building its own with no shared
+    task-approval or cost-governor state."""
+    shared = build_default_registry()
+    with patch("argus.voice.realtime.settings.openai_api_key", "test-key"):
+        loop = RealtimeVoiceLoop(tool_registry=shared)
+    assert loop.tools is shared
+
+
+def test_still_builds_its_own_registry_when_none_is_given():
+    with patch("argus.voice.realtime.settings.openai_api_key", "test-key"):
+        loop = RealtimeVoiceLoop()
+    assert loop.tools is not None
+    assert any(tool["name"] == "list_dir" for tool in loop.tools.schemas())
+
+
 def test_realtime_prompt_is_accurate_about_available_tools():
     from argus.voice.realtime import _REALTIME_INSTRUCTIONS
 
