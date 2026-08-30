@@ -139,109 +139,87 @@ def build_default_registry(router=None) -> ToolRegistry:
             continue
         registry.register(tool)
 
-    # ROADMAP.md Phase 3: the first external MCP server, off by default
-    # (see Settings.enable_playwright_mcp). Wrapped in try/except -- npx/
-    # Node not being installed, or the server failing to start, must not
-    # take down every other tool Argus has; same "skip and warn" spirit as
-    # the plugin loader above.
-    if settings.enable_playwright_mcp:
-        try:
-            from argus.mcp_bridge import McpServerBridge
+    # ROADMAP.md Phase 3-6: every optional external MCP server this
+    # registry can include. Connect-wrap-register-or-skip-and-warn is
+    # identical for all seven (an unreachable/misconfigured server must
+    # never take down every other tool Argus has, same spirit as the
+    # plugin loader above) -- only how each one's bridge actually gets
+    # built differs (stdio vs URL, env vars vs headers), which is what the
+    # per-service `build` lambdas below capture. See _wire_mcp_server.
+    #
+    # Imported here, not at module level -- tests patch
+    # "argus.mcp_bridge.McpServerBridge", which only takes effect for a
+    # lookup that happens at call time (inside this function, each time
+    # it runs), not one bound once at module-import time.
+    from argus.mcp_bridge import McpServerBridge
 
-            bridge = McpServerBridge("npx", ["-y", "@playwright/mcp@latest", "--headless"])
-            for tool in bridge.build_tools(name_prefix="playwright_", group="playwright_mcp"):
-                registry.register(tool)
-        except Exception:
-            log.exception("Playwright MCP server failed to start -- browser tools unavailable this session")
-
-    # ROADMAP.md Phase 4: remote hosted MCP servers, reusing the same
-    # McpServerBridge Phase 3 built (now generalized to also speak
-    # streamable HTTP, not just stdio) -- different transport, not
-    # different bridge code. Both off unless the user has actually pasted
-    # in their own account's MCP URL; same try/except "skip and warn"
-    # pattern as Playwright above, since an unreachable or misconfigured
-    # server must not take down every other tool.
-    if settings.zapier_mcp_url:
-        try:
-            from argus.mcp_bridge import McpServerBridge
-
-            headers = {"Authorization": f"Bearer {settings.zapier_mcp_api_key}"} if settings.zapier_mcp_api_key else None
-            bridge = McpServerBridge(url=settings.zapier_mcp_url, headers=headers)
-            for tool in bridge.build_tools(name_prefix="zapier_", group="zapier_mcp"):
-                registry.register(tool)
-        except Exception:
-            log.exception("Zapier MCP server unreachable -- Zapier tools unavailable this session")
-
-    if settings.home_assistant_mcp_url:
-        try:
-            from argus.mcp_bridge import McpServerBridge
-
-            headers = {"Authorization": f"Bearer {settings.home_assistant_mcp_token}"} if settings.home_assistant_mcp_token else None
-            bridge = McpServerBridge(url=settings.home_assistant_mcp_url, headers=headers)
-            for tool in bridge.build_tools(name_prefix="home_assistant_", group="home_assistant_mcp"):
-                registry.register(tool)
-        except Exception:
-            log.exception("Home Assistant MCP server unreachable -- smart home tools unavailable this session")
-
-    # ROADMAP.md Phase 5: unlike Zapier/Home Assistant, both of these have
-    # fixed, documented endpoints -- no URL to paste in, just an enable
-    # flag (+ a token, for GitHub).
-    if settings.enable_github_mcp:
-        try:
-            from argus.mcp_bridge import McpServerBridge
-
-            headers = {"Authorization": f"Bearer {settings.github_mcp_token}"} if settings.github_mcp_token else None
-            bridge = McpServerBridge(url=settings.github_mcp_url, headers=headers)
-            for tool in bridge.build_tools(name_prefix="github_", group="github_mcp"):
-                registry.register(tool)
-        except Exception:
-            log.exception("GitHub MCP server unreachable -- GitHub tools unavailable this session")
-
-    if settings.enable_figma_mcp:
-        try:
-            from argus.mcp_bridge import McpServerBridge
-
-            bridge = McpServerBridge(url=settings.figma_mcp_url)
-            for tool in bridge.build_tools(name_prefix="figma_", group="figma_mcp"):
-                registry.register(tool)
-        except Exception:
+    for enabled, label, prefix, group, build, hint in (
+        (
+            settings.enable_playwright_mcp, "Playwright", "playwright_", "playwright_mcp",
+            lambda: McpServerBridge("npx", ["-y", "@playwright/mcp@latest", "--headless"]), "",
+        ),
+        (
+            # Account-specific dashboard-generated URLs (Zapier, Home
+            # Assistant) vs. fixed documented endpoints (GitHub, Figma,
+            # below) -- both shapes end up as url=/headers= either way.
+            bool(settings.zapier_mcp_url), "Zapier", "zapier_", "zapier_mcp",
+            lambda: McpServerBridge(
+                url=settings.zapier_mcp_url,
+                headers={"Authorization": f"Bearer {settings.zapier_mcp_api_key}"} if settings.zapier_mcp_api_key else None,
+            ), "",
+        ),
+        (
+            bool(settings.home_assistant_mcp_url), "Home Assistant", "home_assistant_", "home_assistant_mcp",
+            lambda: McpServerBridge(
+                url=settings.home_assistant_mcp_url,
+                headers={"Authorization": f"Bearer {settings.home_assistant_mcp_token}"} if settings.home_assistant_mcp_token else None,
+            ), "",
+        ),
+        (
+            settings.enable_github_mcp, "GitHub", "github_", "github_mcp",
+            lambda: McpServerBridge(
+                url=settings.github_mcp_url,
+                headers={"Authorization": f"Bearer {settings.github_mcp_token}"} if settings.github_mcp_token else None,
+            ), "",
+        ),
+        (
+            settings.enable_figma_mcp, "Figma", "figma_", "figma_mcp",
+            lambda: McpServerBridge(url=settings.figma_mcp_url),
             # Confirmed as the expected common case, not just theoretical:
             # this fails whenever the Figma desktop app isn't running with
-            # Dev Mode's MCP server enabled -- exactly the "skip and warn,
-            # don't take down the registry" case the try/except is for.
-            log.exception("Figma MCP server unreachable (desktop app not running with Dev Mode MCP enabled?) -- Figma tools unavailable this session")
-
-    # ROADMAP.md Phase 5/6: local stdio servers again (like Playwright),
-    # but needing their config via subprocess env vars rather than an
-    # HTTP header -- confirmed live as a real gap McpServerBridge didn't
-    # support until this was added (a server needing an env var for its
-    # API key silently never received it when only os.environ was set,
-    # hanging until timeout with no error at all).
-    if settings.enable_stability_mcp:
-        try:
-            from argus.mcp_bridge import McpServerBridge
-
-            env = {
+            # Dev Mode's MCP server enabled.
+            "desktop app not running with Dev Mode MCP enabled?",
+        ),
+        (
+            settings.enable_stability_mcp, "Stability AI", "stability_", "stability_mcp",
+            lambda: McpServerBridge("npx", ["-y", "mcp-server-stability-ai"], env={
                 "STABILITY_AI_API_KEY": settings.stability_ai_api_key,
                 "IMAGE_STORAGE_DIRECTORY": str(settings.workspace_dir),
-            }
-            bridge = McpServerBridge("npx", ["-y", "mcp-server-stability-ai"], env=env)
-            for tool in bridge.build_tools(name_prefix="stability_", group="stability_mcp"):
-                registry.register(tool)
-        except Exception:
-            log.exception("Stability AI MCP server failed to start -- image-generation tools unavailable this session")
-
-    if settings.enable_spotify_mcp:
-        try:
-            from argus.mcp_bridge import McpServerBridge
-
-            bridge = McpServerBridge("npx", ["-y", "@tbrgeek/spotify-mcp-server"])
-            for tool in bridge.build_tools(name_prefix="spotify_", group="spotify_mcp"):
-                registry.register(tool)
-        except Exception:
-            log.exception("Spotify MCP server failed to start -- music tools unavailable this session")
+            }), "",
+        ),
+        (
+            settings.enable_spotify_mcp, "Spotify", "spotify_", "spotify_mcp",
+            lambda: McpServerBridge("npx", ["-y", "@tbrgeek/spotify-mcp-server"]), "",
+        ),
+    ):
+        if enabled:
+            _wire_mcp_server(registry, label, prefix, group, build, hint)
 
     return registry
+
+
+def _wire_mcp_server(registry: ToolRegistry, label: str, name_prefix: str, group: str, build_bridge, hint: str = "") -> None:
+    """Shared connect/wrap/register/skip-and-warn plumbing for one
+    optional external MCP server (ROADMAP.md Phase 3-6) -- see the
+    call site above for why this exists as a helper rather than seven
+    near-identical try/except blocks."""
+    try:
+        bridge = build_bridge()
+        for tool in bridge.build_tools(name_prefix=name_prefix, group=group):
+            registry.register(tool)
+    except Exception:
+        suffix = f" ({hint})" if hint else ""
+        log.exception("%s MCP server unreachable%s -- its tools are unavailable this session", label, suffix)
 
 
 __all__ = [
