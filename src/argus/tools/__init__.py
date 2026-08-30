@@ -183,6 +183,34 @@ def build_default_registry(router=None) -> ToolRegistry:
         except Exception:
             log.exception("Home Assistant MCP server unreachable -- smart home tools unavailable this session")
 
+    # ROADMAP.md Phase 5: unlike Zapier/Home Assistant, both of these have
+    # fixed, documented endpoints -- no URL to paste in, just an enable
+    # flag (+ a token, for GitHub).
+    if settings.enable_github_mcp:
+        try:
+            from argus.mcp_bridge import McpServerBridge
+
+            headers = {"Authorization": f"Bearer {settings.github_mcp_token}"} if settings.github_mcp_token else None
+            bridge = McpServerBridge(url=settings.github_mcp_url, headers=headers)
+            for tool in bridge.build_tools(name_prefix="github_", group="github_mcp"):
+                registry.register(tool)
+        except Exception:
+            log.exception("GitHub MCP server unreachable -- GitHub tools unavailable this session")
+
+    if settings.enable_figma_mcp:
+        try:
+            from argus.mcp_bridge import McpServerBridge
+
+            bridge = McpServerBridge(url=settings.figma_mcp_url)
+            for tool in bridge.build_tools(name_prefix="figma_", group="figma_mcp"):
+                registry.register(tool)
+        except Exception:
+            # Confirmed as the expected common case, not just theoretical:
+            # this fails whenever the Figma desktop app isn't running with
+            # Dev Mode's MCP server enabled -- exactly the "skip and warn,
+            # don't take down the registry" case the try/except is for.
+            log.exception("Figma MCP server unreachable (desktop app not running with Dev Mode MCP enabled?) -- Figma tools unavailable this session")
+
     return registry
 
 

@@ -45,6 +45,26 @@ class Settings(BaseSettings):
     home_assistant_mcp_url: str = ""
     home_assistant_mcp_token: str = ""
 
+    # ROADMAP.md Phase 5: unlike Zapier/Home Assistant, these two have
+    # fixed, documented endpoints (not account-specific dashboard-
+    # generated URLs), so only an enable flag (+ a token, for GitHub) is
+    # needed -- no URL to paste in.
+    #
+    # GitHub's official remote MCP server -- issues/PRs/repo management,
+    # complementing (not replacing) the existing local self-editing tools.
+    # https://docs.github.com/en/copilot/how-tos/provide-context/use-mcp-in-your-ide/set-up-the-github-mcp-server
+    enable_github_mcp: bool = False
+    github_mcp_token: str = ""  # a GitHub personal access token
+    github_mcp_url: str = "https://api.githubcopilot.com/mcp/"
+    # Figma's Dev Mode MCP server -- runs locally inside the Figma desktop
+    # app (Dev Mode -> Enable desktop MCP server), bound to 127.0.0.1, no
+    # auth needed. Requires the desktop app actually running with a file
+    # open in Dev Mode; connection just fails (caught, logged, skipped)
+    # if it isn't.
+    # https://developers.figma.com/docs/figma-mcp-server/local-server-installation/
+    enable_figma_mcp: bool = False
+    figma_mcp_url: str = "http://127.0.0.1:3845/mcp"
+
     # Optional -- if set, Groq replaces Ollama in the low-latency "local"
     # slot (small talk, addressee-gate classification): hosted, no cold
     # start, ~300-500 tok/s vs. Ollama's CPU-bound generation on this
