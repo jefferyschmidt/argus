@@ -4,12 +4,22 @@ import anthropic
 import httpx
 
 from argus.llm.base import CompletionResult, Message, Tier
-from argus.llm.router import ModelRouter, _OFFLINE_NO_LOCAL_MESSAGE
+from argus.llm.router import ModelRouter, _OFFLINE_NO_LOCAL_MESSAGE, _can_degrade_frontier_error
 
 
 def _connection_error():
     req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
     return anthropic.APIConnectionError(request=req)
+
+
+def _insufficient_credit_error():
+    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(400, request=req)
+    return anthropic.BadRequestError(
+        "Your credit balance is too low to access the Anthropic API.",
+        response=response,
+        body={},
+    )
 
 
 def _router(local_available: bool):
@@ -90,3 +100,7 @@ def test_offline_fallback_when_local_also_raises():
     result = router.complete([Message(role="user", content="hello")])
 
     assert result.text == _OFFLINE_NO_LOCAL_MESSAGE
+
+
+def test_insufficient_credit_is_treated_as_a_recoverable_frontier_outage():
+    assert _can_degrade_frontier_error(_insufficient_credit_error())

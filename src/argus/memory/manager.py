@@ -1,6 +1,7 @@
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor, wait as wait_futures
 
+from argus.llm.base import Message
 from argus.memory.core import CoreMemoryStore
 from argus.memory.episodic import EpisodicStore
 from argus.memory.semantic import SemanticStore
@@ -65,14 +66,49 @@ class MemoryManager:
             wait_futures(self._pending_embeds, timeout=timeout)
             self._pending_embeds = []
 
-    def build_context(self, query: str, recent_turns: int = 12) -> str:
+    def dialogue_messages(self, limit: int = 16) -> list[Message]:
+        """Recent turns as real chat messages, not a briefing blob.
+
+        Call after remember_turn('user', ...) -- the live utterance is
+        dropped so the caller can send it as the API's current user
+        message. Consecutive same-role turns are merged (Anthropic
+        requires strict alternation), and a synthetic user opener is
+        prepended if the thread would otherwise start on an assistant
+        turn (proactive speech, idle check-ins)."""
+        recent = list(self.episodic.recent(self.session_id, limit=limit))
+        if recent and recent[-1]["role"] == "user":
+            recent = recent[:-1]
+        messages: list[Message] = []
+        for row in recent:
+            role = row["role"]
+            if role not in ("user", "assistant"):
+                continue
+            content = row["content"]
+            if messages and messages[-1].role == role:
+                messages[-1] = Message(
+                    role=role, content=messages[-1].content + "\n" + content
+                )
+            else:
+                messages.append(Message(role=role, content=content))
+        if messages and messages[0].role != "user":
+            messages.insert(0, Message(role="user", content="(already in the room)"))
+        return messages
+
+    def build_context(self, query: str, recent_turns: int = 12, include_recent: bool = True) -> str:
         """Assembles the memory block to inject ahead of the live conversation:
-        core memories verbatim, then relevant semantic hits, then recent turns."""
+        core memories verbatim, then relevant semantic hits, then recent turns.
+
+        include_recent=False when those turns are already being sent as
+        chat messages -- duplicating them as a system-prompt transcript
+        is what made replies read as a briefing instead of a conversation."""
         parts = []
 
         core = self.core.list_confirmed()
         if core:
-            parts.append("# Core memories (always true, do not contradict)\n" + "\n".join(f"- {c}" for c in core))
+            parts.append(
+                "# Core memories (standing user facts; current user messages override stale or conflicting entries)\n"
+                + "\n".join(f"- {c}" for c in core)
+            )
 
         hits = [h for h in self.semantic.search(query, n_results=5) if h["distance"] < 1.2]
         if hits:
@@ -80,13 +116,35 @@ class MemoryManager:
                 "# Relevant past context\n" + "\n".join(f"- {h['text']}" for h in hits)
             )
 
-        recent = self.episodic.recent(self.session_id, limit=recent_turns)
-        if recent:
-            parts.append(
-                "# Recent conversation\n"
-                + "\n".join(f"{r['role']}: {r['content']}" for r in recent)
-            )
+        if include_recent:
+            recent = self.episodic.recent(self.session_id, limit=recent_turns)
+            if recent:
+                parts.append(
+                    "# Recent conversation\n"
+                    + "\n".join(f"{r['role']}: {r['content']}" for r in recent)
+                )
 
+        return "\n\n".join(parts)
+
+    def build_conversation_context(self, query: str, include_recall: bool = False) -> str:
+        """Small context for ordinary conversation.
+
+        Semantic retrieval is deliberately opt-in here. Broad similarity
+        matches are useful for a task or an explicit "remember when" query,
+        but they make a casual conversation feel haunted by unrelated old
+        facts. Recent turns remain real chat messages via dialogue_messages.
+        """
+        parts = []
+        core = self.core.list_confirmed()
+        if core:
+            parts.append(
+                "# Standing user facts (may be stale; the user can correct them)\n"
+                + "\n".join(f"- {c}" for c in core)
+            )
+        if include_recall:
+            hits = [h for h in self.semantic.search(query, n_results=3) if h["distance"] < 0.8]
+            if hits:
+                parts.append("# Relevant recalled context\n" + "\n".join(f"- {h['text']}" for h in hits))
         return "\n\n".join(parts)
 
     def stats(self) -> dict:

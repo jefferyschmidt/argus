@@ -1,4 +1,8 @@
-from argus.voice.loop import _LIKELY_ADDRESSED
+from unittest.mock import MagicMock
+
+import numpy as np
+
+from argus.voice.loop import VoiceLoop, _LIKELY_ADDRESSED
 
 
 def test_question_mark_always_matches_via_caller():
@@ -26,3 +30,16 @@ def test_unrelated_chatter_does_not_match():
         "the dog needs to go out",
     ]:
         assert not _LIKELY_ADDRESSED.match(text.strip()), text
+
+
+def test_clear_follow_up_statement_is_not_dropped_as_stray():
+    loop = VoiceLoop.__new__(VoiceLoop)
+    loop.orchestrator = MagicMock()
+
+    # A close-mic continuation such as "I'd argue that..." is part of the
+    # active exchange even without an explicit wake word or question mark.
+    assert loop._seems_addressed_to_argus(
+        "I'd argue that name is a little on the nose.",
+        samples=np.full(800, 500, dtype=np.int16),
+    )
+    loop.orchestrator.router.local.complete.assert_not_called()

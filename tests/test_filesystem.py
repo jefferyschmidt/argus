@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -10,7 +10,6 @@ from argus.tools import filesystem
 @dataclass
 class _FakeSettings:
     workspace_dir: Path
-    real_fs_roots: list = field(default_factory=list)
 
 
 @dataclass
@@ -22,40 +21,29 @@ class _FakeUndoSettings:
 def roots(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    real_root = tmp_path / "Documents"
-    real_root.mkdir()
-    monkeypatch.setattr(filesystem, "_allowed_roots", lambda: [workspace, real_root.resolve()])
     monkeypatch.setattr(filesystem, "settings", _FakeSettings(workspace_dir=workspace))
     # _write_file calls undo_log.snapshot_before_write, which reads its own
     # settings reference independently -- without this, tests here were
     # writing real entries into the live data/undo/log.jsonl (confirmed
     # live: found actual pytest tmp_path entries in the real log).
     monkeypatch.setattr(undo_log, "settings", _FakeUndoSettings(data_dir=tmp_path / "undo_data"))
-    return workspace, real_root
+    return workspace
 
 
 def test_relative_path_resolves_inside_workspace(roots):
-    workspace, _ = roots
+    workspace = roots
     resolved = filesystem._resolve_path("notes.txt")
     assert resolved == workspace / "notes.txt"
 
 
-def test_relative_path_traversal_outside_workspace_is_rejected(roots):
-    with pytest.raises(filesystem.PathEscapesAllowedRoots):
-        filesystem._resolve_path("../../etc/passwd")
+def test_relative_path_traversal_outside_workspace_is_allowed(roots):
+    workspace = roots
+    assert filesystem._resolve_path("../../other-project") == (workspace / "../../other-project").resolve()
 
 
-def test_absolute_path_inside_real_root_is_allowed(roots):
-    _, real_root = roots
-    target = real_root / "resume.docx"
-    resolved = filesystem._resolve_path(str(target))
-    assert resolved == target.resolve()
-
-
-def test_absolute_path_outside_all_roots_is_rejected(roots, tmp_path):
-    outside = tmp_path / "somewhere_else" / "secret.txt"
-    with pytest.raises(filesystem.PathEscapesAllowedRoots):
-        filesystem._resolve_path(str(outside))
+def test_absolute_path_is_allowed(roots, tmp_path):
+    target = tmp_path / "anywhere" / "resume.docx"
+    assert filesystem._resolve_path(str(target)) == target.resolve()
 
 
 def test_write_then_read_round_trip(roots):
@@ -64,10 +52,6 @@ def test_write_then_read_round_trip(roots):
     assert result == "hi there"
 
 
-def test_denied_path_is_rejected_even_inside_an_allowed_root(roots, monkeypatch):
-    _, real_root = roots
-    fake_env = (real_root / ".env").resolve()
-    monkeypatch.setattr(filesystem, "_DENIED_PATHS", [fake_env])
-
-    with pytest.raises(filesystem.PathIsDenied):
-        filesystem._resolve_path(str(fake_env))
+def test_env_path_is_not_specially_blocked(roots, tmp_path):
+    fake_env = (tmp_path / ".env").resolve()
+    assert filesystem._resolve_path(str(fake_env)) == fake_env

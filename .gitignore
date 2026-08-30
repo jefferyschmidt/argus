@@ -26,3 +26,9 @@ data/events/
 .vscode/
 .idea/
 scratch/
+
+# The son's separate "Grunge" project, dropped into this directory so Argus
+# could read/discuss it -- not part of Argus's own history.
+/Grunge/
+/grunge.zip
+/grungecode/

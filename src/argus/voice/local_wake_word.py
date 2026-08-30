@@ -18,7 +18,7 @@ _FRAME_SAMPLES = 512  # Silero's required chunk size at 16kHz -- confirmed live 
 _FRAME_MS = _FRAME_SAMPLES * 1000 / 16000  # ~32ms, for the ms-based constants below
 _SILENCE_HANG_MS = 900
 _MAX_UTTERANCE_SECONDS = 20
-_MIN_SPEECH_MS_TO_TRANSCRIBE = 250  # a cough/click can pass VAD for one frame; not worth a whisper pass
+_MIN_SPEECH_MS_TO_TRANSCRIBE = 300  # a cough/click can pass VAD for one frame; not worth a whisper pass
 
 # "Argus" is close enough to a handful of real words/names that faster-whisper
 # occasionally mishears it on short, close-mic'd clips -- confirmed by ear
@@ -90,7 +90,7 @@ class LocalWakeWordListener:
         self._vad.reset()
 
     def listen_for_wake_and_command(
-        self, on_wake=None, chunks_out: list | None = None, on_checking=None, hot_mic_check=None,
+        self, on_wake=None, chunks_out: list | None = None, on_checking=None, on_not_addressed=None, hot_mic_check=None,
         should_stop=None, via_hot_mic_out: list | None = None,
     ) -> tuple[np.ndarray, str | None]:
         """Blocks until an utterance containing the wake word is heard.
@@ -175,7 +175,11 @@ class LocalWakeWordListener:
                 if utterance is None or utterance.size == 0:
                     continue
 
-                speech_ms = len(utterance) / sr * 1000
+                # The buffer includes trailing silence to detect the end of
+                # speech. Use the actual VAD speech duration: otherwise a
+                # single false-positive frame plus the silence hang looks
+                # like a full utterance and blocks on local transcription.
+                speech_ms = getattr(self, "_last_captured_speech_ms", len(utterance) / sr * 1000)
                 if speech_ms < _MIN_SPEECH_MS_TO_TRANSCRIBE:
                     continue
 
@@ -204,6 +208,8 @@ class LocalWakeWordListener:
 
                 end_idx = _find_wake_word(text)
                 if end_idx is None:
+                    if on_not_addressed is not None:
+                        on_not_addressed()
                     continue
 
                 if on_wake is not None:
@@ -224,6 +230,7 @@ class LocalWakeWordListener:
         chunks: list[np.ndarray] = []
         silence_run = 0
         heard_speech = False
+        speech_frames = 0
 
         for _ in range(int(max_frames)):
             if should_stop is not None and should_stop():
@@ -234,6 +241,7 @@ class LocalWakeWordListener:
 
             if is_speech:
                 heard_speech = True
+                speech_frames += 1
                 silence_run = 0
                 chunks.append(frame)
                 if chunks_out is not None:
@@ -249,5 +257,7 @@ class LocalWakeWordListener:
             # nothing buffered while idle (no transcription of silence).
 
         if not heard_speech:
+            self._last_captured_speech_ms = 0.0
             return None
+        self._last_captured_speech_ms = speech_frames * frame_len / settings.audio_sample_rate * 1000
         return np.concatenate(chunks) if chunks else None

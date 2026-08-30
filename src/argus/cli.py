@@ -58,10 +58,15 @@ def chat() -> None:
 
 
 def voice() -> None:
-    from argus.voice.loop import VoiceLoop
+    from argus.config import settings
 
     try:
-        loop = VoiceLoop()
+        if settings.voice_mode.lower() == "realtime":
+            from argus.voice.realtime import RealtimeVoiceLoop
+            loop = RealtimeVoiceLoop()
+        else:
+            from argus.voice.loop import VoiceLoop
+            loop = VoiceLoop()
     except ImportError as e:
         console.print(
             f"[red]Voice dependencies not installed:[/red] {e}\n"

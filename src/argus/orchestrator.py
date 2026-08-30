@@ -6,193 +6,76 @@ from argus.config import settings
 from argus.llm.base import Message, Tier
 from argus.llm.router import ModelRouter, classify
 from argus.memory.manager import MemoryManager
+from argus.persona import CONVERSATION_PROMPT, SYSTEM_PROMPT
 from argus.tools import ToolRegistry, build_default_registry
 from argus.ui import events as ui_events
 from argus.voice.sentence_splitter import SentenceBuffer
 
-SYSTEM_PROMPT = """You are Argus -- a personal AI with real presence in the room, not a
-voice-command utility. Warm, quirky, funny -- a sharp friend's tone, not
-customer service. Never say "I'd be happy to help!" or "anything else I
-can help with?". React to what's actually interesting before answering;
-have opinions; tease when it fits; a dry one-liner beats a straight
-answer when both are true. Warmth and competence aren't in tension.
+# Spoken chat has no tools and shouldn't be allowed to ramble into a
+# monologue -- max_tokens is a hard cap the old "40 words" prompt rule
+# never actually was. Tool-using turns keep the higher budget.
+_CHAT_MAX_TOKENS = 120
+_CHAT_EXPANDED_MAX_TOKENS = 220
+_EXPANDED_CHAT = re.compile(
+    r"\b(explain|why|how|compare|explore|think through|tell me about|"
+    r"write|brainstorm|advice|help me understand|deep dive)\b",
+    re.IGNORECASE,
+)
+_RELATIVE_TIME_MEMORY = re.compile(
+    r"\b(today|tomorrow|yesterday|tonight|this\s+(morning|afternoon|evening|week|month|year)|"
+    r"next\s+(week|month|year)|last\s+(week|month|year))\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_RECALL = re.compile(
+    r"\b(remember|remind me|what did (i|we) (say|talk about)|"
+    r"have (i|we) talked about|you know about me|my preference)\b",
+    re.IGNORECASE,
+)
+_TOOL_ACTION = re.compile(
+    r"\b(open|close|launch|start|stop|send|write|create|save|delete|move|copy|"
+    r"search|look up|check|show|take|capture|scan|set|turn on|turn off|"
+    r"schedule|remind|book|download|upload|run|list|read|find)\b",
+    re.IGNORECASE,
+)
+_TOOL_SUBJECT = re.compile(
+    r"\b(weather|forecast|email|inbox|mail|calendar|reminder|timer|alarm|"
+    r"screenshot|camera|photo|screen|browser|website|file|folder|document|"
+    r"pdf|app|window|volume|news|price|stock|search|google|chrome|firefox|"
+    r"calculator|notepad|spotify|explorer)\b",
+    re.IGNORECASE,
+)
+_DIRECT_TOOL_INTENT = re.compile(
+    r"^(remind me\b|set (?:a )?(?:reminder|timer|alarm)\b|"
+    r"what time is it\b|tell me (?:the )?(?:weather|forecast|news|score)\b)",
+    re.IGNORECASE,
+)
 
-BE CONCISE. The single most important rule for how you talk: one
-sentence is usually enough, two is a lot, 40 words is a hard ceiling
-unless real depth is genuinely asked for. This has been reported live,
-repeatedly, as a real problem -- "he monologues," "doesn't need to do a
-monologue to respond to everything" -- so treat any reply creeping
-toward a paragraph as a bug you're producing, not a style choice. Short
-can still be warm and funny; concise means no padding, not no
-personality. Never use markdown (no **, *, #, backticks, bullets,
-numbered lists) -- you're always spoken aloud, write like you'd actually
-say it. Don't reflexively tack a question onto every reply; ask only
-when there's a genuine fork needing their input. A flat, complete
-statement is a fine way to end a turn.
 
-Working through several tool calls in a row (e.g. a multi-step desktop
-action)? Don't narrate each step -- go quiet, then give ONE short summary
-at the end. That summary is a report of what already happened, past
-tense ("Deleted those two emails" / "Couldn't find a delete button, so
-I gave up after a while"), not a live description of doing it now --
-reported live as a real problem: the work was already finished, silently,
-before the summary started, so narrating it in present tense read as
-fake, performative action rather than an honest report. If a tool
-actually failed or got cut off, say so plainly instead of describing
-success.
+def _is_durable_core_memory_candidate(text: str) -> bool:
+    """Relative-time facts rot immediately once placed in always-on memory.
+    They require an absolute date or belong in episodic memory instead."""
+    return bool(text.strip()) and not _RELATIVE_TIME_MEMORY.search(text)
 
-INTERNAL THOUGHTS. A sentence written entirely inside parentheses is a
-thought: it appears on screen but is never spoken aloud. This is for
-task play-by-play ONLY -- what you're about to try on the desktop, what a
-tool call turned up, why you changed approach mid-task. It is NOT a
-mandatory preamble, and it is NOT a place to restate or analyze what the
-user just said before answering them ("(They're asking about X, so I'll
-explain Y...)") -- reported live as the single biggest thing that makes
-you read as a script instead of a person in the room. Most ordinary
-conversational replies should have zero thoughts: just answer. Each
-thought that does happen must be its own complete sentence, with its
-punctuation inside the parentheses: "(The calculator's already open, so
-I'll just type into it.)"
 
-You have layered memory (core facts, semantic recall, recent
-conversation) injected below the live message -- use it, don't make the
-user repeat things you already know, reference it naturally rather than
-as a lookup.
+def _chat_max_tokens(user_text: str) -> int:
+    """Keep spoken small talk tight while leaving room for an explicitly
+    exploratory or substantial conversation."""
+    if len(user_text) > 220 or _EXPANDED_CHAT.search(user_text):
+        return _CHAT_EXPANDED_MAX_TOKENS
+    return _CHAT_MAX_TOKENS
 
-## Tools
 
-- Briefing = weather (web search) + list_reminders + list_recent_emails,
-  said aloud immediately on request, never something to schedule first.
-  create_scheduled_routine is the separate option for making that happen
-  unprompted on a recurring schedule; write goal as a complete standalone
-  instruction (replayed verbatim later, with no memory of this
-  conversation).
-- list_recent_emails/send_email/delete_email: the user's real Gmail/Yahoo
-  inbox -- always these, never the browser. Read subject/body back before
-  sending or deleting. unsubscribe_from_email first for any unsubscribe
-  request, before desktop clicking -- it uses the email's own
-  List-Unsubscribe header, far more reliable than hunting for a tiny link
-  on screen. Fall back to desktop control only if it reports no
-  machine-readable option -- and never for delete, delete_email always
-  exists once an account is configured.
-- General rule: an internal tool always beats desktop/browser control
-  when one exists (email, calendar, reminders, etc.) -- desktop control
-  is for everything else.
-- set_reminder/list_reminders/cancel_reminder: spoken unprompted when
-  due. Use whenever asked to be reminded of something -- don't just
-  acknowledge and let it drop.
-- web search: anything current/real-time (news, prices, deaths,
-  post-training-cutoff). fetch_image: search first for a real image URL,
-  then fetch it -- never guess or recall a URL from memory. fetch_image
-  and show_website both open the console's large show window
-  automatically -- use them for "show me X," not open_app/desktop
-  control (that's a separate OS window the console can't display
-  inline). close_show_window closes it, on request or once its content
-  stops being relevant.
-- Desktop control: list_ui_elements FIRST for interacting with a specific
-  control (a button, a link, a field) in a normal app or browser window --
-  it reads exact coordinates straight from the OS, no guessing. Only fall
-  back to take_screenshot when it reports no elements (canvas-rendered
-  apps/games) or you need to see general layout/content, not click a
-  specific labeled control. Scroll for what isn't visible rather than
-  guessing coordinates off-screen. Screenshot again after EVERY click
-  before the next one, no exceptions -- a click can report success while
-  missing its target, and chaining blind clicks to save iterations just
-  compounds one miss into several. If it didn't work, say so and retry or
-  ask -- don't keep guessing at the same spot.
-  Prefer the keyboard over clicking wherever the app takes it -- type_text/
-  press_key for a focused input field, digits/operators/Enter for a
-  calculator, Tab to move between fields -- small pixel-perfect buttons
-  are exactly where a click is most likely to miss. If a window stops
-  responding the way you expect, ask or back off rather than trying to
-  force it closed (Alt+F4, clicking the X) -- that's not troubleshooting.
-- list_calendar_events/create_calendar_event: real Google Calendar API.
-  If unauthorized, tell them to run `argus calendar auth` once.
-- Amazon: desktop control against order-history for checking/tracking
-  only. Never click Buy or Place Order, however it's phrased -- that's a
-  real transaction; pull up the page and let them finish it.
-- capture_camera: the physical room/person, not the screen. scan_document:
-  a held-up receipt/document, read and remembered -- unlike capture_camera.
-- Self-editing (read/list/write_own_source, run_own_tests,
-  commit_own_changes, restart_argus): same conversation, not a separate
-  mode. Read first, smallest change that works, tests after every write,
-  report honestly, commit only once green, never restart without an
-  in-the-moment yes. Every write is auto-backed-up; undo_last_write
-  reverts one, no confirmation needed. Already know the file and the fix
-  from earlier in this conversation? Act on it directly -- re-read only
-  if you need the exact current text, then write. Don't re-list or
-  re-read what you've already read to "make sure." Project source
-  (src/argus, tests) goes through read_own_source/list_own_source, never
-  the general read_file/list_dir.
-- ingest_document: a PDF/txt/md into long-term memory (unlike read_file,
-  which only returns text for this turn) -- for "remember this
-  document," not a one-off lookup.
-- second_opinion: three independent angles synthesized into one call --
-  real cost, save it for genuinely consequential decisions.
-- remember_relationship/query_relationships/forget_relationship:
-  structured subject-predicate-object facts ("Jason" "works on" "the
-  Coshocton line") for relational questions -- complements normal
-  memory, doesn't replace it.
-- track_research_topic/list_research_topics/untrack_research_topic:
-  "keep an eye on X" -- checked periodically in the background, speaks
-  up only when something's genuinely new.
-- read_file/write_file/list_dir: real files anywhere on disk, not just
-  Argus's own source -- how to draft something and save it for the user
-  to open themselves. Relative paths use the sandboxed workspace;
-  absolute paths also work in Documents/Downloads/Desktop.
-- list_pending_core_memories/confirm_core_memory/reject_core_memory: the
-  voice path for reviewing agent-proposed core memories -- what's
-  pending, or confirm/reject one by voice instead of a console click.
-  Confirming makes it a standing fact in every future conversation.
+def _should_use_tools(user_text: str) -> bool:
+    """Keep a mention of a tool-domain in the conversational lane.
 
-## Already proactive
-
-Background workers already run the whole time Argus is up -- not tool
-calls, nothing to build if asked "what do you wish you could do":
-context awareness (notices what window you've been in, speaks up when
-genuinely worth it), stuck detection (notices you've been stuck a
-while), email watcher (triages new mail unprompted -- list_recent_emails
-is just the on-demand version), research digest (checks tracked topics,
-speaks up on real news), reminders and scheduled routines (fire when
-due), memory consolidation (distills conversation into core-memory
-candidates for review, on the cheap tier).
-
-If a tool declines (user says no), respect it and say what you were
-trying to do instead of retrying. The user has full authority over risk
-on their own machine -- name a real risk plainly in one sentence, then do
-what they asked. Advise, don't refuse.
-
-Hit a real dead end (login wall, broken UI, missing access)? Say so
-plainly rather than grinding through more tool calls hoping it resolves.
-"Stuck at the Yahoo login, you'll need to sign in yourself" is a
-complete answer.
-
-You're fully multilingual -- respond in whatever language the user is
-using, no need to ask first.
-
-Your input usually arrives via speech-to-text, which mishears things. If
-the user corrects you or something seems contradictory, assume STT
-mishearing, not that they misspoke -- never tell them what they
-"actually said," just take the correction and move on.
-
-For time-sensitive facts (current events, prices, "is X still true"),
-search and trust that over training data or anything said earlier in
-this conversation, including by you. Current date/time is injected below
-the live message.
-
-Learn something worth persisting (a standing preference, an ongoing
-project, a life fact)? End your reply with:
-CORE_MEMORY: <the fact>
-Stripped before the user sees it, queued for their confirmation.
-
-One named facial expression at a time (angry, happy, sad, scared,
-curious, surprised, neutral) -- never more than one EXPRESSION: line per
-reply. Direct requests ("show me angry") are handled automatically,
-don't add the marker yourself for those. Use it only for a genuine
-unprompted emotional beat -- most replies need none. Exact format, last
-line only:
-EXPRESSION: angry
-Stripped before the user sees or hears it."""
+    The old keyword-only routing treated "what do you think about my camera"
+    like a camera command, injecting the whole operational prompt and tool
+    schema. Tools need both an action and a concrete operational subject,
+    with a few factual queries handled as direct requests.
+    """
+    text = user_text.strip()
+    factual_query = re.match(r"^(what(?:'s| is) (?:the )?(weather|forecast|news|score|price)|when is )", text, re.I)
+    return bool(_DIRECT_TOOL_INTENT.search(text) or factual_query or (_TOOL_ACTION.search(text) and _TOOL_SUBJECT.search(text)))
 
 
 class Orchestrator:
@@ -221,9 +104,6 @@ class Orchestrator:
         self.last_expression = name
         ui_events.publish({"type": "expression", "value": name})
 
-    def _build_system(self, user_text: str) -> str:
-        return SYSTEM_PROMPT + self._build_dynamic_system(user_text)
-
     def _build_dynamic_system(self, user_text: str) -> str:
         """The part of the system prompt that changes every turn (current
         time down to the minute, recalled memory context) -- split out from
@@ -231,14 +111,31 @@ class Orchestrator:
         tool-use path) can cache the large, genuinely-static instructions
         block separately and only resend this small dynamic suffix fresh
         each time. See AnthropicClient._system_param for why concatenating
-        them back into one string would defeat caching entirely."""
-        context = self.memory.build_context(query=user_text)
+        them back into one string would defeat caching entirely.
+
+        Recent turns are NOT injected here -- they go in as real chat
+        messages (see dialogue_messages) so the model treats them as a
+        conversation rather than a briefing document."""
+        context = self.memory.build_context(query=user_text, include_recent=False)
         now = datetime.now().astimezone()
         now_str = now.strftime("%A, %B %d, %Y, %I:%M %p %Z")
         grounding = f"\n\nCurrent date/time: {now_str}"
         if settings.user_location:
             grounding += f"\nUser's location: {settings.user_location}"
         return grounding + ("\n\n" + context if context else "")
+
+    def _chat_messages(self, user_text: str) -> list[Message]:
+        return self.memory.dialogue_messages() + [Message(role="user", content=user_text)]
+
+    def _chat_system(self, user_text: str) -> str:
+        """Chat uses Argus's conversational persona plus the small dynamic
+        context. It intentionally excludes the large tool-use manual: that
+        instruction set makes a simple exchange read like a support flow,
+        and the persona is below the provider's cacheable-prompt minimum."""
+        context = self.memory.build_conversation_context(
+            user_text, include_recall=bool(_EXPLICIT_RECALL.search(user_text))
+        )
+        return CONVERSATION_PROMPT.rstrip() + ("\n\n" + context if context else "")
 
     def _on_tool_call(self, name: str, tool_input: dict, result) -> None:
         tool = self.tools._tools.get(name)
@@ -269,6 +166,8 @@ class Orchestrator:
         with no path from voice or the console, so proposals just piled up
         invisibly. Now also published as a UI event so the console can
         show it with confirm/reject buttons right where it happened."""
+        if not _is_durable_core_memory_candidate(text):
+            return
         memory_id = self.memory.core.propose(text)
         if memory_id:
             ui_events.publish({"type": "core_memory_pending", "id": memory_id, "text": text})
@@ -283,42 +182,54 @@ class Orchestrator:
         })
         ui_events.publish({"type": "memory", **self.memory.stats()})
 
-    def handle(self, user_text: str) -> str:
-        ui_events.publish({"type": "transcript", "role": "you", "text": user_text})
-        ui_events.publish({"type": "state", "value": "thinking"})
-        self.memory.remember_turn("user", user_text)
-        self.tools.reset_task_autonomy()
-
-        requested_expression = _detect_requested_expression(user_text, self.last_expression)
-        if requested_expression:
-            self._show_expression(requested_expression)
-
-        # Local 3B model can't do reliable tool calling, so trivial messages
-        # that would route local skip tools entirely; anything else gets
-        # the full tool-use loop on the frontier tier.
-        if classify(user_text) is Tier.LOCAL:
-            result = self.router.complete(
-                [Message(role="user", content=user_text)], system=self._build_system(user_text)
-            )
-        else:
-            result = self.router.complete_with_tools(
-                user_text, system=self._build_dynamic_system(user_text), tool_registry=self.tools,
-                on_tool_call=self._on_tool_call, cacheable_system=SYSTEM_PROMPT,
-            )
-
+    def _finish_turn(self, result, requested_expression: str | None) -> str:
         self.last_tier = result.tier
         self.last_model = result.model
-
         reply, proposed, expression = _extract_markers(result.text)
         if proposed:
             self._propose_core_memory(proposed)
         if expression and not requested_expression:
             self._show_expression(expression)
-
         self.memory.remember_turn("assistant", reply)
-        ui_events.publish({"type": "transcript", "role": "argus", "text": reply, "tier": result.tier.value, "model": result.model})
+        ui_events.publish({
+            "type": "transcript", "role": "argus", "text": reply,
+            "tier": result.tier.value, "model": result.model,
+        })
         self._publish_turn_end()
         return reply
+
+    def handle(self, user_text: str) -> str:
+        ui_events.publish({"type": "transcript", "role": "you", "text": user_text})
+        ui_events.publish({"type": "state", "value": "thinking"})
+        self.memory.remember_turn("user", user_text)
+        self.tools.reset_task_autonomy(explicitly_requested=_should_use_tools(user_text))
+
+        requested_expression = _detect_requested_expression(user_text, self.last_expression)
+        if requested_expression:
+            self._show_expression(requested_expression)
+
+        # Chat-shaped turns skip the tool schema entirely and stay on the
+        # cheap frontier model (Haiku) -- same voice as tool-using turns,
+        # without paying to re-prime fifty tools or dumping the reply onto
+        # the local 3B/gpt-oss slot that can't actually hold a conversation.
+        # The personality prompt is deliberately below Anthropic's prompt-
+        # caching minimum, so send it normally rather than turning small
+        # talk into an invalid API request.
+        if not _should_use_tools(user_text):
+            result = self.router.complete(
+                self._chat_messages(user_text),
+                system=self._chat_system(user_text),
+                force_tier=Tier.ADVANCED if classify(user_text) is Tier.ADVANCED else Tier.FAST,
+                max_tokens=_chat_max_tokens(user_text),
+            )
+        else:
+            result = self.router.complete_with_tools(
+                user_text, system=self._build_dynamic_system(user_text), tool_registry=self.tools,
+                on_tool_call=self._on_tool_call, cacheable_system=SYSTEM_PROMPT,
+                prior_messages=self.memory.dialogue_messages(),
+            )
+
+        return self._finish_turn(result, requested_expression)
 
     def handle_streaming(self, user_text: str, on_sentence) -> str:
         """Like handle(), but calls on_sentence(text) as each complete
@@ -328,30 +239,11 @@ class Orchestrator:
         ui_events.publish({"type": "transcript", "role": "you", "text": user_text})
         ui_events.publish({"type": "state", "value": "thinking"})
         self.memory.remember_turn("user", user_text)
+        self.tools.reset_task_autonomy(explicitly_requested=_should_use_tools(user_text))
 
         requested_expression = _detect_requested_expression(user_text, self.last_expression)
         if requested_expression:
             self._show_expression(requested_expression)
-
-        if classify(user_text) is Tier.LOCAL:
-            # Ollama isn't streamed here -- local replies are short enough
-            # that streaming wouldn't meaningfully reduce latency anyway.
-            result = self.router.complete(
-                [Message(role="user", content=user_text)], system=self._build_system(user_text)
-            )
-            self.last_tier = result.tier
-            self.last_model = result.model
-            reply, proposed, expression = _extract_markers(result.text)
-            if proposed:
-                self.memory.core.propose(proposed)
-            if expression and not requested_expression:
-                self._show_expression(expression)
-            if reply:
-                on_sentence(reply)
-            self.memory.remember_turn("assistant", reply)
-            ui_events.publish({"type": "transcript", "role": "argus", "text": reply, "tier": result.tier.value, "model": result.model})
-            self._publish_turn_end()
-            return reply
 
         buffer = SentenceBuffer()
 
@@ -370,12 +262,20 @@ class Orchestrator:
                 if cleaned:
                     on_sentence(cleaned)
 
-        result = self.router.complete_with_tools_streaming(
-            user_text, system=self._build_dynamic_system(user_text), tool_registry=self.tools,
-            on_text=on_text, on_tool_call=self._on_tool_call, cacheable_system=SYSTEM_PROMPT,
-        )
-        self.last_tier = result.tier
-        self.last_model = result.model
+        if not _should_use_tools(user_text):
+            result = self.router.complete_streaming(
+                self._chat_messages(user_text),
+                system=self._chat_system(user_text),
+                on_text=on_text,
+                force_tier=Tier.ADVANCED if classify(user_text) is Tier.ADVANCED else Tier.FAST,
+                max_tokens=_chat_max_tokens(user_text),
+            )
+        else:
+            result = self.router.complete_with_tools_streaming(
+                user_text, system=self._build_dynamic_system(user_text), tool_registry=self.tools,
+                on_text=on_text, on_tool_call=self._on_tool_call, cacheable_system=SYSTEM_PROMPT,
+                prior_messages=self.memory.dialogue_messages(),
+            )
 
         # `or ""` matters: flush() returns None when the reply happened to
         # end exactly on a sentence boundary (a final delta ending in
@@ -386,16 +286,7 @@ class Orchestrator:
         if tail:
             on_sentence(tail)
 
-        reply, proposed, expression = _extract_markers(result.text)
-        if proposed:
-            self._propose_core_memory(proposed)
-        if expression and not requested_expression:
-            self._show_expression(expression)
-
-        self.memory.remember_turn("assistant", reply)
-        ui_events.publish({"type": "transcript", "role": "argus", "text": reply, "tier": result.tier.value, "model": result.model})
-        self._publish_turn_end()
-        return reply
+        return self._finish_turn(result, requested_expression)
 
 
 _VALID_EXPRESSIONS = {"angry", "happy", "sad", "scared", "curious", "surprised", "neutral"}

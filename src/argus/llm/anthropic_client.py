@@ -105,15 +105,51 @@ class AnthropicClient:
         self._client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
     def complete(
-        self, messages: list[Message], system: str = "", tier: Tier = Tier.FAST
+        self,
+        messages: list[Message],
+        system: str = "",
+        tier: Tier = Tier.FAST,
+        max_tokens: int = 4096,
+        cacheable_system: str = "",
     ) -> CompletionResult:
         model = _TIER_MODEL[tier]()
         response = self._client.messages.create(
             model=model,
-            max_tokens=4096,
-            system=system or anthropic.NOT_GIVEN,
+            max_tokens=max_tokens,
+            system=_system_param(system, cacheable_system),
             messages=[{"role": m.role, "content": m.content} for m in messages],
         )
+        text = "".join(block.text for block in response.content if block.type == "text")
+        return CompletionResult(
+            text=text,
+            tier=tier,
+            model=model,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+        )
+
+    def complete_streaming(
+        self,
+        messages: list[Message],
+        system: str,
+        on_text,
+        tier: Tier = Tier.FAST,
+        max_tokens: int = 4096,
+        cacheable_system: str = "",
+    ) -> CompletionResult:
+        """Streams a normal chat reply while preserving the same prompt and
+        accounting behavior as :meth:`complete`."""
+        model = _TIER_MODEL[tier]()
+        with self._client.messages.stream(
+            model=model,
+            max_tokens=max_tokens,
+            system=_system_param(system, cacheable_system),
+            messages=[{"role": m.role, "content": m.content} for m in messages],
+        ) as stream:
+            for text in stream.text_stream:
+                on_text(text)
+            response = stream.get_final_message()
+
         text = "".join(block.text for block in response.content if block.type == "text")
         return CompletionResult(
             text=text,
@@ -159,6 +195,7 @@ class AnthropicClient:
         max_iterations: int = _MAX_TOOL_ITERATIONS,
         on_tool_call=None,
         cacheable_system: str = "",
+        prior_messages: list[Message] | None = None,
     ) -> CompletionResult:
         """Runs the full tool-use loop: send message, execute any tool calls
         the model asks for via the registry (which enforces permission
@@ -178,7 +215,11 @@ class AnthropicClient:
         from argus.tools.registry import ToolDenied
 
         model = _TIER_MODEL[tier]()
-        history: list[dict] = [{"role": "user", "content": user_text}]
+        history: list[dict] = [
+            {"role": message.role, "content": message.content}
+            for message in (prior_messages or [])
+        ]
+        history.append({"role": "user", "content": user_text})
         total_in = total_out = 0
         tools = _cached_tools(tool_registry)
 
@@ -248,6 +289,7 @@ class AnthropicClient:
         tier: Tier = Tier.FAST,
         on_tool_call=None,
         cacheable_system: str = "",
+        prior_messages: list[Message] | None = None,
     ) -> CompletionResult:
         """Same tool-use loop as complete_with_tools, but streams text
         deltas to on_text(chunk: str) as they arrive instead of returning
@@ -258,7 +300,11 @@ class AnthropicClient:
         from argus.tools.registry import ToolDenied
 
         model = _TIER_MODEL[tier]()
-        history: list[dict] = [{"role": "user", "content": user_text}]
+        history: list[dict] = [
+            {"role": message.role, "content": message.content}
+            for message in (prior_messages or [])
+        ]
+        history.append({"role": "user", "content": user_text})
         total_in = total_out = 0
         tools = _cached_tools(tool_registry)
 

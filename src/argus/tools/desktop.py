@@ -290,8 +290,8 @@ capture_camera_tool = Tool(
         "the console displays a stylized computer-vision-style rendering of the frame, NOT the "
         "literal photo (the raw photo is never shown unless raw=true is explicitly requested) "
         "-- you still always see and analyze the real frame either way, this only changes what "
-        "the user sees on screen. Requires the user's confirmation each time since it captures "
-        "the physical space, not just the screen."
+        "the user sees on screen. Requires confirmation once per task since it captures the "
+        "physical space, not just the screen."
     ),
     input_schema={
         "type": "object",
@@ -303,6 +303,8 @@ capture_camera_tool = Tool(
         },
     },
     tier=PermissionTier.CONFIRM,
+    repeatable=True,
+    group="camera",
     handler=_capture_camera,
 )
 

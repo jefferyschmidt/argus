@@ -4,6 +4,8 @@ from argus.memory.core import CoreMemoryStore
 from argus.memory.store import get_connection
 from argus.tools.memory_review import (
     _confirm_core_memory,
+    _delete_core_memory,
+    _list_core_memories,
     _list_pending_core_memories,
     _reject_core_memory,
 )
@@ -85,3 +87,26 @@ def test_confirm_publishes_the_same_events_the_console_buttons_do(tmp_path):
     published = [call.args[0] for call in mock_publish.call_args_list]
     assert {"type": "core_memory_resolved", "id": memory_id, "confirmed": True} in published
     assert any(e.get("type") == "memory" for e in published)
+
+
+def test_list_confirmed_memories_shows_id_and_content(tmp_path):
+    patcher, conn = _patched_connection(tmp_path)
+    CoreMemoryStore(conn).add_confirmed("Prefers succinct replies.")
+
+    with patcher:
+        result = _list_core_memories({})
+
+    assert "[1]" in result
+    assert "Prefers succinct replies." in result
+
+
+def test_delete_confirmed_memory_removes_it(tmp_path):
+    patcher, conn = _patched_connection(tmp_path)
+    memory_id = CoreMemoryStore(conn).add_confirmed("Outdated appointment detail.")
+
+    with patcher:
+        result = _delete_core_memory({"memory_id": memory_id})
+
+    assert "Deleted" in result
+    fresh = CoreMemoryStore(get_connection(tmp_path / "test.db"))
+    assert fresh.list_confirmed() == []

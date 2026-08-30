@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
 from argus.llm.anthropic_client import AnthropicClient, _cached_tools, _system_param
+from argus.llm.base import Message
 from argus.tools.base import PermissionTier, Tool
 from argus.tools.registry import ToolRegistry
 
@@ -99,3 +100,64 @@ def test_complete_with_tools_without_cacheable_system_is_unchanged():
     client.complete_with_tools("hi", system="plain system string", tool_registry=ToolRegistry())
 
     assert fake_messages.create.call_args.kwargs["system"] == "plain system string"
+
+
+def test_chat_completion_honors_prompt_cache_and_token_budget():
+    client = AnthropicClient.__new__(AnthropicClient)
+    fake_messages = MagicMock()
+    fake_messages.create.return_value = _fake_response()
+    client._client = MagicMock(messages=fake_messages)
+
+    client.complete(
+        [Message(role="user", content="hello")],
+        system="dynamic bit",
+        cacheable_system="static bit",
+        max_tokens=400,
+    )
+
+    call = fake_messages.create.call_args.kwargs
+    assert call["max_tokens"] == 400
+    assert call["system"][0]["text"] == "static bit"
+    assert call["system"][1]["text"] == "dynamic bit"
+
+
+def test_tool_completion_receives_prior_conversation_messages():
+    client = AnthropicClient.__new__(AnthropicClient)
+    fake_messages = MagicMock()
+    fake_messages.create.return_value = _fake_response()
+    client._client = MagicMock(messages=fake_messages)
+
+    client.complete_with_tools(
+        "and now do it",
+        system="sys",
+        tool_registry=ToolRegistry(),
+        prior_messages=[
+            Message(role="user", content="open the draft"),
+            Message(role="assistant", content="It's open."),
+        ],
+    )
+
+    assert fake_messages.create.call_args.kwargs["messages"] == [
+        {"role": "user", "content": "open the draft"},
+        {"role": "assistant", "content": "It's open."},
+        {"role": "user", "content": "and now do it"},
+    ]
+
+
+def test_streaming_chat_forwards_text_and_returns_completion():
+    client = AnthropicClient.__new__(AnthropicClient)
+    stream = MagicMock()
+    stream.text_stream = ["Hello", " there."]
+    stream.get_final_message.return_value = _fake_response("Hello there.")
+    stream_context = MagicMock()
+    stream_context.__enter__.return_value = stream
+    client._client = MagicMock()
+    client._client.messages.stream.return_value = stream_context
+    received = []
+
+    result = client.complete_streaming(
+        [Message(role="user", content="hi")], system="sys", on_text=received.append
+    )
+
+    assert received == ["Hello", " there."]
+    assert result.text == "Hello there."

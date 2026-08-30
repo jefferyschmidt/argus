@@ -145,6 +145,33 @@ def test_listen_for_wake_and_command_fires_on_checking_before_each_transcription
     assert on_checking.call_count == 2  # once per candidate utterance, match or not
 
 
+def test_non_matching_candidate_returns_ui_to_ready_state():
+    listener = _listener()
+    listener._transcriber.transcribe_local.side_effect = ["background speech", "argus hello"]
+    on_not_addressed = MagicMock()
+
+    with patch.object(listener, "_capture_one_utterance", side_effect=[
+        np.ones(16000, dtype=np.int16),
+        np.ones(16000, dtype=np.int16),
+    ]), patch("argus.voice.local_wake_word.sd.InputStream") as mock_stream_cls:
+        mock_stream_cls.return_value.__enter__.return_value = MagicMock()
+        listener.listen_for_wake_and_command(on_not_addressed=on_not_addressed)
+
+    on_not_addressed.assert_called_once()
+
+
+def test_single_vad_frame_is_not_transcribed_as_a_full_utterance():
+    """Trailing silence helps capture an utterance boundary, but must not
+    turn a one-frame VAD false positive into a blocking Whisper request."""
+    listener = _listener()
+    listener._vad.is_speech.side_effect = [True] + [False] * 100
+    stream = _FakeStream([])
+
+    listener._capture_one_utterance(stream, _FRAME_SAMPLES, silence_hang_frames=3, max_frames=20, chunks_out=None)
+
+    assert listener._last_captured_speech_ms < 300
+
+
 def test_on_checking_does_not_fire_for_bursts_below_the_floor():
     listener = _listener()
     on_checking = MagicMock()

@@ -27,12 +27,18 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         self.confirmer = confirmer
         self._task_approved: set[str] = set()
+        self._explicit_task_authorized = False
 
-    def reset_task_autonomy(self) -> None:
+    def reset_task_autonomy(self, explicitly_requested: bool = False) -> None:
         """Call at the start of each new user-initiated turn -- approval for
         a repeatable tool only carries across the rest of ONE task, not the
         whole session."""
         self._task_approved.clear()
+        # A user who plainly asked Argus to perform an action has already
+        # made the relevant choice. Re-asking for every controlled step is
+        # friction, not protection. Calls that arise without an explicit
+        # action request retain the normal confirmation gate.
+        self._explicit_task_authorized = explicitly_requested
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -49,6 +55,11 @@ class ToolRegistry:
             return f"error: tool '{name}' is registered but disabled (deny tier)"
 
         if tool.tier is PermissionTier.CONFIRM:
+            if self._explicit_task_authorized:
+                log.info("Executing tool: %s(%s) [tier=%s, explicitly requested by user]", name, tool_input, tool.tier.value)
+                if getattr(tool, "repeatable", False):
+                    self._task_approved.add(getattr(tool, "group", None) or name)
+                return tool.handler(tool_input)
             # Tools sharing a `group` share one approval bucket -- e.g. all
             # of desktop control, so "open my calculator and add 4+4"
             # (open_app, then several clicks) asks once total, not once

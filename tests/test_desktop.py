@@ -9,6 +9,12 @@ from argus.tools.desktop import (
     _scroll,
     _stylize_vision,
 )
+from argus.tools.desktop import capture_camera_tool
+
+
+def test_camera_confirmation_is_reusable_within_a_task():
+    assert capture_camera_tool.repeatable is True
+    assert capture_camera_tool.group == "camera"
 
 
 def _mock_element(name="", control_type="Button", rect=(10, 10, 110, 40), visible=True, enabled=True):

@@ -4,10 +4,10 @@ from argus.tools.base import PermissionTier, Tool
 from argus.tools.registry import ToolRegistry
 
 
-def _tool(name="click", repeatable=False, group=None):
+def _tool(name="click", repeatable=False, group=None, handler=None):
     return Tool(
         name=name, description="d", input_schema={"type": "object", "properties": {}},
-        tier=PermissionTier.CONFIRM, handler=lambda args: "done", repeatable=repeatable, group=group,
+        tier=PermissionTier.CONFIRM, handler=handler or (lambda args: "done"), repeatable=repeatable, group=group,
     )
 
 
@@ -45,6 +45,20 @@ def test_reset_task_autonomy_clears_approval_for_a_new_task():
     registry.execute("click", {})
 
     assert confirmer.call_count == 2
+
+
+def test_explicit_user_request_skips_redundant_confirmation():
+    confirmer = MagicMock(return_value=True)
+    registry = ToolRegistry(confirmer=confirmer)
+    handler = MagicMock(return_value="done")
+    registry.register(_tool(name="capture_camera", handler=handler, repeatable=True))
+
+    registry.reset_task_autonomy(explicitly_requested=True)
+    result = registry.execute("capture_camera", {})
+
+    assert result == "done"
+    confirmer.assert_not_called()
+    handler.assert_called_once_with({})
 
 
 def test_different_repeatable_tools_confirm_independently_when_ungrouped():

@@ -8,6 +8,7 @@ def _orchestrator(streamed_deltas, final_text):
     orch = Orchestrator.__new__(Orchestrator)
     orch.memory = MagicMock()
     orch.memory.build_context.return_value = ""
+    orch.memory.build_conversation_context.return_value = ""
     orch.tools = MagicMock()
     orch.last_tier = None
     orch.last_model = None
@@ -34,10 +35,12 @@ def test_reply_ending_exactly_on_a_sentence_boundary_does_not_crash():
     orch = _orchestrator(["All done. "], "All done.")
     spoken = []
 
-    # Deliberately not small talk -- that classifies to the LOCAL tier and
-    # takes the non-streaming branch, never reaching the code under test.
+    # Deliberately a tool-shaped request (_should_use_tools) so this reaches
+    # complete_with_tools_streaming, the branch under test -- plain small
+    # talk now takes the separate chat-lane branch (complete_streaming),
+    # which never reaches this code at all.
     with patch("argus.orchestrator.ui_events.publish"):
-        reply = orch.handle_streaming("file that report for me", on_sentence=spoken.append)
+        reply = orch.handle_streaming("check my email", on_sentence=spoken.append)
 
     assert reply == "All done."
     assert spoken == ["All done."]
@@ -48,6 +51,6 @@ def test_reply_without_trailing_whitespace_still_flushes_its_tail():
     spoken = []
 
     with patch("argus.orchestrator.ui_events.publish"):
-        orch.handle_streaming("go", on_sentence=spoken.append)
+        orch.handle_streaming("check my email", on_sentence=spoken.append)
 
     assert spoken == ["Two things.", "Here's the second"]

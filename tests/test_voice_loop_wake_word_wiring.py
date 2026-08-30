@@ -92,3 +92,19 @@ def test_run_passes_an_on_checking_callback_that_publishes_a_state_update():
         (call.args[0].get("type"), call.args[0].get("mode")) for call in mock_publish.call_args_list
     ]
     assert ("state", "confirming") in published_types_and_modes
+
+
+def test_run_passes_a_rejection_callback_that_restores_wake_word_state():
+    loop = _loop_with_wake_sequence([
+        (np.array([1, 2, 3], dtype=np.int16), None),
+        KeyboardInterrupt(),
+    ])
+    loop._process_utterance = MagicMock(return_value=False)
+
+    with patch("argus.voice.loop.ui_events.publish") as mock_publish:
+        loop.run()
+        on_not_addressed = loop.wake_word.listen_for_wake_and_command.call_args.kwargs["on_not_addressed"]
+        on_not_addressed()
+
+    published = [call.args[0] for call in mock_publish.call_args_list]
+    assert {"type": "state", "value": "listening", "mode": "wake_word"} in published

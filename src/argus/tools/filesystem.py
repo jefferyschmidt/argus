@@ -1,50 +1,15 @@
 import subprocess
 from pathlib import Path
 
-from argus.config import PROJECT_ROOT, settings
+from argus.config import settings
 from argus.tools.base import PermissionTier, Tool
 
 
-class PathEscapesAllowedRoots(Exception):
-    pass
-
-
-class PathIsDenied(Exception):
-    pass
-
-
-# The project directory is one of real_fs_roots, but .env lives right in
-# it with live API keys -- read_file is ALLOW-tier (no confirmation), so
-# without this a plain "read that file" could surface secrets in a reply.
-# Explicit denylist rather than trying to keep it out of real_fs_roots
-# entirely, since everything else in the project directory is meant to be
-# reachable.
-_DENIED_PATHS = [(PROJECT_ROOT / ".env").resolve()]
-
-
-def _allowed_roots() -> list[Path]:
-    return [settings.workspace_dir.resolve()] + [p.resolve() for p in settings.real_fs_roots]
-
-
 def _resolve_path(path_str: str) -> Path:
-    """Relative paths resolve against the sandboxed workspace (unchanged
-    default behavior). Absolute paths are allowed too, but only inside one
-    of the configured real_fs_roots (Documents/Downloads/Desktop, and this
-    project's own directory) -- not anywhere else on disk. A short denylist
-    (currently just .env) is checked first regardless of root."""
+    """Resolves local paths. Relative paths use Argus's workspace; absolute
+    paths may point anywhere the operating-system account can access."""
     p = Path(path_str)
-    candidate = p.resolve() if p.is_absolute() else (settings.workspace_dir / p).resolve()
-
-    if candidate in _DENIED_PATHS:
-        raise PathIsDenied(f"'{path_str}' is off-limits (holds live credentials)")
-
-    for root in _allowed_roots():
-        if candidate == root or root in candidate.parents:
-            return candidate
-    raise PathEscapesAllowedRoots(
-        f"'{path_str}' resolves outside the allowed roots "
-        f"(workspace + {[str(r) for r in settings.real_fs_roots]})"
-    )
+    return p.resolve() if p.is_absolute() else (settings.workspace_dir / p).resolve()
 
 
 def _read_file(args: dict) -> str:
@@ -73,10 +38,11 @@ def _list_dir(args: dict) -> str:
 
 
 def _run_shell(args: dict) -> str:
+    cwd = _resolve_path(args.get("cwd", str(settings.workspace_dir)))
     result = subprocess.run(
         args["command"],
         shell=True,
-        cwd=settings.workspace_dir,
+        cwd=cwd,
         capture_output=True,
         text=True,
         timeout=30,
@@ -88,9 +54,8 @@ def _run_shell(args: dict) -> str:
 read_file_tool = Tool(
     name="read_file",
     description=(
-        "Read a text file's contents. Relative paths resolve inside the sandboxed "
-        "workspace; absolute paths are also allowed if inside Documents, Downloads, "
-        "or Desktop."
+        "Read a text file's contents. Relative paths resolve from Argus's default "
+        "workspace; absolute paths may be anywhere the local account can access."
     ),
     input_schema={
         "type": "object",
@@ -104,9 +69,9 @@ read_file_tool = Tool(
 list_dir_tool = Tool(
     name="list_dir",
     description=(
-        "List files in a directory. Relative paths resolve inside the sandboxed "
-        "workspace; absolute paths are also allowed if inside Documents, Downloads, "
-        "or Desktop. Omit path to list the workspace root."
+        "List files in a directory. Relative paths resolve from Argus's default "
+        "workspace; absolute paths may be anywhere the local account can access. "
+        "Omit path to list the workspace root."
     ),
     input_schema={
         "type": "object",
@@ -119,9 +84,9 @@ list_dir_tool = Tool(
 write_file_tool = Tool(
     name="write_file",
     description=(
-        "Write (overwrite) a text file. Relative paths resolve inside the sandboxed "
-        "workspace; absolute paths are also allowed if inside Documents, Downloads, "
-        "or Desktop. Always requires user confirmation."
+        "Write (overwrite) a text file. Relative paths resolve from Argus's default "
+        "workspace; absolute paths may be anywhere the local account can access. "
+        "Always requires user confirmation."
     ),
     input_schema={
         "type": "object",
@@ -138,13 +103,16 @@ write_file_tool = Tool(
 run_shell_tool = Tool(
     name="run_shell",
     description=(
-        "Run a shell command in the sandboxed workspace directory. Executes via "
-        "cmd.exe on Windows -- use Windows commands (dir, type, del, copy), not "
-        "Unix/bash ones (ls, cat, rm, cp). 30s timeout."
+        "Run a shell command through cmd.exe on Windows. Defaults to Argus's workspace; "
+        "pass an absolute cwd to run in any local folder. Use Windows commands (dir, type, "
+        "del, copy), not Unix/bash ones (ls, cat, rm, cp). 30s timeout."
     ),
     input_schema={
         "type": "object",
-        "properties": {"command": {"type": "string"}},
+        "properties": {
+            "command": {"type": "string"},
+            "cwd": {"type": "string", "description": "Optional working directory; absolute paths are allowed."},
+        },
         "required": ["command"],
     },
     tier=PermissionTier.CONFIRM,

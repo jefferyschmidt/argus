@@ -10,6 +10,24 @@ it never runs anywhere but locally.
 
 ## Status
 
+**Fixed, 2026-08-30 (pytest collecting a dropped-in unrelated project's
+frozen build, breaking the whole suite)**: a separate project ("Grunge")
+was copied into this directory in a prior session so Argus could read/
+discuss it (now gitignored, see `.gitignore`). With no `testpaths`
+configured, pytest's default collection walked into it and tried to
+import its bundled PyInstaller build's internal torch test files --
+those carry their own `python311.dll` targeting a different Python
+version than this project's 3.13 venv, and loading it mid-collection
+poisoned the whole process, breaking even unrelated stdlib imports
+(`sqlite3`) for the rest of the run. Fixed with
+`[tool.pytest.ini_options] testpaths = ["tests"]` in `pyproject.toml` --
+scopes collection so it never touches anything outside `tests/` again,
+not just working around the DLL conflict after the fact. Also updated
+two tests in `test_handle_streaming_tail.py` that had gone stale after
+the persona/orchestrator rewrite (their input no longer matched the new
+`_should_use_tools()` classifier, so they were silently exercising the
+wrong code path). Full suite: 544 passed.
+
 **Added, 2026-08-29 (list_ui_elements -- Set-of-Mark desktop control
 without a vision model)**: discussed live after a failed email-deletion
 task burned 20+ tool-call iterations and $0.26 pixel-coordinate-guessing
@@ -988,6 +1006,14 @@ argus memory review   # confirm/reject agent-proposed core memories
 `chat` and `voice` both auto-launch **Argus Console** (needs `pip install -e ".[ui]"`)
 at http://127.0.0.1:8765 -- a live view of voice state, transcript, tool
 calls (with real generated images), memory, and routing/spend.
+
+### Native conversation voice mode
+
+For a ChatGPT-style, low-latency conversation lane, install the voice extras,
+set `OPENAI_API_KEY`, and set `VOICE_MODE=realtime` in `.env`. This mode uses
+native audio input/output with server-side turn detection and interruption. It
+is intentionally conversation-only; leave `VOICE_MODE=pipeline` (the default)
+when you want Argus's desktop tools, local fallback, or wake-word workflow.
 
 ## Architecture
 

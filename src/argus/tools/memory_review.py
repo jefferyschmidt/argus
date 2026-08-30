@@ -32,6 +32,19 @@ def _list_pending_core_memories(args: dict) -> str:
     return "\n".join(lines)
 
 
+def _list_core_memories(args: dict) -> str:
+    """Lists confirmed memories with IDs so a user can review or delete one."""
+    conn = get_connection()
+    try:
+        confirmed = CoreMemoryStore(conn).list_confirmed_rows()
+    finally:
+        conn.close()
+
+    if not confirmed:
+        return "No confirmed core memories right now."
+    return "\n".join(f"[{row['id']}] {row['content']}" for row in confirmed)
+
+
 def _resolve(memory_id: int, confirmed: bool) -> str:
     conn = get_connection()
     try:
@@ -73,6 +86,31 @@ def _reject_core_memory(args: dict) -> str:
     return _resolve(memory_id, confirmed=False)
 
 
+def _delete_core_memory(args: dict) -> str:
+    try:
+        memory_id = int(args["memory_id"])
+    except (KeyError, TypeError, ValueError):
+        return f"error: memory_id must be an integer, got {args.get('memory_id')!r}"
+    
+    conn = get_connection()
+    try:
+        store = CoreMemoryStore(conn)
+        confirmed = {row["id"]: row["content"] for row in store.list_confirmed_rows()}
+        if memory_id not in confirmed:
+            return f"error: no confirmed core memory with id {memory_id} (it may not exist, be pending, or already deleted)"
+        content = confirmed[memory_id]
+        deleted = store.delete(memory_id)
+        if not deleted:
+            return f"error: failed to delete memory {memory_id}"
+        core_count = len(store.list_confirmed())
+    finally:
+        conn.close()
+
+    ui_events.publish({"type": "core_memory_resolved", "id": memory_id, "confirmed": False})
+    ui_events.publish({"type": "memory", "core": core_count})
+    return f'Deleted: "{content}"'
+
+
 list_pending_core_memories_tool = Tool(
     name="list_pending_core_memories",
     description=(
@@ -84,6 +122,17 @@ list_pending_core_memories_tool = Tool(
     input_schema={"type": "object", "properties": {}},
     tier=PermissionTier.ALLOW,
     handler=_list_pending_core_memories,
+)
+
+list_core_memories_tool = Tool(
+    name="list_core_memories",
+    description=(
+        "Lists confirmed standing memories with their IDs. Use when the user asks what "
+        "Argus remembers, or before deleting a confirmed memory."
+    ),
+    input_schema={"type": "object", "properties": {}},
+    tier=PermissionTier.ALLOW,
+    handler=_list_core_memories,
 )
 
 confirm_core_memory_tool = Tool(
@@ -112,4 +161,16 @@ reject_core_memory_tool = Tool(
     },
     tier=PermissionTier.ALLOW,
     handler=_reject_core_memory,
+)
+
+delete_core_memory_tool = Tool(
+    name="delete_core_memory",
+    description="Deletes a confirmed core memory by ID from list_core_memories.",
+    input_schema={
+        "type": "object",
+        "properties": {"memory_id": {"type": "integer"}},
+        "required": ["memory_id"],
+    },
+    tier=PermissionTier.ALLOW,
+    handler=_delete_core_memory,
 )

@@ -23,7 +23,7 @@ class WakeWordListener:
         self._model = Model(wakeword_models=[settings.openwakeword_model_name])
 
     def listen_for_wake_and_command(
-        self, on_wake=None, chunks_out: list | None = None, on_checking=None, hot_mic_check=None,
+        self, on_wake=None, chunks_out: list | None = None, on_checking=None, on_not_addressed=None, hot_mic_check=None,
         should_stop=None, via_hot_mic_out: list | None = None,
     ) -> tuple[np.ndarray, str | None]:
         """Blocks for the wake word, then records the command that follows

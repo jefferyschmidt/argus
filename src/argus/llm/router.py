@@ -28,16 +28,39 @@ _ADVANCED_KEYWORDS = (
     "write code",
     "research",
 )
-_LOCAL_ENOUGH_MAX_LEN = 40
-# LOCAL has no tool access (web search, filesystem, etc.), so it's reserved
-# for genuine small talk -- anything that might need a real fact or current
-# info defaults to FAST instead of guessing from length alone. This is a
-# whitelist, not a blocklist, on purpose: default to giving tools access.
+# LOCAL means "conversation, not a job" -- the orchestrator still runs
+# these on the cheap frontier model (Haiku, no tool schema), not the
+# 3B/gpt-oss slot. Whitelist on purpose: anything that might need a
+# real fact or an action defaults to FAST.
 _SMALL_TALK_PATTERNS = re.compile(
     r"^(hi|hello|hey|yo|sup|good\s?(morning|afternoon|evening|night)|"
     r"how'?s?\s?it\s?going|how\s?are\s?you|what'?s\s?up|"
     r"thanks?|thank\s?you|thx|ok|okay|cool|nice|great|got\s?it|sounds?\s?good|"
     r"bye|goodbye|see\s?ya|later|good\s?bye)[.!? ]*$"
+)
+_BACKCHANNEL = re.compile(
+    r"^(yeah|yep|yup|nah|nope|ok(ay)?|cool|nice|wow|oof|damn|true|fair|"
+    r"same|lol|lmao|haha+|heh|huh|m+hm+|right|sure|exactly|totally|"
+    r"interesting|wild|crazy|same here|i know|fair enough|"
+    r"no worries|all good|ha|oh)[.!? ]*$"
+)
+_CHATTY = re.compile(
+    r"\b(how are you|how'?re you feeling|how is it going|"
+    r"who are you|what are you|tell me a joke|make me laugh|roast me|"
+    r"be honest|what do you (think|make of that)|your (take|opinion)|"
+    r"talk to me|tell me about yourself|"
+    r"i('m| am) (bored|lonely|tired|fried|exhausted|sad|happy|good)|"
+    r"you (suck|rock|rule)|that'?s (funny|hilarious|dumb|fair|true)|"
+    r"you'?re (the worst|the best|annoying|funny|a riot))\b"
+)
+_NEEDS_TOOLS = re.compile(
+    r"\b(weather|forecast|email|inbox|gmail|yahoo|mail|remind|calendar|"
+    r"schedule|search|look\s*up|google|news|price|stock|screenshot|"
+    r"click|send|delete|camera|photo|website|fetch|download|commit|"
+    r"restart|undo|pdf|document|scan|amazon|translate|timer|alarm|"
+    r"quiet mode|show me|open (the |my )?(app|chrome|firefox|calculator|"
+    r"browser|file|folder))\b"
+    r"|what'?s (the )?(weather|score|news|forecast)"
 )
 
 
@@ -45,7 +68,9 @@ def classify(text: str) -> Tier:
     lowered = text.lower().strip()
     if any(kw in lowered for kw in _ADVANCED_KEYWORDS) or len(text) > 400:
         return Tier.ADVANCED
-    if len(text) <= _LOCAL_ENOUGH_MAX_LEN and _SMALL_TALK_PATTERNS.match(lowered):
+    if _NEEDS_TOOLS.search(lowered):
+        return Tier.FAST
+    if _SMALL_TALK_PATTERNS.match(lowered) or _BACKCHANNEL.match(lowered) or _CHATTY.search(lowered):
         return Tier.LOCAL
     return Tier.FAST
 
@@ -54,6 +79,21 @@ _OFFLINE_NO_LOCAL_MESSAGE = (
     "I'm completely offline right now -- no internet reachable, and no local "
     "model either. I can't help with anything until one of those is back."
 )
+
+
+def _can_degrade_frontier_error(error: anthropic.APIError) -> bool:
+    """Only degrade errors that mean the frontier service is unavailable.
+    Invalid requests must still surface during development instead of being
+    hidden behind an unrelated local-model reply."""
+    if isinstance(error, anthropic.APIConnectionError):
+        return True
+    detail = str(error).lower()
+    return "credit balance is too low" in detail or "insufficient credit" in detail
+
+
+def _frontier_unavailable_note(error: anthropic.APIError, no_tools: bool = False) -> str:
+    note = "offline -- no internet" if isinstance(error, anthropic.APIConnectionError) else "online model unavailable"
+    return f"{note}, no tools/web access" if no_tools else note
 
 
 class ModelRouter:
@@ -104,13 +144,16 @@ class ModelRouter:
         messages: list[Message],
         system: str = "",
         force_tier: Tier | None = None,
+        max_tokens: int | None = None,
+        cacheable_system: str = "",
     ) -> CompletionResult:
         tier = force_tier or classify(messages[-1].content if messages else "")
+        local_system = "\n\n".join(part for part in (cacheable_system, system) if part)
 
         if tier is Tier.LOCAL:
             if self.local.is_available():
                 try:
-                    return self.local.complete(messages, system=system)
+                    return self.local.complete(messages, system=local_system)
                 except groq.RateLimitError:
                     # Confirmed live: Groq's free tier is a tight shared
                     # budget (8000 TPM) across every LOCAL-tier caller --
@@ -126,7 +169,7 @@ class ModelRouter:
                     log.warning("Local tier rate-limited; retrying once before escalating")
                     time.sleep(1.5)
                     try:
-                        return self.local.complete(messages, system=system)
+                        return self.local.complete(messages, system=local_system)
                     except Exception:
                         log.exception("Local completion still failing after rate-limit retry; escalating")
                 except Exception:
@@ -145,15 +188,20 @@ class ModelRouter:
         except BudgetExceeded as e:
             log.warning(str(e))
             if self.local.is_available():
-                return self.local.complete(messages, system=system)
+                return self.local.complete(messages, system=local_system)
             raise
 
         try:
-            result = self.frontier.complete(messages, system=system, tier=tier)
-        except anthropic.APIConnectionError:
-            log.warning("Anthropic API unreachable; degrading to offline fallback")
+            kwargs = {"cacheable_system": cacheable_system}
+            if max_tokens is not None:
+                kwargs["max_tokens"] = max_tokens
+            result = self.frontier.complete(messages, system=system, tier=tier, **kwargs)
+        except anthropic.APIError as e:
+            if not _can_degrade_frontier_error(e):
+                raise
+            log.warning("Anthropic unavailable (%s); degrading to offline fallback", type(e).__name__)
             return self._degraded_result(
-                messages[-1].content if messages else "", system, "offline -- no internet"
+                messages[-1].content if messages else "", local_system, _frontier_unavailable_note(e)
             )
         cost = estimate_cost(tier, result.input_tokens, result.output_tokens)
         self.cost_governor.record(cost)
@@ -173,6 +221,51 @@ class ModelRouter:
         self.cost_governor.record(cost)
         return result
 
+    def complete_streaming(
+        self,
+        messages: list[Message],
+        system: str,
+        on_text,
+        force_tier: Tier | None = None,
+        max_tokens: int | None = None,
+        cacheable_system: str = "",
+    ) -> CompletionResult:
+        """Streams a chat reply. Local clients do not expose streaming, so
+        their completed response is delivered as one chunk instead."""
+        tier = force_tier or classify(messages[-1].content if messages else "")
+        local_system = "\n\n".join(part for part in (cacheable_system, system) if part)
+
+        if tier is Tier.LOCAL:
+            if self.local.is_available():
+                try:
+                    result = self.local.complete(messages, system=local_system)
+                    on_text(result.text)
+                    return result
+                except Exception:
+                    log.exception("Local streaming completion failed; escalating")
+            tier = Tier.FAST
+
+        self.cost_governor.check()
+        kwargs = {"cacheable_system": cacheable_system}
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        try:
+            result = self.frontier.complete_streaming(
+                messages, system=system, on_text=on_text, tier=tier, **kwargs
+            )
+        except anthropic.APIError as e:
+            if not _can_degrade_frontier_error(e):
+                raise
+            log.warning("Anthropic unavailable (%s); degrading to offline fallback", type(e).__name__)
+            result = self._degraded_result(
+                messages[-1].content if messages else "", local_system, _frontier_unavailable_note(e)
+            )
+            on_text(result.text)
+            return result
+        cost = estimate_cost(tier, result.input_tokens, result.output_tokens)
+        self.cost_governor.record(cost)
+        return result
+
     def complete_with_tools(
         self,
         user_text: str,
@@ -182,6 +275,7 @@ class ModelRouter:
         max_iterations: int | None = None,
         on_tool_call=None,
         cacheable_system: str = "",
+        prior_messages: list[Message] | None = None,
     ) -> CompletionResult:
         """Tool use always runs on the frontier tier -- the local 3B model
         isn't reliable at structured tool calling, and if it's escalating
@@ -202,12 +296,16 @@ class ModelRouter:
             kwargs["on_tool_call"] = on_tool_call
         if cacheable_system:
             kwargs["cacheable_system"] = cacheable_system
+        if prior_messages:
+            kwargs["prior_messages"] = prior_messages
 
         try:
             result = self.frontier.complete_with_tools(user_text, system, tool_registry, tier=tier, **kwargs)
-        except anthropic.APIConnectionError:
-            log.warning("Anthropic API unreachable; degrading to offline fallback (no tools/web access)")
-            return self._degraded_result(user_text, system, "offline -- no internet, no tools/web access")
+        except anthropic.APIError as e:
+            if not _can_degrade_frontier_error(e):
+                raise
+            log.warning("Anthropic unavailable (%s); degrading to local fallback (no tools/web access)", type(e).__name__)
+            return self._degraded_result(user_text, system, _frontier_unavailable_note(e, no_tools=True))
         cost = estimate_cost(tier, result.input_tokens, result.output_tokens)
         self.cost_governor.record(cost)
         return result
@@ -221,6 +319,7 @@ class ModelRouter:
         force_tier: Tier | None = None,
         on_tool_call=None,
         cacheable_system: str = "",
+        prior_messages: list[Message] | None = None,
     ) -> CompletionResult:
         """cacheable_system: see complete_with_tools."""
         tier = force_tier or classify(user_text)
@@ -230,13 +329,18 @@ class ModelRouter:
         self.cost_governor.check()
 
         try:
+            kwargs = {"cacheable_system": cacheable_system}
+            if prior_messages:
+                kwargs["prior_messages"] = prior_messages
             result = self.frontier.complete_with_tools_streaming(
                 user_text, system, tool_registry, on_text, tier=tier, on_tool_call=on_tool_call,
-                cacheable_system=cacheable_system,
+                **kwargs,
             )
-        except anthropic.APIConnectionError:
-            log.warning("Anthropic API unreachable; degrading to offline fallback (no tools/web access)")
-            result = self._degraded_result(user_text, system, "offline -- no internet, no tools/web access")
+        except anthropic.APIError as e:
+            if not _can_degrade_frontier_error(e):
+                raise
+            log.warning("Anthropic unavailable (%s); degrading to local fallback (no tools/web access)", type(e).__name__)
+            result = self._degraded_result(user_text, system, _frontier_unavailable_note(e, no_tools=True))
             # Handles the common case (can't connect at all, so nothing was
             # streamed yet) correctly. A connection drop mid-response after
             # some real text already streamed is a rarer case this doesn't

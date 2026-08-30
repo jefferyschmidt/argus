@@ -38,11 +38,24 @@ class CoreMemoryStore:
         self.conn.execute("DELETE FROM core_memories WHERE id = ?", (memory_id,))
         self.conn.commit()
 
+    def delete(self, memory_id: int) -> bool:
+        """Deletes a confirmed core memory by id. Returns True if a memory
+        was actually deleted, False if the id didn't exist or was pending."""
+        cur = self.conn.execute(
+            "DELETE FROM core_memories WHERE id = ? AND confirmed = 1", (memory_id,)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
     def list_confirmed(self) -> list[str]:
-        rows = self.conn.execute(
-            "SELECT content FROM core_memories WHERE confirmed = 1 ORDER BY ts"
-        ).fetchall()
+        rows = self.list_confirmed_rows()
         return [r["content"] for r in rows]
+
+    def list_confirmed_rows(self) -> list[sqlite3.Row]:
+        """Confirmed memories with their IDs, for review and deletion."""
+        return self.conn.execute(
+            "SELECT id, content, ts FROM core_memories WHERE confirmed = 1 ORDER BY ts"
+        ).fetchall()
 
     def list_pending(self) -> list[sqlite3.Row]:
         return self.conn.execute(

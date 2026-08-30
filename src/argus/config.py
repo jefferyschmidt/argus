@@ -9,6 +9,12 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=PROJECT_ROOT / ".env", extra="ignore")
 
     anthropic_api_key: str = ""
+    # Optional native speech-to-speech mode. This is intentionally separate
+    # from the text/tool pipeline so voice conversation can stay immediate.
+    openai_api_key: str = ""
+    voice_mode: str = "pipeline"  # "pipeline" or "realtime"
+    openai_realtime_model: str = "gpt-realtime-2.1-mini"
+    openai_realtime_voice: str = "marin"
     ollama_host: str = "http://localhost:11434"
     ollama_local_model: str = "llama3.2:3b"
 
@@ -211,25 +217,10 @@ class Settings(BaseSettings):
 
     @property
     def workspace_dir(self) -> Path:
-        """Sandbox root for file tools. Everything the file tools touch is
-        confined under here until later phases widen scope deliberately."""
+        """Default working directory for relative file-tool paths."""
         d = self.data_dir / "workspace"
         d.mkdir(parents=True, exist_ok=True)
         return d
-
-    @property
-    def real_fs_roots(self) -> list[Path]:
-        """Real folders (beyond the sandbox) the file tools may touch.
-        Documents/Downloads/Desktop plus this project's own directory (at
-        the user's request, so Argus can read/run things in its own repo
-        via the general file/shell tools -- separate from and broader than
-        the narrower src/argus+tests-only self_improve tools). .env living
-        in this same directory is excluded at the path-resolution level in
-        filesystem.py regardless of this list, since the general read_file
-        tool is ALLOW-tier (no confirmation) and that file holds live
-        API keys."""
-        home = Path.home()
-        return [p for p in (home / "Documents", home / "Downloads", home / "Desktop", PROJECT_ROOT) if p.exists()]
 
 
 settings = Settings()

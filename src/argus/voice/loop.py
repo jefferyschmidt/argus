@@ -507,12 +507,18 @@ class VoiceLoop:
                 console.print("[dim](checking what was heard...)[/dim]")
                 ui_events.publish({"type": "state", "value": "listening", "mode": "confirming"})
 
+            def _on_not_addressed():
+                # Rejected background sound must not leave the UI in its
+                # transient "checking" state.
+                ui_events.publish({"type": "state", "value": "listening", "mode": "wake_word"})
+
             wake_chunks: list = []
             via_hot_mic: list = []
             stop_watcher = self._start_hearing_watcher(wake_chunks)
             try:
                 samples, wake_command_text = self.wake_word.listen_for_wake_and_command(
                     on_wake=_on_wake, chunks_out=wake_chunks, on_checking=_on_checking,
+                    on_not_addressed=_on_not_addressed,
                     hot_mic_check=self._hot_mic_active,
                     should_stop=ui_commands.is_listening_paused,
                     via_hot_mic_out=via_hot_mic,
@@ -675,6 +681,13 @@ class VoiceLoop:
         from argus.llm.base import Message
 
         loudness_hint = self._loudness_hint(samples)
+        # A clear, close statement during an active follow-up window is
+        # usually a response, correction, or continuation rather than
+        # background audio. The recent logs showed the classifier dropping
+        # exactly that kind of conversational reply ("I'd argue...") as
+        # STRAY, which breaks the thread more than a rare false positive.
+        if loudness_hint and loudness_hint.startswith("clear, close"):
+            return True
         loudness_line = f"Volume: {loudness_hint}.\n" if loudness_hint else ""
 
         try:

@@ -159,6 +159,15 @@
   /* Internal thoughts: shown, never spoken. Set apart so it's obvious at
      a glance which parts of a reply Argus actually said out loud. */
   .caption-box .caption-text .thought { color: var(--ink-dim); font-style: italic; }
+  .caption-box .caption-text .caption-you { display: block; color: #81b8ff; }
+  .caption-box .caption-text .caption-argus { display: block; color: var(--ink); }
+  .caption-box .caption-text .caption-you::before,
+  .caption-box .caption-text .caption-argus::before {
+    display: block; font-family: var(--font-mono); font-size: 9px; letter-spacing: .14em;
+    text-transform: uppercase; opacity: .7; margin: 7px 0 2px;
+  }
+  .caption-box .caption-text .caption-you::before { content: "YOU"; }
+  .caption-box .caption-text .caption-argus::before { content: "ARGUS"; }
   .caption-box .caption-text.placeholder {
     color: var(--ink-dim); font-style: italic; font-size: 14px;
     display: flex; align-items: center; justify-content: center; height: 100%; padding-top: 0;
@@ -451,7 +460,7 @@
     wake_word:     { label: "Listening",  sub: "Waiting for the wake word." },
     command:       { label: "Listening",  sub: "Wake word heard — go ahead, no need to repeat it." },
     follow_up:     { label: "Listening",  sub: "No wake word needed — keep talking, or it'll drop back to waiting for the wake word." },
-    confirming:    { label: "Listening",  sub: "Checking whether that was really meant for me." },
+    confirming:    { label: "Listening",  sub: "Checking for the wake word." },
     push_to_talk:  { label: "Listening",  sub: "Recording while the button is held." }
   };
   // Same distinguishing-submodes idea as LISTENING_MODES, but for "idle" --
@@ -648,20 +657,21 @@
     return false;
   }
 
-  function addCaption(text) {
+  function addCaption(text, role) {
     // Accumulates the WHOLE current reply -- cleared only at the start of
     // the next turn (clearCaptions(), on entering "thinking") -- and the
     // box scrolls internally rather than discarding older sentences, so a
     // long reply stays fully readable instead of only ever showing the
     // last couple of sentences. Rebuilt as spans rather than one joined
     // string so thoughts can be visually set apart from spoken text.
-    captionLines.push(text);
+    captionLines.push({ text: text, role: role || "argus" });
     captionTextEl.classList.remove("placeholder");
     captionTextEl.innerHTML = "";
     captionLines.forEach(function (line, i) {
       var span = document.createElement("span");
-      span.textContent = (i ? " " : "") + line;   // textContent, not innerHTML -- never interpret model output as markup
-      if (isThought(line)) span.className = "thought";
+      span.textContent = line.text;   // textContent, not innerHTML -- never interpret model output as markup
+      span.className = "caption-" + (line.role === "you" ? "you" : "argus");
+      if (isThought(line.text)) span.classList.add("thought");
       captionTextEl.appendChild(span);
     });
     captionTextEl.scrollTop = captionTextEl.scrollHeight;
@@ -870,7 +880,7 @@
       try { event = JSON.parse(ev.data); } catch (e) { return; }
 
       if (event.type === "state") setState(event.value, event);
-      else if (event.type === "caption") addCaption(event.text);
+      else if (event.type === "caption") addCaption(event.text, event.role);
       else if (event.type === "hearing") setHearingLine(event.text);
       else if (event.type === "transcript") {
         if (event.role === "you") setHearingLine("");

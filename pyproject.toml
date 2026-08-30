@@ -37,6 +37,7 @@ voice = [
     "numpy>=2.1.0",
     "cartesia>=2.0.0",
     "silero-vad>=6.0.0",
+    "websockets>=15.0",
 ]
 dev = [
     "pytest>=8.3.0",
@@ -51,3 +52,16 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+# Without this, pytest's default rootdir-recursive collection walks into
+# Grunge/ (a separate, unrelated project dropped into this directory so
+# Argus could read/discuss it -- gitignored, but gitignore doesn't stop
+# other tools from scanning the filesystem) and tries to collect its
+# bundled PyInstaller build's internal torch test files. Those carry their
+# own python311.dll targeting a different Python version than this
+# project's 3.13 venv -- loading it mid-collection poisoned the whole
+# process, breaking even unrelated stdlib imports (sqlite3) for the rest
+# of the run. Scoping collection to tests/ avoids ever touching Grunge/ at
+# all, not just working around the DLL conflict after the fact.
+testpaths = ["tests"]

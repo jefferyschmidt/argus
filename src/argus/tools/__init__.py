@@ -29,6 +29,8 @@ from argus.tools.knowledge_graph import (
 )
 from argus.tools.memory_review import (
     confirm_core_memory_tool,
+    delete_core_memory_tool,
+    list_core_memories_tool,
     list_pending_core_memories_tool,
     reject_core_memory_tool,
 )
@@ -107,9 +109,11 @@ def build_default_registry(router=None) -> ToolRegistry:
         remember_relationship_tool,
         query_relationships_tool,
         forget_relationship_tool,
+        list_core_memories_tool,
         list_pending_core_memories_tool,
         confirm_core_memory_tool,
         reject_core_memory_tool,
+        delete_core_memory_tool,
     ):
         registry.register(tool)
 
