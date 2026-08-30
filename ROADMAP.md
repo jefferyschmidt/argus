@@ -81,6 +81,11 @@ the mic kept streaming to OpenAI regardless of what the console UI showed); the
 `response.output_audio.delta` handler skips local playback in quiet mode while captions/
 transcripts still publish, same contract as the pipeline loop.
 
+**Also done:** direct expression requests ("show me you're happy") now trigger the face
+in realtime mode too — matched deterministically via `orchestrator.py`'s
+`_detect_requested_expression` against each user transcript, since this mode's system
+prompt carries no `EXPRESSION:` marker protocol for the audio model to rely on.
+
 **Still open (confirmed orphaned in realtime mode, not yet addressed):**
 - Reminder checking specifically is still inline as `VoiceLoop._reminder_checker_worker`
   rather than a class `ProactiveEngine` owns (lower priority — same functional gap, kept
@@ -88,9 +93,11 @@ transcripts still publish, same contract as the pipeline loop.
 - Telegram bridge and push-to-talk both feed a queue only
   `VoiceLoop._external_input_worker` drains — a message/button-press in realtime mode
   still goes nowhere.
-- No `expression` events or real amplitude envelope published with `realtime.py`'s
-  `speaking` state — the face falls back to generic idle motion instead of tracking
-  realtime-mode speech.
+- Real amplitude-envelope mouth-sync (the face still falls back to generic idle motion
+  during realtime-mode speech, unprompted emotional beats aside) — `VoiceLoop`'s pattern
+  (compute the whole envelope up front, publish it with a known `duration_ms` before
+  playback starts) doesn't map directly onto realtime audio, which arrives as many small
+  deltas over time with no known total length in advance. Needs its own design.
 - Watchers get `ToolServer` access for free once Phase 1's remaining work (a single
   shared registry/router, not just the `RealtimeVoiceLoop` injection seam landed so far)
   is finished.
