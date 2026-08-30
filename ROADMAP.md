@@ -84,15 +84,18 @@ transcripts still publish, same contract as the pipeline loop.
 **Also done:** direct expression requests ("show me you're happy") now trigger the face
 in realtime mode too — matched deterministically via `orchestrator.py`'s
 `_detect_requested_expression` against each user transcript, since this mode's system
-prompt carries no `EXPRESSION:` marker protocol for the audio model to rely on.
+prompt carries no `EXPRESSION:` marker protocol for the audio model to rely on. Text input
+(console box, Telegram) also now reaches realtime mode — `submit_text_message()` injects
+it as a real user conversation item, with a real retry loop (not best-effort like
+`announce()`, since it's text the user actually sent) and a toast if delivery genuinely
+fails. Push-to-talk deliberately left unwired: realtime mode's mic is already always-on
+via server-side VAD, so a PTT control doesn't have a clear purpose there distinct from
+just talking — a UX/documentation question, not a functional gap.
 
 **Still open (confirmed orphaned in realtime mode, not yet addressed):**
 - Reminder checking specifically is still inline as `VoiceLoop._reminder_checker_worker`
   rather than a class `ProactiveEngine` owns (lower priority — same functional gap, kept
   out of this pass to limit scope of one already-large change).
-- Telegram bridge and push-to-talk both feed a queue only
-  `VoiceLoop._external_input_worker` drains — a message/button-press in realtime mode
-  still goes nowhere.
 - Real amplitude-envelope mouth-sync (the face still falls back to generic idle motion
   during realtime-mode speech, unprompted emotional beats aside) — `VoiceLoop`'s pattern
   (compute the whole envelope up front, publish it with a known `duration_ms` before
