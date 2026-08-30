@@ -308,6 +308,19 @@ def test_realtime_loop_gets_a_proactive_engine():
     assert loop.orchestrator is not None
 
 
+def test_orchestrator_shares_the_same_tool_registry_not_a_second_one():
+    """Confirmed live as a real resource-doubling bug: Orchestrator builds
+    its own registry by default, so leaving this unset spawned TWO
+    separate headless-browser subprocesses for one realtime session with
+    Playwright MCP enabled (one for self.tools, a second wasted one buried
+    inside Orchestrator's own construction) -- same doubling for any other
+    enabled MCP server (GitHub, Zapier, Home Assistant, Figma)."""
+    with patch("argus.voice.realtime.settings.openai_api_key", "test-key"):
+        loop = RealtimeVoiceLoop()
+
+    assert loop.orchestrator.tools is loop.tools
+
+
 def test_announce_lock_reflects_audio_activity():
     from argus.voice.realtime import _AnnounceLock
 

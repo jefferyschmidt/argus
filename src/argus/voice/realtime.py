@@ -138,11 +138,26 @@ class RealtimeVoiceLoop:
         # A dedicated Orchestrator instance here is purely for their use;
         # its cost governor tracks their spend, separate from the realtime
         # session's own OpenAI usage (a different provider Argus doesn't
-        # meter). Deliberately NOT unifying this with self.tools above --
-        # that's the Phase 1 work already flagged as a separate, careful
-        # pass, not something to rush into here.
+        # meter).
+        #
+        # tool_registry=self.tools matters more than it looks: Orchestrator
+        # builds its own registry by default -- confirmed live as a real
+        # resource-doubling bug once Phase 3-5's MCP integrations existed.
+        # With enable_playwright_mcp on, leaving this unset spawned TWO
+        # separate headless-browser subprocesses for one realtime session
+        # (one for self.tools above, a second, wasted one buried inside
+        # Orchestrator's own construction) -- same doubling for any other
+        # enabled MCP server (GitHub, Zapier, Home Assistant, Figma), each
+        # a real subprocess or network connection, not a cheap object.
+        # Sharing self.tools costs one known, minor gap: second_opinion/
+        # scan_document need a router to be registered at all, and
+        # self.tools was built with router=None (unchanged from before this
+        # fix), so the proactive workers' orchestrator won't have those two
+        # tools. Acceptable -- avoiding duplicated real processes/
+        # connections matters far more than two optional tools proactive
+        # workers weren't relying on anyway.
         from argus.orchestrator import Orchestrator
-        self.orchestrator = Orchestrator()
+        self.orchestrator = Orchestrator(tool_registry=self.tools)
 
         from argus.proactive_engine import ProactiveEngine
         self.proactive = ProactiveEngine(self.orchestrator, self.announce, _AnnounceLock(self))
