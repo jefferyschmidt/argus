@@ -75,6 +75,12 @@ workers' own LLM/memory needs; the realtime conversation itself never touches it
 Realtime mode now has all 7 proactive workers running. Tested (`test_proactive_engine.py`
 + additions to `test_realtime_voice.py`), full suite green.
 
+**Also done:** quiet-mode and listening-paused/mute are now respected in realtime mode.
+`_should_forward_mic_audio()` gates the mic-send loop (a real privacy gap before this —
+the mic kept streaming to OpenAI regardless of what the console UI showed); the
+`response.output_audio.delta` handler skips local playback in quiet mode while captions/
+transcripts still publish, same contract as the pipeline loop.
+
 **Still open (confirmed orphaned in realtime mode, not yet addressed):**
 - Reminder checking specifically is still inline as `VoiceLoop._reminder_checker_worker`
   rather than a class `ProactiveEngine` owns (lower priority — same functional gap, kept
@@ -82,8 +88,6 @@ Realtime mode now has all 7 proactive workers running. Tested (`test_proactive_e
 - Telegram bridge and push-to-talk both feed a queue only
   `VoiceLoop._external_input_worker` drains — a message/button-press in realtime mode
   still goes nowhere.
-- Quiet-mode/listening-paused aren't checked in `realtime.py`'s mic loop — the mic keeps
-  streaming to OpenAI regardless of what the UI shows.
 - No `expression` events or real amplitude envelope published with `realtime.py`'s
   `speaking` state — the face falls back to generic idle motion instead of tracking
   realtime-mode speech.
