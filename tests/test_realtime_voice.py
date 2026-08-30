@@ -65,6 +65,67 @@ def test_receiver_marks_an_unexpected_clean_socket_close_for_reconnect():
     assert listener._connection_error == "The voice connection closed."
 
 
+def test_should_forward_mic_audio_respects_listening_paused():
+    """Confirmed orphaned in realtime mode (ROADMAP.md Phase 2): the mic
+    kept streaming to OpenAI regardless of "listening paused" in the
+    console UI, unlike the pipeline loop's mic loop which already checks
+    this."""
+    listener = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+
+    with patch("argus.voice.realtime.ui_commands.is_listening_paused", return_value=True):
+        assert listener._should_forward_mic_audio() is False
+
+    with patch("argus.voice.realtime.ui_commands.is_listening_paused", return_value=False):
+        assert listener._should_forward_mic_audio() is True
+
+
+def test_quiet_mode_suppresses_audio_playback_but_not_captions():
+    """Confirmed orphaned in realtime mode (ROADMAP.md Phase 2): quiet mode
+    wasn't checked at all here, so turning it on in the console had no
+    effect on realtime-mode audio. Same contract as the pipeline loop's
+    _speak_with_barge_in -- audio playback is skipped, but the caption/
+    transcript events still publish."""
+    import base64
+    import json
+
+    listener = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    listener._stop = threading.Event()
+    listener._connection_lost = threading.Event()
+    listener._connection_error = None
+    listener._output = queue.Queue()
+    event = json.dumps({
+        "type": "response.output_audio.delta",
+        "delta": base64.b64encode(b"\x00\x01\x02\x03").decode("ascii"),
+    })
+
+    with patch("argus.voice.realtime.ui_commands.is_quiet_mode", return_value=True), \
+         patch("argus.voice.realtime.ui_events.publish"):
+        listener._receive([event])
+
+    assert listener._output.empty()
+
+
+def test_normal_mode_still_plays_audio():
+    import base64
+    import json
+
+    listener = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    listener._stop = threading.Event()
+    listener._connection_lost = threading.Event()
+    listener._connection_error = None
+    listener._output = queue.Queue()
+    event = json.dumps({
+        "type": "response.output_audio.delta",
+        "delta": base64.b64encode(b"\x00\x01\x02\x03").decode("ascii"),
+    })
+
+    with patch("argus.voice.realtime.ui_commands.is_quiet_mode", return_value=False), \
+         patch("argus.voice.realtime.ui_events.publish"):
+        listener._receive([event])
+
+    assert not listener._output.empty()
+
+
 def test_announce_returns_false_with_no_open_connection():
     """ROADMAP.md Phase 2: a proactive worker must get a clean False (to
     retry later, same as the pipeline loop's _pending_delivery pattern),

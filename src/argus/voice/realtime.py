@@ -21,6 +21,7 @@ from argus.config import settings
 from argus.persona import CONVERSATION_PROMPT
 from argus.tools import build_default_registry
 from argus.tools.registry import ToolDenied
+from argus.ui import commands as ui_commands
 from argus.ui import events as ui_events
 
 log = logging.getLogger(__name__)
@@ -184,6 +185,14 @@ class RealtimeVoiceLoop:
                 },
             },
         }
+
+    def _should_forward_mic_audio(self) -> bool:
+        """False while "listening paused"/mute is on in the console UI --
+        checked in the mic-send loop (_run_connection), not here in the
+        capture callback, so a captured chunk is always drained from
+        self._input either way (nothing to replay once unpaused); this
+        only decides whether it actually leaves the process."""
+        return not ui_commands.is_listening_paused()
 
     def _on_input(self, indata, frames, time_info, status) -> None:
         if status:
@@ -364,7 +373,13 @@ class RealtimeVoiceLoop:
                     self._on_barge_in_ended(socket)
                 elif event_type in {"response.output_audio.delta", "response.audio.delta"}:
                     data = event.get("delta", "")
-                    if data:
+                    # Quiet mode: same contract as the pipeline loop's
+                    # _speak_with_barge_in -- the transcript/caption events
+                    # below still publish normally, only the actual audio
+                    # playback is skipped. OpenAI still generates the audio
+                    # server-side either way (output_modalities is fixed at
+                    # session-config time); this just never plays it.
+                    if data and not ui_commands.is_quiet_mode():
                         samples = np.frombuffer(base64.b64decode(data), dtype=np.int16)
                         try:
                             self._output.put_nowait(samples)
@@ -449,6 +464,17 @@ class RealtimeVoiceLoop:
                     try:
                         chunk = self._input.get(timeout=0.2)
                     except queue.Empty:
+                        continue
+                    # Confirmed orphaned in realtime mode (ROADMAP.md Phase
+                    # 2): "listening paused"/mute never actually muted here
+                    # -- the pipeline VoiceLoop's mic loop already checks
+                    # this, but this one didn't, so a user who paused
+                    # listening in the console UI still had their mic
+                    # streamed to OpenAI the whole time. The chunk is
+                    # already drained from the queue either way (nothing to
+                    # replay once unpaused); this only decides whether it
+                    # actually leaves the process.
+                    if not self._should_forward_mic_audio():
                         continue
                     self._send(socket, {
                         "type": "input_audio_buffer.append",
