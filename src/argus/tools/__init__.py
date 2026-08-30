@@ -1,5 +1,6 @@
 import logging
 
+from argus.config import settings
 from argus.tools.base import PermissionTier, Tool
 from argus.tools.calendar import create_calendar_event_tool, list_calendar_events_tool
 from argus.tools.desktop import (
@@ -137,6 +138,21 @@ def build_default_registry(router=None) -> ToolRegistry:
             log.warning("Plugin tool '%s' has the same name as an existing tool -- skipping", tool.name)
             continue
         registry.register(tool)
+
+    # ROADMAP.md Phase 3: the first external MCP server, off by default
+    # (see Settings.enable_playwright_mcp). Wrapped in try/except -- npx/
+    # Node not being installed, or the server failing to start, must not
+    # take down every other tool Argus has; same "skip and warn" spirit as
+    # the plugin loader above.
+    if settings.enable_playwright_mcp:
+        try:
+            from argus.mcp_bridge import McpServerBridge
+
+            bridge = McpServerBridge("npx", ["-y", "@playwright/mcp@latest", "--headless"])
+            for tool in bridge.build_tools(name_prefix="playwright_", group="playwright_mcp"):
+                registry.register(tool)
+        except Exception:
+            log.exception("Playwright MCP server failed to start -- browser tools unavailable this session")
 
     return registry
 

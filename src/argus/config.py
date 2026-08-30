@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     ollama_host: str = "http://localhost:11434"
     ollama_local_model: str = "llama3.2:3b"
 
+    # ROADMAP.md Phase 3: web tasks via structured accessibility data
+    # (same principle as list_ui_elements, applied to the browser) instead
+    # of screenshot-and-guess desktop control. Off by default -- launching
+    # the Playwright MCP server spawns a real Node/browser process and
+    # takes a few seconds, cost not worth paying at every Argus startup
+    # for a capability most turns never use.
+    enable_playwright_mcp: bool = False
+
     # Optional -- if set, Groq replaces Ollama in the low-latency "local"
     # slot (small talk, addressee-gate classification): hosted, no cold
     # start, ~300-500 tok/s vs. Ollama's CPU-bound generation on this

@@ -105,15 +105,38 @@ just talking — a UX/documentation question, not a functional gap.
   shared registry/router, not just the `RealtimeVoiceLoop` injection seam landed so far)
   is finished.
 
-## Phase 3 — First external MCP: Playwright
+## Phase 3 — First external MCP: Playwright — DONE
 
 - Web/browser automation via structured accessibility-tree data instead of
   screenshot-and-guess — same "Set-of-Mark" principle as `list_ui_elements`
   (UI Automation, built for desktop), applied to the browser.
 - Directly fixes the failure mode from the Yahoo Mail deletion task (20+ iterations, a
   malformed click, eventual failure) for any future web-based task without its own tool.
-- First real "consume a third-party MCP server" case — validates that `ToolServer` can
-  register tools from an external MCP server, not just in-process `Tool` objects.
+- First real "consume a third-party MCP server" case — validates that a bridge can
+  register tools from an external MCP server into the same registry as in-process
+  `Tool` objects.
+
+**Done:** `mcp_bridge.py`'s `McpServerBridge` launches an MCP server as a subprocess
+(stdio transport), runs its own asyncio event loop on a dedicated background thread for
+the server's whole lifetime (a session needs to stay alive across many calls — restarting
+a browser process per tool call would be both slow and wasteful), and bridges Argus's
+synchronous `Tool.handler` calls into it. `build_default_registry()` wires in Playwright
+MCP (`npx @playwright/mcp@latest --headless`) when `ENABLE_PLAYWRIGHT_MCP=true` (off by
+default — launching it costs a few real seconds and a Node/browser process, not worth
+paying at every startup); a failure to start is caught and logged, same "skip and warn"
+spirit as the plugin loader, so it can never take down the rest of the registry.
+Verified live end-to-end against the real server (24 tools discovered, a real
+`browser_navigate` call actually navigated a headless browser). Found and fixed one real
+bug in the process: entering the stdio/session async context managers via `__aenter__()`
+without keeping a reference let them get garbage-collected the moment the connecting
+coroutine returned, closing the connection before a single request could go out.
+7 tests for the bridge itself (fake session, real threading/event-loop code path) + 3 for
+the registry wiring. Full suite: 573 passed.
+
+**Not yet done:** this is the generic bridge, reusable for any stdio MCP server — Phase 4's
+Zapier/Home Assistant and Phase 5's GitHub/Figma should be able to reuse
+`McpServerBridge` directly (different `command`/`args`, possibly a different transport
+for ones that aren't stdio-based) rather than needing their own bridge code.
 
 ## Phase 4 — Jarvis capability expansion
 

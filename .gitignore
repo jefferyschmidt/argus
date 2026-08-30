@@ -27,6 +27,10 @@ data/events/
 .idea/
 scratch/
 
+# Playwright MCP's own session artifacts (page snapshots), written to the
+# working directory Argus was launched from.
+.playwright-mcp/
+
 # The son's separate "Grunge" project, dropped into this directory so Argus
 # could read/discuss it -- not part of Argus's own history.
 /Grunge/
