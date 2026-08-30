@@ -211,6 +211,36 @@ def build_default_registry(router=None) -> ToolRegistry:
             # don't take down the registry" case the try/except is for.
             log.exception("Figma MCP server unreachable (desktop app not running with Dev Mode MCP enabled?) -- Figma tools unavailable this session")
 
+    # ROADMAP.md Phase 5/6: local stdio servers again (like Playwright),
+    # but needing their config via subprocess env vars rather than an
+    # HTTP header -- confirmed live as a real gap McpServerBridge didn't
+    # support until this was added (a server needing an env var for its
+    # API key silently never received it when only os.environ was set,
+    # hanging until timeout with no error at all).
+    if settings.enable_stability_mcp:
+        try:
+            from argus.mcp_bridge import McpServerBridge
+
+            env = {
+                "STABILITY_AI_API_KEY": settings.stability_ai_api_key,
+                "IMAGE_STORAGE_DIRECTORY": str(settings.workspace_dir),
+            }
+            bridge = McpServerBridge("npx", ["-y", "mcp-server-stability-ai"], env=env)
+            for tool in bridge.build_tools(name_prefix="stability_", group="stability_mcp"):
+                registry.register(tool)
+        except Exception:
+            log.exception("Stability AI MCP server failed to start -- image-generation tools unavailable this session")
+
+    if settings.enable_spotify_mcp:
+        try:
+            from argus.mcp_bridge import McpServerBridge
+
+            bridge = McpServerBridge("npx", ["-y", "@tbrgeek/spotify-mcp-server"])
+            for tool in bridge.build_tools(name_prefix="spotify_", group="spotify_mcp"):
+                registry.register(tool)
+        except Exception:
+            log.exception("Spotify MCP server failed to start -- music tools unavailable this session")
+
     return registry
 
 

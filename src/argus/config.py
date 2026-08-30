@@ -65,6 +65,20 @@ class Settings(BaseSettings):
     enable_figma_mcp: bool = False
     figma_mcp_url: str = "http://127.0.0.1:3845/mcp"
 
+    # ROADMAP.md Phase 5: Stability AI image generation -- a local stdio
+    # server (npx mcp-server-stability-ai), same shape as Playwright, but
+    # needs its key via a subprocess ENV VAR, not an HTTP header -- get an
+    # API key at https://platform.stability.ai/account/keys.
+    enable_stability_mcp: bool = False
+    stability_ai_api_key: str = ""
+
+    # ROADMAP.md Phase 6: Spotify playback control -- also a local stdio
+    # server (npx @tbrgeek/spotify-mcp-server). Confirmed live: it starts
+    # and connects fine with zero credentials configured, exposing only
+    # setup/auth-status tools until authenticated -- Argus can walk the
+    # user through the rest itself once enabled, no API key needed here.
+    enable_spotify_mcp: bool = False
+
     # Optional -- if set, Groq replaces Ollama in the low-latency "local"
     # slot (small talk, addressee-gate classification): hosted, no cold
     # start, ~300-500 tok/s vs. Ollama's CPU-bound generation on this

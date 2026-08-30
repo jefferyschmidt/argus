@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -169,6 +169,87 @@ def test_requires_exactly_one_of_command_or_url():
         McpServerBridge()
     with pytest.raises(ValueError, match="exactly one"):
         McpServerBridge(command="npx", url="http://example.com/mcp")
+
+
+def test_stdio_env_is_passed_to_stdio_server_parameters():
+    """Confirmed live as a real bug: env=None does NOT inherit this
+    process's environment -- the SDK merges server.env or {} onto its own
+    minimal default set (get_default_environment()), not onto os.environ.
+    A server that needs an API key via an env var (e.g. Stability AI's
+    STABILITY_AI_API_KEY) silently never received it and the connection
+    just hung until timeout, no error, just silence. This checks the env
+    this bridge was given actually reaches StdioServerParameters."""
+    captured = {}
+
+    class _FakeParams:
+        def __init__(self, command, args, env):
+            captured["command"] = command
+            captured["args"] = args
+            captured["env"] = env
+
+    class _FakeTransportCm:
+        async def __aenter__(self):
+            return (object(), object())
+
+    class _FakeSessionCm:
+        def __init__(self, read, write):
+            pass
+
+        async def __aenter__(self):
+            fake_session = MagicMock()
+
+            async def fake_initialize():
+                return None
+
+            fake_session.initialize = fake_initialize
+            return fake_session
+
+    with patch("mcp.StdioServerParameters", _FakeParams), \
+         patch("mcp.client.stdio.stdio_client", return_value=_FakeTransportCm()), \
+         patch("mcp.ClientSession", _FakeSessionCm):
+        bridge = McpServerBridge(
+            "npx", ["-y", "mcp-server-stability-ai"],
+            env={"STABILITY_AI_API_KEY": "test-key", "IMAGE_STORAGE_DIRECTORY": "/tmp/x"},
+        )
+        bridge.close()
+
+    assert captured["env"] == {"STABILITY_AI_API_KEY": "test-key", "IMAGE_STORAGE_DIRECTORY": "/tmp/x"}
+
+
+def test_stdio_env_defaults_to_none_when_not_given():
+    """A server that needs no special environment (Playwright) shouldn't
+    get an empty dict forced on it -- None is meaningfully different (lets
+    the SDK's own minimal default set apply unmodified)."""
+    captured = {}
+
+    class _FakeParams:
+        def __init__(self, command, args, env):
+            captured["env"] = env
+
+    class _FakeTransportCm:
+        async def __aenter__(self):
+            return (object(), object())
+
+    class _FakeSessionCm:
+        def __init__(self, read, write):
+            pass
+
+        async def __aenter__(self):
+            fake_session = MagicMock()
+
+            async def fake_initialize():
+                return None
+
+            fake_session.initialize = fake_initialize
+            return fake_session
+
+    with patch("mcp.StdioServerParameters", _FakeParams), \
+         patch("mcp.client.stdio.stdio_client", return_value=_FakeTransportCm()), \
+         patch("mcp.ClientSession", _FakeSessionCm):
+        bridge = McpServerBridge("npx", ["-y", "@playwright/mcp@latest"])
+        bridge.close()
+
+    assert captured["env"] is None
 
 
 def test_command_dispatches_to_stdio_transport():

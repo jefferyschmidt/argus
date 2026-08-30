@@ -165,41 +165,50 @@ real credentials to `.env` should do a first live check the same way Phase 3's P
 integration was checked — confirm `list_tools()` returns something sane before trusting a
 real tool call.
 
-## Phase 5 — Developer + creative capability — GITHUB + FIGMA WIRING DONE
+## Phase 5 — Developer + creative capability — DONE (needs real credentials to go live)
 
 - **GitHub MCP** — issues/PRs/remote repo management. Complements, doesn't replace, the
   existing local self-editing tools (`read_own_source`/`write_own_source`/
   `commit_own_changes`).
 - **Figma MCP** — real design-file structure (layers, auto-layout, variants, tokens) for
   generating code against an actual design instead of a screenshot.
-- **Stability AI / image-gen MCP** — generate/edit/upscale images from a prompt. Not
-  started.
+- **Stability AI / image-gen MCP** — generate/edit/upscale images from a prompt.
 
-**Done:** unlike Zapier/Home Assistant, both GitHub's and Figma's MCP servers have fixed,
-documented endpoints (not account-specific dashboard-generated URLs) —
-`https://api.githubcopilot.com/mcp/` and `http://127.0.0.1:3845/mcp` respectively — so
-wiring needed only an enable flag (+ a personal access token, for GitHub) rather than a
-URL to paste in. `build_default_registry()` wires both in via `ENABLE_GITHUB_MCP`/
-`GITHUB_MCP_TOKEN` and `ENABLE_FIGMA_MCP` (see `.env.example`), same try/except
-"skip and warn" pattern as the rest. Figma's failure case is the *expected* common one
-(the desktop app not running with Dev Mode's MCP server enabled), not just theoretical —
-documented as such in the log message rather than reading as a real error.
+**Done:** GitHub's and Figma's MCP servers have fixed, documented endpoints (not
+account-specific dashboard-generated URLs) — `https://api.githubcopilot.com/mcp/` and
+`http://127.0.0.1:3845/mcp` respectively — so wiring needed only an enable flag (+ a
+personal access token, for GitHub) rather than a URL to paste in. Stability AI
+(`mcp-server-stability-ai`) is a **local stdio server, like Playwright** — verified live
+end-to-end (13 real image tools discovered) once a real bug in the bridge was found and
+fixed: `env=None` on `StdioServerParameters` does **not** inherit this process's
+environment (the SDK merges `server.env or {}` onto its own minimal default set, not
+`os.environ`), so a server needing its API key via an env var silently never received it
+and the connection just hung until timeout with no error at all. `McpServerBridge` now
+takes an explicit `env=` dict for the stdio path, tested. `build_default_registry()` wires
+all three in via `ENABLE_GITHUB_MCP`/`GITHUB_MCP_TOKEN`, `ENABLE_FIGMA_MCP`, and
+`ENABLE_STABILITY_MCP`/`STABILITY_AI_API_KEY` (see `.env.example`), same try/except
+"skip and warn" pattern as the rest.
 
-**Not yet verified live:** same situation as Zapier/Home Assistant — GitHub needs a real
-personal access token, Figma needs the actual desktop app running with Dev Mode enabled,
-neither of which exists in this environment. The wiring reuses the exact bridge/transport
-already proven live twice (Playwright over stdio, a local test server over HTTP), so
-confidence is high, but neither specific service has been connected to for real.
-Stability AI/image-gen not started at all.
+**Not yet verified live:** GitHub needs a real personal access token, Figma needs the
+actual desktop app running with Dev Mode enabled — neither exists in this environment.
+Stability AI's *transport* is proven (real connection, real tool list); actual image
+generation needs a real (non-dummy) API key to try.
 
-## Phase 6 — Music/audio capability (lowest priority, "fun")
+## Phase 6 — Music/audio capability (lowest priority, "fun") — SPOTIFY WIRING DONE
 
 - **Spotify MCP** — natural-language playback control, search, playlists.
 - **ShazamAPI MCP / ACRCloud** — song recognition ("what song is this"); ACRCloud is the
-  more capable paid option (150M+ track database, hums-to-song matching).
-- **live-coding-music-mcp** — generative music via Strudel.cc. Experimental/optional.
-  True vocal singing synthesis is a narrower space; Cartesia (already Argus's TTS
+  more capable paid option (150M+ track database, hums-to-song matching). Not started.
+- **live-coding-music-mcp** — generative music via Strudel.cc. Experimental/optional, not
+  started. True vocal singing synthesis is a narrower space; Cartesia (already Argus's TTS
   provider) is the closer fit if that's ever pursued, not a dedicated MCP.
+
+**Done:** Spotify (`@tbrgeek/spotify-mcp-server`) is another local stdio server. Verified
+live end-to-end with **zero credentials configured** — it connects and lists tools fine,
+exposing only `spotify_health_check`/`spotify_get_auth_status`/`spotify_setup_instructions`
+until authenticated. No API key setting needed on Argus's side at all; wired in via just
+`ENABLE_SPOTIFY_MCP`. Once enabled, Argus can walk the user through auth itself using the
+server's own setup-instructions tool rather than needing separate documentation here.
 
 ## Phase 7 — Argus as an MCP server (longer-term, not blocking)
 

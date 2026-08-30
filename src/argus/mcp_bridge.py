@@ -43,6 +43,7 @@ class McpServerBridge:
         self,
         command: str | None = None,
         args: list[str] | None = None,
+        env: dict[str, str] | None = None,
         url: str | None = None,
         headers: dict[str, str] | None = None,
     ):
@@ -50,6 +51,7 @@ class McpServerBridge:
             raise ValueError("McpServerBridge needs exactly one of command= or url=")
         self._command = command
         self._args = args or []
+        self._env = env
         self._url = url
         self._headers = headers
         self._label = command or url
@@ -101,7 +103,17 @@ class McpServerBridge:
         from mcp import StdioServerParameters
         from mcp.client.stdio import stdio_client
 
-        params = StdioServerParameters(command=self._command, args=self._args)
+        # env=None here does NOT inherit this process's environment --
+        # confirmed live as a real bug while testing this: the SDK merges
+        # `server.env or {}` onto its own minimal default set
+        # (get_default_environment()), not onto os.environ, so a server
+        # that needs an API key via an env var (e.g. Stability AI's
+        # STABILITY_AI_API_KEY) silently never received it and the
+        # connection just hung until timeout -- no error, just silence.
+        # self._env is passed through as-is; None still means "the SDK's
+        # own minimal default set," which is correct for a server (like
+        # Playwright) that needs no special environment at all.
+        params = StdioServerParameters(command=self._command, args=self._args, env=self._env)
         # An @asynccontextmanager-backed generator -- confirmed live as a
         # real bug: entering it via __aenter__() without keeping a
         # reference to the CM object itself let the generator (and the
