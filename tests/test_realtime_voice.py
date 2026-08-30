@@ -1,6 +1,6 @@
 import queue
 import threading
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -173,6 +173,42 @@ def test_announce_injects_a_conversation_item_when_idle():
     assert sent[0][1]["type"] == "conversation.item.create"
     assert "you've got mail" in sent[0][1]["item"]["content"][0]["text"]
     assert sent[1][1] == {"type": "response.create"}
+
+
+def test_direct_expression_request_triggers_the_face_in_realtime_mode():
+    """Confirmed orphaned in realtime mode (ROADMAP.md Phase 2): a direct
+    request ("show me you're happy") never reached the face at all --
+    this mode's system prompt carries no EXPRESSION: marker protocol for
+    the audio model to (unreliably) remember, so it has to be matched
+    deterministically, same as the pipeline orchestrator does."""
+    import json
+
+    listener = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    listener._stop = threading.Event()
+    listener._connection_lost = threading.Event()
+    listener._connection_error = None
+    listener._speech_lock = threading.Lock()
+    listener._input_had_transcript = False
+    listener._resume_timer = None
+    listener._barge_in_timer = None
+    listener._response_active = False
+    listener._playback = np.empty(0, dtype="int16")
+    listener._output = queue.Queue()
+    listener._playback_lock = threading.Lock()
+    listener._send_lock = threading.Lock()
+    listener._last_expression = None
+    listener.tools = MagicMock()
+    event = json.dumps({
+        "type": "conversation.item.input_audio_transcription.completed",
+        "transcript": "show me your happy face",
+    })
+
+    with patch("argus.voice.realtime.ui_events.publish") as publish:
+        listener._receive([event])
+
+    assert listener._last_expression == "happy"
+    expression_events = [c.args[0] for c in publish.call_args_list if c.args[0].get("type") == "expression"]
+    assert expression_events == [{"type": "expression", "value": "happy"}]
 
 
 def test_realtime_loop_gets_a_proactive_engine():

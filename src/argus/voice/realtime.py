@@ -125,6 +125,11 @@ class RealtimeVoiceLoop:
         # reach this loop's socket via announce() without needing its own
         # reference to whichever connection happens to be live right now.
         self._socket = None
+        # Tracks the last expression shown so a repeated generic request
+        # ("show me an expression") cycles instead of repeating -- same
+        # state orchestrator.py's Orchestrator.last_expression keeps for
+        # the pipeline lane.
+        self._last_expression: str | None = None
 
         # This session's own conversation never goes through Orchestrator
         # (OpenAI's realtime model answers directly) -- but the proactive
@@ -399,7 +404,19 @@ class RealtimeVoiceLoop:
                         # The audio model may call a tool after this turn;
                         # mark only clear action requests as pre-authorized,
                         # matching the standard orchestrator's behavior.
-                        from argus.orchestrator import _should_use_tools
+                        from argus.orchestrator import _detect_requested_expression, _should_use_tools
+                        # Confirmed orphaned in realtime mode (ROADMAP.md
+                        # Phase 2): a direct request ("show me you're
+                        # happy") never triggered the face at all here --
+                        # matched deterministically, same as the pipeline
+                        # orchestrator, rather than depending on the audio
+                        # model to remember an EXPRESSION: marker it was
+                        # never even told about (this mode's system prompt
+                        # carries no such protocol).
+                        requested_expression = _detect_requested_expression(transcript, self._last_expression)
+                        if requested_expression:
+                            self._last_expression = requested_expression
+                            ui_events.publish({"type": "expression", "value": requested_expression})
                         with self._speech_lock:
                             self._input_had_transcript = True
                             self._cancel_timer(self._resume_timer)
