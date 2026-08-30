@@ -175,6 +175,92 @@ def test_announce_injects_a_conversation_item_when_idle():
     assert sent[1][1] == {"type": "response.create"}
 
 
+def test_submit_text_message_injects_a_real_user_turn():
+    """Confirmed orphaned in realtime mode (ROADMAP.md Phase 2): both the
+    console text box and the Telegram bridge push onto a queue nothing
+    read in this mode -- a sent message just silently vanished."""
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    fake_socket = object()
+    loop._socket = fake_socket
+    loop._response_active = False
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    loop._playback_lock = threading.Lock()
+    loop._send_lock = threading.Lock()
+    sent = []
+    loop._send = lambda socket, event: sent.append((socket, event))
+
+    with patch("argus.voice.realtime.ui_events.publish"):
+        result = loop.submit_text_message("what's the weather")
+
+    assert result is True
+    assert sent[0][1]["type"] == "conversation.item.create"
+    assert sent[0][1]["item"]["role"] == "user"
+    assert sent[0][1]["item"]["content"][0]["text"] == "what's the weather"
+    assert sent[1][1] == {"type": "response.create"}
+
+
+def test_submit_text_message_returns_false_with_no_connection():
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = None
+
+    with patch("argus.voice.realtime.ui_events.publish"):
+        assert loop.submit_text_message("hello") is False
+
+
+def test_text_input_worker_retries_until_delivered():
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._stop = threading.Event()
+    calls = {"n": 0}
+
+    def fake_get_text_message(timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "hello there"
+        loop._stop.set()
+        return None
+
+    attempts = {"n": 0}
+
+    def fake_submit(text):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            return False
+        loop._stop.set()
+        return True
+
+    loop.submit_text_message = fake_submit
+
+    with patch("argus.voice.realtime.ui_commands.get_text_message", side_effect=fake_get_text_message), \
+         patch("argus.voice.realtime.time.sleep"):
+        loop._text_input_worker()
+
+    assert attempts["n"] == 3
+
+
+def test_text_input_worker_gives_up_and_toasts_after_max_retries():
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._stop = threading.Event()
+    calls = {"n": 0}
+
+    def fake_get_text_message(timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "hello there"
+        loop._stop.set()
+        return None
+
+    loop.submit_text_message = lambda text: False
+
+    with patch("argus.voice.realtime.ui_commands.get_text_message", side_effect=fake_get_text_message), \
+         patch("argus.voice.realtime.time.sleep"), \
+         patch("argus.voice.realtime.ui_events.publish") as publish:
+        loop._text_input_worker()
+
+    toasts = [c.args[0] for c in publish.call_args_list if c.args[0].get("type") == "toast"]
+    assert len(toasts) == 1
+
+
 def test_direct_expression_request_triggers_the_face_in_realtime_mode():
     """Confirmed orphaned in realtime mode (ROADMAP.md Phase 2): a direct
     request ("show me you're happy") never reached the face at all --

@@ -148,6 +148,10 @@ class RealtimeVoiceLoop:
         self.proactive = ProactiveEngine(self.orchestrator, self.announce, _AnnounceLock(self))
         self.proactive.start()
 
+        # Confirmed orphaned before this (ROADMAP.md Phase 2): text input
+        # (console box, Telegram) had no consumer at all in realtime mode.
+        threading.Thread(target=self._text_input_worker, daemon=True).start()
+
     def _session_config(self) -> dict:
         return {
             "type": "realtime",
@@ -323,6 +327,64 @@ class RealtimeVoiceLoop:
             log.exception("Realtime proactive announcement failed")
             return False
         return True
+
+    def submit_text_message(self, text: str) -> bool:
+        """Injects typed/Telegram text as a real user turn in the live
+        conversation. Confirmed orphaned in realtime mode (ROADMAP.md
+        Phase 2): both the console's text-input box and the Telegram
+        bridge push onto the same queue VoiceLoop._external_input_worker
+        drains -- nothing here ever read it, so a message sent while in
+        VOICE_MODE=realtime just silently vanished. Unlike announce()
+        (best-effort, a proactive worker's own retry queue covers a
+        failure), this is text the user actually sent -- see
+        _text_input_worker for the retry loop around this."""
+        socket = self._socket
+        if socket is None:
+            return False
+        ui_events.publish({"type": "transcript", "role": "you", "text": text})
+        ui_events.publish({"type": "caption", "text": text, "role": "you"})
+        try:
+            if self._audio_is_active():
+                self._clear_pending_audio()
+                if self._response_active:
+                    self._send(socket, {"type": "response.cancel"})
+            self._send(socket, {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            })
+            self._send(socket, {"type": "response.create"})
+        except Exception:
+            log.exception("Realtime text-message injection failed")
+            return False
+        return True
+
+    def _text_input_worker(self) -> None:
+        """Drains the same text-message queue VoiceLoop's
+        _external_input_worker does (console text box, Telegram bridge --
+        see cli.py's unconditional TelegramBridge().start()). A message
+        the user actually sent gets a real retry loop, not a silent drop,
+        for the ordinary transient case (reconnecting after a dropped
+        connection) -- gives up and surfaces a toast only after several
+        attempts spread over a few seconds."""
+        while not self._stop.is_set():
+            text = ui_commands.get_text_message(timeout=0.2)
+            if not text:
+                continue
+            for _ in range(10):
+                if self.submit_text_message(text):
+                    break
+                if self._stop.is_set():
+                    return
+                time.sleep(0.5)
+            else:
+                log.warning("Realtime text message could not be delivered: %r", text)
+                ui_events.publish({
+                    "type": "toast",
+                    "text": "Couldn't deliver that message -- the voice connection wasn't ready.",
+                })
 
     def _run_pending_tools(self, socket) -> None:
         """Execute the model's completed function calls, then let it speak
