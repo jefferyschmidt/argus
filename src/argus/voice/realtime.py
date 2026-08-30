@@ -96,6 +96,11 @@ class RealtimeVoiceLoop:
         self._barge_in_confirmed = False
         self._barge_in_timer: threading.Timer | None = None
         self._resume_timer: threading.Timer | None = None
+        # Set only while a connection is actually open (_run_connection) --
+        # lets an external thread (a ROADMAP.md Phase 2 proactive worker)
+        # reach this loop's socket via announce() without needing its own
+        # reference to whichever connection happens to be live right now.
+        self._socket = None
 
     def _session_config(self) -> dict:
         return {
@@ -235,6 +240,36 @@ class RealtimeVoiceLoop:
         with self._send_lock:
             socket.send(json.dumps(event))
 
+    def announce(self, text: str) -> bool:
+        """ROADMAP.md Phase 2 (ProactiveEngine): the AnnouncementSink this
+        loop implements. Realtime mode has no local audio queue to just
+        play into like the pipeline VoiceLoop does -- OpenAI's server
+        controls turn-taking -- so a proactive announcement has to arrive
+        as an injected conversation item instead of a forced audio
+        interrupt. Non-blocking, same "try now, caller retries later"
+        contract as VoiceLoop's side: returns False immediately (no
+        connection, or the user/Argus is actively mid-turn) rather than
+        waiting, so a proactive worker's own retry queue handles the rest,
+        exactly as it already does for the pipeline loop today."""
+        socket = self._socket
+        if socket is None or self._audio_is_active():
+            return False
+        ui_events.publish({"type": "transcript", "role": "argus", "text": text})
+        ui_events.publish({"type": "caption", "text": text, "role": "argus"})
+        try:
+            self._send(socket, {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message", "role": "system",
+                    "content": [{"type": "input_text", "text": f"(Proactively say this now, in your own words: {text})"}],
+                },
+            })
+            self._send(socket, {"type": "response.create"})
+        except Exception:
+            log.exception("Realtime proactive announcement failed")
+            return False
+        return True
+
     def _run_pending_tools(self, socket) -> None:
         """Execute the model's completed function calls, then let it speak
         naturally about the results in a fresh response."""
@@ -366,17 +401,21 @@ class RealtimeVoiceLoop:
             samplerate=_SAMPLE_RATE, channels=1, dtype="int16", blocksize=_BLOCK_SIZE, callback=self._on_output
         ):
             self._send(socket, {"type": "session.update", "session": self._session_config()})
+            self._socket = socket
             receiver = threading.Thread(target=self._receive, args=(socket,), daemon=True)
             receiver.start()
-            while not self._stop.is_set() and not self._connection_lost.is_set():
-                try:
-                    chunk = self._input.get(timeout=0.2)
-                except queue.Empty:
-                    continue
-                self._send(socket, {
-                    "type": "input_audio_buffer.append",
-                    "audio": base64.b64encode(chunk).decode("ascii"),
-                })
+            try:
+                while not self._stop.is_set() and not self._connection_lost.is_set():
+                    try:
+                        chunk = self._input.get(timeout=0.2)
+                    except queue.Empty:
+                        continue
+                    self._send(socket, {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(chunk).decode("ascii"),
+                    })
+            finally:
+                self._socket = None
         if self._connection_lost.is_set() and not self._stop.is_set():
             raise ConnectionError(self._connection_error or "Realtime connection closed")
 

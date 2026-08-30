@@ -1,4 +1,8 @@
+import queue
+import threading
 from unittest.mock import patch
+
+import numpy as np
 
 from argus.tools import build_default_registry
 from argus.voice.realtime import RealtimeVoiceLoop, _make_ui_confirmer
@@ -59,6 +63,55 @@ def test_receiver_marks_an_unexpected_clean_socket_close_for_reconnect():
 
     assert listener._connection_lost.is_set()
     assert listener._connection_error == "The voice connection closed."
+
+
+def test_announce_returns_false_with_no_open_connection():
+    """ROADMAP.md Phase 2: a proactive worker must get a clean False (to
+    retry later, same as the pipeline loop's _pending_delivery pattern),
+    not an exception, when nothing's connected yet."""
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = None
+    loop._response_active = False
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    loop._playback_lock = threading.Lock()
+
+    assert loop.announce("you've got mail") is False
+
+
+def test_announce_returns_false_while_audio_is_active():
+    """Must not barge into an in-progress turn -- same non-blocking
+    contract as VoiceLoop's interaction lock."""
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = object()
+    loop._response_active = True
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    loop._playback_lock = threading.Lock()
+
+    assert loop.announce("you've got mail") is False
+
+
+def test_announce_injects_a_conversation_item_when_idle():
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    fake_socket = object()
+    loop._socket = fake_socket
+    loop._response_active = False
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    loop._playback_lock = threading.Lock()
+    loop._send_lock = threading.Lock()
+    sent = []
+    loop._send = lambda socket, event: sent.append((socket, event))
+
+    with patch("argus.voice.realtime.ui_events.publish"):
+        result = loop.announce("you've got mail")
+
+    assert result is True
+    assert sent[0][0] is fake_socket
+    assert sent[0][1]["type"] == "conversation.item.create"
+    assert "you've got mail" in sent[0][1]["item"]["content"][0]["text"]
+    assert sent[1][1] == {"type": "response.create"}
 
 
 def test_realtime_confirmation_uses_the_visual_console_not_terminal():
