@@ -162,3 +162,49 @@ def test_init_times_out_if_the_server_never_becomes_ready():
          patch("argus.mcp_bridge._CONNECT_TIMEOUT_SECONDS", 0.2):
         with pytest.raises(TimeoutError):
             McpServerBridge("fake-command")
+
+
+def test_requires_exactly_one_of_command_or_url():
+    with pytest.raises(ValueError, match="exactly one"):
+        McpServerBridge()
+    with pytest.raises(ValueError, match="exactly one"):
+        McpServerBridge(command="npx", url="http://example.com/mcp")
+
+
+def test_command_dispatches_to_stdio_transport():
+    calls = []
+
+    async def fake_stdio(self):
+        calls.append("stdio")
+        self._ready.set()
+
+    async def fake_http(self):
+        calls.append("http")
+        self._ready.set()
+
+    with patch.object(McpServerBridge, "_connect_stdio", fake_stdio), \
+         patch.object(McpServerBridge, "_connect_http", fake_http):
+        McpServerBridge(command="npx", args=["-y", "@playwright/mcp@latest"])
+
+    assert calls == ["stdio"]
+
+
+def test_url_dispatches_to_http_transport():
+    """ROADMAP.md Phase 4: Zapier/Home Assistant are remote hosted MCP
+    servers, not local subprocesses -- this is the transport they need,
+    generalized from the stdio-only bridge Phase 3 shipped with."""
+    calls = []
+
+    async def fake_stdio(self):
+        calls.append("stdio")
+        self._ready.set()
+
+    async def fake_http(self):
+        calls.append("http")
+        self._ready.set()
+
+    with patch.object(McpServerBridge, "_connect_stdio", fake_stdio), \
+         patch.object(McpServerBridge, "_connect_http", fake_http):
+        McpServerBridge(url="http://127.0.0.1:8931/mcp", headers={"Authorization": "Bearer test"})
+
+    assert calls == ["http"]

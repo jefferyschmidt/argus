@@ -1,5 +1,7 @@
-"""Generic bridge from an external MCP server (a subprocess speaking MCP
-over stdio) into Argus's own Tool/ToolRegistry shape (ROADMAP.md Phase 3).
+"""Generic bridge from an external MCP server -- a local subprocess (stdio
+transport, e.g. Playwright MCP) or a remote hosted server (streamable
+HTTP, e.g. Zapier/Home Assistant's own MCP endpoints) -- into Argus's own
+Tool/ToolRegistry shape (ROADMAP.md Phase 3/4).
 
 Confirmed live as the actual motivating case: pure screenshot-and-guess
 desktop control burned 20+ tool-call iterations, $0.26, and a malformed
@@ -29,14 +31,28 @@ _CALL_TIMEOUT_SECONDS = 60.0
 
 
 class McpServerBridge:
-    """Launches one external MCP server as a subprocess and exposes its
-    tools as Argus Tool objects. One instance per server; construction
-    blocks until the connection is up (or raises) so a caller never
-    registers tools for a server that isn't actually reachable."""
+    """Launches one external MCP server -- stdio subprocess (pass
+    `command`/`args`) or a remote HTTP server (pass `url`, optionally
+    `headers` for auth) -- and exposes its tools as Argus Tool objects.
+    Exactly one of `command` or `url` must be given. One instance per
+    server; construction blocks until the connection is up (or raises) so
+    a caller never registers tools for a server that isn't actually
+    reachable."""
 
-    def __init__(self, command: str, args: list[str] | None = None):
+    def __init__(
+        self,
+        command: str | None = None,
+        args: list[str] | None = None,
+        url: str | None = None,
+        headers: dict[str, str] | None = None,
+    ):
+        if (command is None) == (url is None):
+            raise ValueError("McpServerBridge needs exactly one of command= or url=")
         self._command = command
         self._args = args or []
+        self._url = url
+        self._headers = headers
+        self._label = command or url
         self._loop: asyncio.AbstractEventLoop | None = None
         self._session = None
         self._ready = threading.Event()
@@ -44,7 +60,7 @@ class McpServerBridge:
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
         if not self._ready.wait(timeout=_CONNECT_TIMEOUT_SECONDS):
-            raise TimeoutError(f"MCP server '{command}' did not respond within {_CONNECT_TIMEOUT_SECONDS}s")
+            raise TimeoutError(f"MCP server '{self._label}' did not respond within {_CONNECT_TIMEOUT_SECONDS}s")
         if self._start_error is not None:
             raise self._start_error
 
@@ -61,27 +77,53 @@ class McpServerBridge:
         loop.run_forever()
 
     async def _connect(self) -> None:
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
+        if self._command is not None:
+            await self._connect_stdio()
+        else:
+            await self._connect_http()
 
-        params = StdioServerParameters(command=self._command, args=self._args)
-        # Both context managers are @asynccontextmanager-backed generators
-        # -- confirmed live as a real bug: entering them via __aenter__()
-        # without keeping a reference to the CM object itself let the
-        # generator (and the subprocess/stdio pipes it's driving) get
-        # garbage-collected the moment _connect() returned, closing the
-        # connection before a single request could go out ("Connection
-        # closed"). Held as instance attributes so they live exactly as
-        # long as this bridge does; __aexit__ is never called (this
-        # connection is meant to outlive the coroutine that opened it --
-        # close() stops the loop instead, ending the subprocess with it).
-        self._stdio_cm = stdio_client(params)
-        read, write = await self._stdio_cm.__aenter__()
+    async def _open_session(self, read, write) -> None:
+        """Shared by both transports: wraps the raw streams in a
+        ClientSession, initializes it, and publishes it -- held as an
+        instance attribute (not a local returned from _connect) for the
+        same reason the transport-specific context managers are (see
+        _connect_stdio): letting it fall out of scope would let it get
+        garbage-collected and close the connection."""
+        from mcp import ClientSession
+
         self._session_cm = ClientSession(read, write)
         session = await self._session_cm.__aenter__()
         await session.initialize()
         self._session = session
         self._ready.set()
+
+    async def _connect_stdio(self) -> None:
+        from mcp import StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
+        params = StdioServerParameters(command=self._command, args=self._args)
+        # An @asynccontextmanager-backed generator -- confirmed live as a
+        # real bug: entering it via __aenter__() without keeping a
+        # reference to the CM object itself let the generator (and the
+        # subprocess/stdio pipes it's driving) get garbage-collected the
+        # moment _connect() returned, closing the connection before a
+        # single request could go out ("Connection closed"). Held as an
+        # instance attribute so it lives exactly as long as this bridge
+        # does; __aexit__ is never called (this connection is meant to
+        # outlive the coroutine that opened it -- close() stops the loop
+        # instead, ending the subprocess with it).
+        self._transport_cm = stdio_client(params)
+        read, write = await self._transport_cm.__aenter__()
+        await self._open_session(read, write)
+
+    async def _connect_http(self) -> None:
+        import httpx2
+        from mcp.client.streamable_http import streamable_http_client
+
+        http_client = httpx2.AsyncClient(headers=self._headers) if self._headers else None
+        self._transport_cm = streamable_http_client(self._url, http_client=http_client)
+        read, write = await self._transport_cm.__aenter__()
+        await self._open_session(read, write)
 
     def _run_coroutine(self, coro, timeout: float):
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)

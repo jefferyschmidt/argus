@@ -138,13 +138,32 @@ Zapier/Home Assistant and Phase 5's GitHub/Figma should be able to reuse
 `McpServerBridge` directly (different `command`/`args`, possibly a different transport
 for ones that aren't stdio-based) rather than needing their own bridge code.
 
-## Phase 4 — Jarvis capability expansion
+## Phase 4 — Jarvis capability expansion — WIRING DONE, NEEDS REAL CREDENTIALS
 
 - **Zapier MCP** — governed OAuth access to 9,000+ apps. Highest-leverage single addition
   on the whole wishlist: the fallback for "there's probably a Zap for that" instead of
   hand-building a tool per app.
 - **Home Assistant MCP** — smart home control (lights, thermostat, locks, scenes).
   Explicitly requested; genuinely new capability, nothing existing to replace.
+
+**Done:** `McpServerBridge` (Phase 3) generalized to also speak streamable HTTP, not just
+stdio — the transport both of these need, since they're remote hosted servers, not local
+subprocesses. Same bridge code, no duplication. `build_default_registry()` wires both in
+via `ZAPIER_MCP_URL`/`ZAPIER_MCP_API_KEY` and `HOME_ASSISTANT_MCP_URL`/
+`HOME_ASSISTANT_MCP_TOKEN` (see `.env.example`) — both off unless a URL is actually
+configured, same try/except "skip and warn" pattern as Playwright so a bad/unreachable
+server can't take down the rest of the registry. The generalized HTTP transport itself was
+verified live end-to-end against a local test MCP server (real tool call round-tripped
+correctly) before trusting it — same standard as Phase 3's Playwright verification.
+
+**Not yet done — needs the user's own accounts:** neither Zapier's nor Home Assistant's
+*actual* endpoint has been connected to or exercised, since both require real,
+account-specific credentials only the user has (Zapier's dashboard-generated MCP URL; a
+Home Assistant instance with the MCP Server integration enabled plus a long-lived access
+token). The wiring and transport are proven; the specific services are not. Whoever adds
+real credentials to `.env` should do a first live check the same way Phase 3's Playwright
+integration was checked — confirm `list_tools()` returns something sane before trusting a
+real tool call.
 
 ## Phase 5 — Developer + creative capability
 

@@ -154,6 +154,35 @@ def build_default_registry(router=None) -> ToolRegistry:
         except Exception:
             log.exception("Playwright MCP server failed to start -- browser tools unavailable this session")
 
+    # ROADMAP.md Phase 4: remote hosted MCP servers, reusing the same
+    # McpServerBridge Phase 3 built (now generalized to also speak
+    # streamable HTTP, not just stdio) -- different transport, not
+    # different bridge code. Both off unless the user has actually pasted
+    # in their own account's MCP URL; same try/except "skip and warn"
+    # pattern as Playwright above, since an unreachable or misconfigured
+    # server must not take down every other tool.
+    if settings.zapier_mcp_url:
+        try:
+            from argus.mcp_bridge import McpServerBridge
+
+            headers = {"Authorization": f"Bearer {settings.zapier_mcp_api_key}"} if settings.zapier_mcp_api_key else None
+            bridge = McpServerBridge(url=settings.zapier_mcp_url, headers=headers)
+            for tool in bridge.build_tools(name_prefix="zapier_", group="zapier_mcp"):
+                registry.register(tool)
+        except Exception:
+            log.exception("Zapier MCP server unreachable -- Zapier tools unavailable this session")
+
+    if settings.home_assistant_mcp_url:
+        try:
+            from argus.mcp_bridge import McpServerBridge
+
+            headers = {"Authorization": f"Bearer {settings.home_assistant_mcp_token}"} if settings.home_assistant_mcp_token else None
+            bridge = McpServerBridge(url=settings.home_assistant_mcp_url, headers=headers)
+            for tool in bridge.build_tools(name_prefix="home_assistant_", group="home_assistant_mcp"):
+                registry.register(tool)
+        except Exception:
+            log.exception("Home Assistant MCP server unreachable -- smart home tools unavailable this session")
+
     return registry
 
 

@@ -26,6 +26,25 @@ class Settings(BaseSettings):
     # for a capability most turns never use.
     enable_playwright_mcp: bool = False
 
+    # ROADMAP.md Phase 4: remote hosted MCP servers (streamable HTTP, not
+    # a local subprocess). Both off by default (empty url = skipped, same
+    # "opt in, never slow down a normal startup" pattern as Playwright
+    # above). The URL is account-specific -- generated in each service's
+    # own dashboard -- so it's supplied whole rather than guessed/built
+    # from a template here.
+    #
+    # Zapier: paste the MCP server URL from your Zapier account's MCP
+    # integration setup. zapier_mcp_api_key is only needed if that URL
+    # doesn't already embed its own auth.
+    zapier_mcp_url: str = ""
+    zapier_mcp_api_key: str = ""
+    # Home Assistant: the official "MCP Server" integration exposes this
+    # at <your-ha-url>/mcp_server/sse once enabled in Settings ->
+    # Integrations -> Add Integration -> MCP Server. Token is a
+    # long-lived access token from your HA profile page.
+    home_assistant_mcp_url: str = ""
+    home_assistant_mcp_token: str = ""
+
     # Optional -- if set, Groq replaces Ollama in the low-latency "local"
     # slot (small talk, addressee-gate classification): hosted, no cold
     # start, ~300-500 tok/s vs. Ollama's CPU-bound generation on this
