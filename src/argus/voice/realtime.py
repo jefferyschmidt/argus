@@ -42,6 +42,29 @@ actions are handled by Argus's normal confirmation system.
 """
 
 
+class _AnnounceLock:
+    """Adapts RealtimeVoiceLoop.announce()'s single non-blocking call into
+    the (interaction_lock.acquire/release + speak_fn) shape every proactive
+    worker already expects -- see ProactiveEngine. Avoids changing 7
+    existing worker classes just to support a second voice loop.
+
+    acquire() only reports whether sending is plausible right now;
+    announce() itself re-checks before actually sending, so a worker's
+    speak_fn call can still legitimately no-op if state changed in
+    between -- the same "best-effort, retried next poll" guarantee the
+    real threading.Lock version gives, just without an actual lock to
+    hold: OpenAI's server owns turn-taking here, not this process."""
+
+    def __init__(self, loop: "RealtimeVoiceLoop"):
+        self._loop = loop
+
+    def acquire(self, blocking: bool = True) -> bool:
+        return self._loop._socket is not None and not self._loop._audio_is_active()
+
+    def release(self) -> None:
+        pass
+
+
 def _make_ui_confirmer():
     """Use the visual console for native-mode confirmations."""
     def confirmer(tool_name: str, tool_input: dict) -> bool:
@@ -101,6 +124,23 @@ class RealtimeVoiceLoop:
         # reach this loop's socket via announce() without needing its own
         # reference to whichever connection happens to be live right now.
         self._socket = None
+
+        # This session's own conversation never goes through Orchestrator
+        # (OpenAI's realtime model answers directly) -- but the proactive
+        # workers (email watching, reminders, etc.) still need an LLM +
+        # memory to decide what's worth mentioning, same as pipeline mode.
+        # A dedicated Orchestrator instance here is purely for their use;
+        # its cost governor tracks their spend, separate from the realtime
+        # session's own OpenAI usage (a different provider Argus doesn't
+        # meter). Deliberately NOT unifying this with self.tools above --
+        # that's the Phase 1 work already flagged as a separate, careful
+        # pass, not something to rush into here.
+        from argus.orchestrator import Orchestrator
+        self.orchestrator = Orchestrator()
+
+        from argus.proactive_engine import ProactiveEngine
+        self.proactive = ProactiveEngine(self.orchestrator, self.announce, _AnnounceLock(self))
+        self.proactive.start()
 
     def _session_config(self) -> dict:
         return {

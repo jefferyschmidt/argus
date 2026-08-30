@@ -114,6 +114,44 @@ def test_announce_injects_a_conversation_item_when_idle():
     assert sent[1][1] == {"type": "response.create"}
 
 
+def test_realtime_loop_gets_a_proactive_engine():
+    """ROADMAP.md Phase 2: realtime mode was confirmed to have zero
+    proactive workers before this wiring existed."""
+    with patch("argus.voice.realtime.settings.openai_api_key", "test-key"):
+        loop = RealtimeVoiceLoop()
+
+    assert loop.proactive is not None
+    assert loop.proactive.email_watcher is not None
+    assert loop.orchestrator is not None
+
+
+def test_announce_lock_reflects_audio_activity():
+    from argus.voice.realtime import _AnnounceLock
+
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = object()
+    loop._response_active = False
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    loop._playback_lock = threading.Lock()
+    lock = _AnnounceLock(loop)
+
+    assert lock.acquire() is True
+    loop._response_active = True
+    assert lock.acquire() is False
+    lock.release()  # must not raise
+
+
+def test_announce_lock_reflects_no_connection():
+    from argus.voice.realtime import _AnnounceLock
+
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = None
+    lock = _AnnounceLock(loop)
+
+    assert lock.acquire() is False
+
+
 def test_realtime_confirmation_uses_the_visual_console_not_terminal():
     confirmer = _make_ui_confirmer()
 

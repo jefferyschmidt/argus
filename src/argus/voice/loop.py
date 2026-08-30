@@ -208,43 +208,13 @@ class VoiceLoop:
         threading.Thread(target=self._external_input_worker, daemon=True).start()
         threading.Thread(target=self._reminder_checker_worker, daemon=True).start()
 
-        from argus.context_awareness import ContextAwarenessWorker
-        self.context_awareness = ContextAwarenessWorker(
-            self.orchestrator, self._speak_and_open_mic, self._interaction_lock
-        )
-        threading.Thread(target=self.context_awareness.run, daemon=True).start()
-
-        from argus.email_watcher import EmailWatcher
-        self.email_watcher = EmailWatcher(
-            self.orchestrator, self._speak_and_open_mic, self._interaction_lock
-        )
-        threading.Thread(target=self.email_watcher.run, daemon=True).start()
-
-        from argus.routine_worker import RoutineWorker
-        self.routine_worker = RoutineWorker(
-            self.orchestrator, self._speak_and_open_mic, self._interaction_lock
-        )
-        threading.Thread(target=self.routine_worker.run, daemon=True).start()
-
-        from argus.knowledge_watcher import KnowledgeWatcher
-        self.knowledge_watcher = KnowledgeWatcher(self._speak_and_open_mic, self._interaction_lock)
-        threading.Thread(target=self.knowledge_watcher.run, daemon=True).start()
-
-        from argus.research_digest import ResearchDigestWorker
-        self.research_digest = ResearchDigestWorker(
-            self.orchestrator.router, self._speak_and_open_mic, self._interaction_lock
-        )
-        threading.Thread(target=self.research_digest.run, daemon=True).start()
-
-        from argus.stuck_detection import StuckDetectionWorker
-        self.stuck_detection = StuckDetectionWorker(
-            self.orchestrator.router, self._speak_and_open_mic, self._interaction_lock
-        )
-        threading.Thread(target=self.stuck_detection.run, daemon=True).start()
-
-        from argus.memory.consolidation_worker import ConsolidationWorker
-        self.consolidation_worker = ConsolidationWorker(self.orchestrator.router, self.orchestrator.memory)
-        threading.Thread(target=self.consolidation_worker.run, daemon=True).start()
+        # ROADMAP.md Phase 2: construction/thread-starting for the other 7
+        # proactive workers lives in ProactiveEngine now, shared ground for
+        # any future voice loop (see RealtimeVoiceLoop.announce()) instead
+        # of being wired here alone.
+        from argus.proactive_engine import ProactiveEngine
+        self.proactive = ProactiveEngine(self.orchestrator, self._speak_and_open_mic, self._interaction_lock)
+        self.proactive.start()
 
     def _reminder_checker_worker(self) -> None:
         """Reminders are meant to be surfaced proactively, not just answered
@@ -788,7 +758,7 @@ class VoiceLoop:
             return self._acknowledge("quiet mode off", "Back with you -- I can talk again.")
 
         if any(phrase in lowered for phrase in _SUPPRESS_CONTEXT_PHRASES):
-            self.context_awareness.suppress_current()
+            self.proactive.context_awareness.suppress_current()
             return self._acknowledge(
                 "won't bring that up again for this window", "Got it, I won't bring that up again."
             )
@@ -810,7 +780,7 @@ class VoiceLoop:
         if any(phrase in lowered for phrase in _EMAIL_CHECK_PHRASES):
             # Runs in the background -- IMAP round-trips can take a few
             # seconds, no reason to hold the conversation open for it.
-            threading.Thread(target=self.email_watcher.check_now, daemon=True).start()
+            threading.Thread(target=self.proactive.email_watcher.check_now, daemon=True).start()
             return self._acknowledge(
                 "checking email...", "Checking now -- I'll let you know if anything looks important."
             )
