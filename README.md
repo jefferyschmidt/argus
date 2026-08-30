@@ -1015,6 +1015,29 @@ native audio input/output with server-side turn detection and interruption. It
 is intentionally conversation-only; leave `VOICE_MODE=pipeline` (the default)
 when you want Argus's desktop tools, local fallback, or wake-word workflow.
 
+### External MCP integrations
+
+Argus can consume third-party MCP servers as tools, alongside its own
+built-in ones -- same registry, same permission tiers, same confirmation
+flow. All off by default; each needs `pip install -e ".[mcp]"` plus its own
+opt-in flag/credentials in `.env` (see `.env.example` for the exact
+variables). `argus.mcp_bridge.McpServerBridge` is the shared connector --
+local subprocess (stdio) or a remote hosted server (streamable HTTP),
+whichever a given service needs.
+
+| Service | What it adds | Needs from you |
+|---|---|---|
+| **Playwright** | Web tasks (navigate, click, fill forms) via structured accessibility data instead of screenshot-and-guess | Nothing -- Node/npx on PATH is enough |
+| **Zapier** | 9,000+ app actions (Slack, Notion, Trello, etc.) | Your account's MCP URL from Zapier's own dashboard |
+| **Home Assistant** | Smart home control (lights, thermostat, locks, scenes) | A running HA instance with the MCP Server integration enabled, + a long-lived access token |
+| **GitHub** | Issues/PRs/repo management (separate from Argus's own local self-editing tools) | A personal access token |
+| **Figma** | Real design-file structure (layers, tokens, variants) for generating code against an actual design | The Figma desktop app running with Dev Mode's MCP server enabled |
+| **Stability AI** | Image generation/editing/upscaling | An API key from platform.stability.ai |
+| **Spotify** | Playback control, search, playlists | Nothing to configure here -- Argus walks you through auth once enabled |
+
+An unreachable or misconfigured server is caught, logged, and skipped --
+it never takes down the rest of Argus's tools.
+
 ## Architecture
 
 - `argus.llm.router.ModelRouter` -- classifies each request and routes to
@@ -1029,6 +1052,10 @@ when you want Argus's desktop tools, local fallback, or wake-word workflow.
   `handle(text) -> reply` call.
 
 ## Roadmap
+
+Feature history below; for the current architecture direction (the shared
+tool layer, the decoupled proactive engine, and MCP integration build
+order) see [ROADMAP.md](ROADMAP.md).
 
 1. ~~Core loop (text-only)~~
 2. ~~Tools + permission tiers~~ (allow/confirm/deny; web search, sandboxed
