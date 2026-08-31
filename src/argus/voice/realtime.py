@@ -130,6 +130,11 @@ class RealtimeVoiceLoop:
         # state orchestrator.py's Orchestrator.last_expression keeps for
         # the pipeline lane.
         self._last_expression: str | None = None
+        # Set when a response.cancel was sent and a fresh response.create
+        # is wanted right after it actually completes -- see
+        # _create_response_or_defer for why "right after" can't mean
+        # "immediately."
+        self._pending_create_after_cancel = False
 
         # This session's own conversation never goes through Orchestrator
         # (OpenAI's realtime model answers directly) -- but the proactive
@@ -313,6 +318,29 @@ class RealtimeVoiceLoop:
         with self._send_lock:
             socket.send(json.dumps(event))
 
+    def _create_response_or_defer(self, socket) -> None:
+        """Confirmed live as a real bug (seen in production, not
+        theoretical): sending response.create immediately after
+        response.cancel races the server -- OpenAI processes the cancel
+        asynchronously, so the create can arrive before the cancellation
+        has actually taken effect, and the API rejects it outright:
+        "Conversation already has an active response in progress... Wait
+        until the response is finished before creating a new one." Every
+        call site that wanted to interrupt-then-continue had this same
+        race (the transcript-completed handler in _receive, and
+        submit_text_message).
+
+        If a response is active, cancel it and defer the create until
+        that response's response.done/error confirms the server actually
+        considers it finished (see _receive's handling of those events) --
+        rather than firing both requests back-to-back and hoping the
+        timing works out."""
+        if self._response_active:
+            self._send(socket, {"type": "response.cancel"})
+            self._pending_create_after_cancel = True
+        else:
+            self._send(socket, {"type": "response.create"})
+
     def announce(self, text: str) -> bool:
         """ROADMAP.md Phase 2 (ProactiveEngine): the AnnouncementSink this
         loop implements. Realtime mode has no local audio queue to just
@@ -361,8 +389,6 @@ class RealtimeVoiceLoop:
         try:
             if self._audio_is_active():
                 self._clear_pending_audio()
-                if self._response_active:
-                    self._send(socket, {"type": "response.cancel"})
             self._send(socket, {
                 "type": "conversation.item.create",
                 "item": {
@@ -370,7 +396,7 @@ class RealtimeVoiceLoop:
                     "content": [{"type": "input_text", "text": text}],
                 },
             })
-            self._send(socket, {"type": "response.create"})
+            self._create_response_or_defer(socket)
         except Exception:
             log.exception("Realtime text-message injection failed")
             return False
@@ -501,11 +527,9 @@ class RealtimeVoiceLoop:
                         self.tools.reset_task_autonomy(explicitly_requested=_should_use_tools(transcript))
                         if self._audio_is_active():
                             self._clear_pending_audio()
-                            if self._response_active:
-                                self._send(socket, {"type": "response.cancel"})
                         ui_events.publish({"type": "transcript", "role": "you", "text": transcript})
                         ui_events.publish({"type": "caption", "text": transcript, "role": "you"})
-                        self._send(socket, {"type": "response.create"})
+                        self._create_response_or_defer(socket)
                 elif event_type == "response.output_item.done":
                     item = event.get("item", {})
                     if item.get("type") == "function_call":
@@ -521,8 +545,24 @@ class RealtimeVoiceLoop:
                     ui_events.publish({"type": "state", "value": "listening", "mode": "follow_up"})
                     if event_type == "error":
                         log.error("Realtime API error: %s", event.get("error"))
+                        # Don't retry a deferred create into an error state
+                        # -- that's how a real bug (a request racing an
+                        # in-flight cancel) turns into a self-sustaining
+                        # error loop instead of just settling.
+                        self._pending_create_after_cancel = False
                     elif self._pending_calls:
                         self._run_pending_tools(socket)
+                        # _run_pending_tools sends its own response.create
+                        # once tool results are in -- a deferred one here
+                        # would fire a second, redundant response.create.
+                        self._pending_create_after_cancel = False
+                    elif self._pending_create_after_cancel:
+                        # The server has now genuinely confirmed the
+                        # previous response is finished (this event is
+                        # exactly that confirmation) -- safe to send the
+                        # create that was deferred in _create_response_or_defer.
+                        self._pending_create_after_cancel = False
+                        self._send(socket, {"type": "response.create"})
         except Exception:
             if not self._stop.is_set():
                 log.exception("Realtime connection stopped")

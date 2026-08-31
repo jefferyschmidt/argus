@@ -126,6 +126,118 @@ def test_normal_mode_still_plays_audio():
     assert not listener._output.empty()
 
 
+def test_create_response_or_defer_sends_immediately_when_idle():
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._response_active = False
+    loop._pending_create_after_cancel = False
+    sent = []
+    loop._send = lambda socket, event: sent.append(event)
+
+    loop._create_response_or_defer("fake-socket")
+
+    assert sent == [{"type": "response.create"}]
+    assert loop._pending_create_after_cancel is False
+
+
+def test_create_response_or_defer_cancels_and_defers_when_active():
+    """Confirmed live as a real bug (seen in production): sending
+    response.create immediately after response.cancel races the server --
+    OpenAI processes the cancel asynchronously, so the create can arrive
+    before the cancellation actually takes effect, and the API rejects it:
+    "Conversation already has an active response in progress... Wait
+    until the response is finished before creating a new one." """
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._response_active = True
+    loop._pending_create_after_cancel = False
+    sent = []
+    loop._send = lambda socket, event: sent.append(event)
+
+    loop._create_response_or_defer("fake-socket")
+
+    assert sent == [{"type": "response.cancel"}]  # NOT response.create yet
+    assert loop._pending_create_after_cancel is True
+
+
+def test_deferred_create_fires_only_once_response_done_confirms_it():
+    """The deferred response.create must wait for the server's own
+    confirmation that the previous response is actually finished (this
+    event IS that confirmation), not fire eagerly."""
+    import json
+    import threading
+
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._stop = threading.Event()
+    loop._connection_lost = threading.Event()
+    loop._connection_error = None
+    loop._transcript = []
+    loop._output_captioned = True
+    loop._pending_calls = []
+    loop._pending_create_after_cancel = True
+    sent = []
+    loop._send = lambda socket, event: sent.append(event)
+
+    with patch("argus.voice.realtime.ui_events.publish"):
+        loop._receive([json.dumps({"type": "response.done"})])
+
+    assert sent == [{"type": "response.create"}]
+    assert loop._pending_create_after_cancel is False
+
+
+def test_deferred_create_does_not_fire_on_error_to_avoid_a_retry_loop():
+    """Confirmed as the real risk this guards against: retrying a deferred
+    create straight into an error state turns one real bug into a
+    self-sustaining error loop instead of just settling."""
+    import json
+    import threading
+
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._stop = threading.Event()
+    loop._connection_lost = threading.Event()
+    loop._connection_error = None
+    loop._transcript = []
+    loop._output_captioned = True
+    loop._pending_calls = []
+    loop._pending_create_after_cancel = True
+    sent = []
+    loop._send = lambda socket, event: sent.append(event)
+
+    with patch("argus.voice.realtime.ui_events.publish"):
+        loop._receive([json.dumps({"type": "error", "error": {"message": "boom"}})])
+
+    assert sent == []
+    assert loop._pending_create_after_cancel is False
+
+
+def test_deferred_create_does_not_double_fire_when_tools_are_pending():
+    """_run_pending_tools sends its own response.create once tool results
+    are in -- a deferred create firing too would be a second, redundant
+    one."""
+    import json
+    import threading
+
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._stop = threading.Event()
+    loop._connection_lost = threading.Event()
+    loop._connection_error = None
+    loop._transcript = []
+    loop._output_captioned = True
+    loop._pending_calls = [{"name": "some_tool", "call_id": "1", "arguments": "{}"}]
+    loop._pending_create_after_cancel = True
+    loop.tools = MagicMock()
+    loop.tools._tools = {}
+    loop.tools.execute.return_value = "ok"
+    sent = []
+    loop._send = lambda socket, event: sent.append(event)
+
+    with patch("argus.voice.realtime.ui_events.publish"):
+        loop._receive([json.dumps({"type": "response.done"})])
+
+    # _run_pending_tools's own response.create is the only one -- no
+    # second, separately-triggered create from the deferred flag.
+    assert sent.count({"type": "response.create"}) == 1
+    assert loop._pending_create_after_cancel is False
+
+
 def test_announce_returns_false_with_no_open_connection():
     """ROADMAP.md Phase 2: a proactive worker must get a clean False (to
     retry later, same as the pipeline loop's _pending_delivery pattern),
