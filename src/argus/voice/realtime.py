@@ -23,6 +23,7 @@ from argus.tools import build_default_registry
 from argus.tools.registry import ToolDenied
 from argus.ui import commands as ui_commands
 from argus.ui import events as ui_events
+from argus.voice.confirm import _NO_WORDS, _YES_WORDS
 
 log = logging.getLogger(__name__)
 console = Console()
@@ -31,6 +32,7 @@ _BLOCK_SIZE = 1200  # 50 ms at the Realtime API's PCM sample rate
 _BARGE_IN_CONFIRM_SECONDS = 0.45
 _FALSE_BARGE_IN_RESUME_SECONDS = 3.0
 _UI_CONFIRM_TIMEOUT_SECONDS = 45.0
+_VOICE_CONFIRM_LISTEN_SECONDS = 7.0
 _REALTIME_INSTRUCTIONS = CONVERSATION_PROMPT + """
 
 You are in Argus's native conversation mode. Argus normally has desktop,
@@ -66,16 +68,45 @@ class _AnnounceLock:
         pass
 
 
-def _make_ui_confirmer():
-    """Use the visual console for native-mode confirmations."""
-    def confirmer(tool_name: str, tool_input: dict) -> bool:
-        from argus.ui import commands as ui_commands
+def _make_voice_confirmer(loop: "RealtimeVoiceLoop"):
+    """Mirrors pipeline mode's make_voice_confirmer (argus/voice/confirm.py):
+    speak the question and listen for a spoken yes/no before ever falling
+    back to a UI click. Confirmed live as the actual cause of "claimed
+    success, still had to click confirm in the UI" -- this confirmer used
+    to be UI-click-only with a silent 45s timeout, so a clearly spoken
+    "yes" was simply never read at all.
 
+    Realtime mode has no discrete record-then-transcribe step like
+    pipeline mode does -- the mic is streamed continuously and transcripts
+    arrive asynchronously via the same conversation.item.input_audio_
+    transcription.completed event every other turn uses (see _receive).
+    This confirmer runs on a background thread (see _run_pending_tools'
+    caller in _receive), NOT the receive thread itself -- it has to,
+    since it blocks waiting for exactly the event the receive thread is
+    the only one reading off the socket. Coordination is via the same
+    is_voice_confirmation_active()/submit_confirmation_answer() channel
+    pipeline mode's confirm.py already established for racing a typed
+    answer against a spoken one -- _receive and submit_text_message both
+    check it and divert into that channel instead of starting a normal
+    new conversational turn while a confirmation is pending."""
+
+    def confirmer(tool_name: str, tool_input: dict) -> bool:
         request_id = ui_commands.request_confirmation(tool_name, tool_input)
         ui_events.publish({
             "type": "confirm_request", "id": request_id,
             "tool_name": tool_name, "tool_input": tool_input,
         })
+
+        for prompt_text in (
+            f"May I {tool_name.replace('_', ' ')}? Say yes or no.",
+            "Sorry, didn't catch that -- yes or no?",
+        ):
+            result = loop._ask_voice_confirmation(prompt_text)
+            if result is not None:
+                ui_commands.resolve_confirmation(request_id, result)
+                ui_events.publish({"type": "confirm_resolved", "id": request_id})
+                return result
+
         allowed = ui_commands.wait_for_confirmation(request_id, _UI_CONFIRM_TIMEOUT_SECONDS)
         ui_events.publish({"type": "confirm_resolved", "id": request_id})
         return bool(allowed)
@@ -112,7 +143,7 @@ class RealtimeVoiceLoop:
         # or cost-governor state). Falls back to a fresh one so this class
         # still works standalone, same as before.
         self.tools = tool_registry if tool_registry is not None else build_default_registry()
-        self.tools.confirmer = _make_ui_confirmer()
+        self.tools.confirmer = _make_voice_confirmer(self)
         self._response_active = False
         self._speech_lock = threading.Lock()
         self._speech_started_at: float | None = None
@@ -341,6 +372,48 @@ class RealtimeVoiceLoop:
         else:
             self._send(socket, {"type": "response.create"})
 
+    def _ask_voice_confirmation(self, prompt_text: str) -> bool | None:
+        """Speaks prompt_text and blocks (on whatever thread called this --
+        see _run_pending_tools, run off the receive thread specifically so
+        this can block) for up to _VOICE_CONFIRM_LISTEN_SECONDS for a
+        matching answer to arrive via the is_voice_confirmation_active()
+        channel. Returns True/False on a clear answer, None on silence,
+        an unclear answer, or no live connection -- same tri-state contract
+        as pipeline mode's _try_voice, so the caller can retry once before
+        falling back to the UI."""
+        socket = self._socket
+        if socket is None:
+            return None
+        ui_events.publish({"type": "state", "value": "listening", "mode": "confirming"})
+        ui_commands.set_voice_confirmation_active(True)
+        try:
+            self._send(socket, {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message", "role": "system",
+                    "content": [{
+                        "type": "input_text",
+                        "text": f'Say exactly this to the user, word for word, then stop: "{prompt_text}"',
+                    }],
+                },
+            })
+            self._create_response_or_defer(socket)
+            heard = ui_commands.get_confirmation_answer(timeout=_VOICE_CONFIRM_LISTEN_SECONDS)
+            if not heard:
+                return None
+            lowered = heard.strip().lower()
+            if any(w in lowered for w in _NO_WORDS):
+                return False
+            if any(w in lowered for w in _YES_WORDS):
+                return True
+            return None
+        except Exception:
+            log.exception("Realtime voice confirmation failed")
+            return None
+        finally:
+            ui_commands.set_voice_confirmation_active(False)
+            ui_events.publish({"type": "state", "value": "thinking"})
+
     def announce(self, text: str) -> bool:
         """ROADMAP.md Phase 2 (ProactiveEngine): the AnnouncementSink this
         loop implements. Realtime mode has no local audio queue to just
@@ -384,6 +457,16 @@ class RealtimeVoiceLoop:
         socket = self._socket
         if socket is None:
             return False
+        # Races a typed answer against a spoken one during a pending
+        # voice confirmation -- same bug class pipeline mode's confirm.py
+        # already fixed (a typed "yes" sent mid-confirmation used to just
+        # start a whole new conversational turn instead of resolving the
+        # pending question).
+        if ui_commands.is_voice_confirmation_active():
+            ui_commands.submit_confirmation_answer(text)
+            ui_events.publish({"type": "transcript", "role": "you", "text": text})
+            ui_events.publish({"type": "caption", "text": text, "role": "you"})
+            return True
         ui_events.publish({"type": "transcript", "role": "you", "text": text})
         ui_events.publish({"type": "caption", "text": text, "role": "you"})
         try:
@@ -503,7 +586,17 @@ class RealtimeVoiceLoop:
                         self._output_captioned = True
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     transcript = event.get("transcript", "")
-                    if transcript:
+                    if transcript and ui_commands.is_voice_confirmation_active():
+                        # A confirmer is blocked on a background thread
+                        # waiting on exactly this answer (see
+                        # _ask_voice_confirmation) -- divert it there
+                        # instead of treating it as a new conversational
+                        # turn. Must run on this thread since it's the
+                        # only one reading events off the socket.
+                        ui_commands.submit_confirmation_answer(transcript)
+                        ui_events.publish({"type": "transcript", "role": "you", "text": transcript})
+                        ui_events.publish({"type": "caption", "text": transcript, "role": "you"})
+                    elif transcript:
                         # The audio model may call a tool after this turn;
                         # mark only clear action requests as pre-authorized,
                         # matching the standard orchestrator's behavior.
@@ -551,7 +644,13 @@ class RealtimeVoiceLoop:
                         # error loop instead of just settling.
                         self._pending_create_after_cancel = False
                     elif self._pending_calls:
-                        self._run_pending_tools(socket)
+                        # Run off the receive thread: a CONFIRM-tier tool's
+                        # confirmer (_ask_voice_confirmation) blocks
+                        # waiting for the user's spoken yes/no, which only
+                        # arrives as a transcript event this same receive
+                        # loop delivers -- running synchronously here would
+                        # deadlock the confirmer against its own answer.
+                        threading.Thread(target=self._run_pending_tools, args=(socket,), daemon=True).start()
                         # _run_pending_tools sends its own response.create
                         # once tool results are in -- a deferred one here
                         # would fire a second, redundant response.create.

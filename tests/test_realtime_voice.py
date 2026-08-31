@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from argus.tools import build_default_registry
-from argus.voice.realtime import RealtimeVoiceLoop, _make_ui_confirmer
+from argus.voice.realtime import RealtimeVoiceLoop, _make_voice_confirmer
 
 
 def test_realtime_session_uses_native_audio_vad_and_interruption(monkeypatch):
@@ -229,8 +229,17 @@ def test_deferred_create_does_not_double_fire_when_tools_are_pending():
     sent = []
     loop._send = lambda socket, event: sent.append(event)
 
+    # Tool execution now runs on a background thread (a CONFIRM-tier
+    # tool's voice confirmer blocks waiting for a transcript event that
+    # only the receive loop itself can deliver -- see
+    # _ask_voice_confirmation -- so it can't run synchronously on that
+    # same thread without deadlocking). Join whatever _receive spawns
+    # before asserting on it.
+    before = set(threading.enumerate())
     with patch("argus.voice.realtime.ui_events.publish"):
         loop._receive([json.dumps({"type": "response.done"})])
+    for t in set(threading.enumerate()) - before:
+        t.join(timeout=2)
 
     # _run_pending_tools's own response.create is the only one -- no
     # second, separately-triggered create from the deferred flag.
@@ -318,6 +327,25 @@ def test_submit_text_message_returns_false_with_no_connection():
 
     with patch("argus.voice.realtime.ui_events.publish"):
         assert loop.submit_text_message("hello") is False
+
+
+def test_submit_text_message_during_pending_confirmation_answers_it_instead_of_a_new_turn():
+    """Same bug class pipeline mode's confirm.py already fixed: a typed
+    answer sent while a voice confirmation is pending must resolve that
+    confirmation, not start a whole new conversational turn."""
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = object()
+    sent = []
+    loop._send = lambda socket, event: sent.append(event)
+
+    with patch("argus.voice.realtime.ui_commands.is_voice_confirmation_active", return_value=True), \
+         patch("argus.voice.realtime.ui_commands.submit_confirmation_answer") as submit, \
+         patch("argus.voice.realtime.ui_events.publish"):
+        result = loop.submit_text_message("yes")
+
+    assert result is True
+    submit.assert_called_once_with("yes")
+    assert sent == []
 
 
 def test_text_input_worker_retries_until_delivered():
@@ -460,14 +488,148 @@ def test_announce_lock_reflects_no_connection():
     assert lock.acquire() is False
 
 
-def test_realtime_confirmation_uses_the_visual_console_not_terminal():
-    confirmer = _make_ui_confirmer()
+def test_realtime_confirmation_accepts_a_spoken_yes_without_touching_the_ui():
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._ask_voice_confirmation = MagicMock(return_value=True)
+    confirmer = _make_voice_confirmer(loop)
+
+    with patch("argus.ui.commands.request_confirmation", return_value=11) as request, \
+         patch("argus.ui.commands.wait_for_confirmation") as wait, \
+         patch("argus.ui.commands.resolve_confirmation") as resolve, \
+         patch("argus.voice.realtime.ui_events.publish"):
+        assert confirmer("delete_email", {"uid": "7"}) is True
+
+    request.assert_called_once_with("delete_email", {"uid": "7"})
+    loop._ask_voice_confirmation.assert_called_once()
+    wait.assert_not_called()
+    resolve.assert_called_once_with(11, True)
+
+
+def test_realtime_confirmation_declines_on_a_spoken_no():
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._ask_voice_confirmation = MagicMock(return_value=False)
+    confirmer = _make_voice_confirmer(loop)
+
+    with patch("argus.ui.commands.request_confirmation", return_value=12), \
+         patch("argus.ui.commands.wait_for_confirmation") as wait, \
+         patch("argus.ui.commands.resolve_confirmation") as resolve, \
+         patch("argus.voice.realtime.ui_events.publish"):
+        assert confirmer("delete_email", {"uid": "8"}) is False
+
+    wait.assert_not_called()
+    resolve.assert_called_once_with(12, False)
+
+
+def test_realtime_confirmation_falls_back_to_the_console_after_two_unclear_voice_tries():
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._ask_voice_confirmation = MagicMock(return_value=None)
+    confirmer = _make_voice_confirmer(loop)
 
     with patch("argus.ui.commands.request_confirmation", return_value=9) as request, \
          patch("argus.ui.commands.wait_for_confirmation", return_value=True) as wait, \
+         patch("argus.ui.commands.resolve_confirmation") as resolve, \
          patch("argus.voice.realtime.ui_events.publish") as publish:
         assert confirmer("delete_email", {"uid": "42"}) is True
 
     request.assert_called_once_with("delete_email", {"uid": "42"})
+    assert loop._ask_voice_confirmation.call_count == 2
     wait.assert_called_once_with(9, 45.0)
+    resolve.assert_not_called()
     assert publish.call_count == 2
+
+
+def test_ask_voice_confirmation_reads_a_spoken_yes():
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = object()
+    loop._send = MagicMock()
+    loop._create_response_or_defer = MagicMock()
+
+    with patch("argus.voice.realtime.ui_commands.get_confirmation_answer", return_value="yeah go ahead"), \
+         patch("argus.voice.realtime.ui_commands.set_voice_confirmation_active") as set_active, \
+         patch("argus.voice.realtime.ui_events.publish"):
+        result = loop._ask_voice_confirmation("May I delete email? Say yes or no.")
+
+    assert result is True
+    loop._create_response_or_defer.assert_called_once_with(loop._socket)
+    # Must be active while listening and cleared afterward, even on the
+    # success path -- a stuck-active flag would divert every later
+    # transcript into the confirmation channel forever.
+    assert set_active.call_args_list == [((True,),), ((False,),)]
+
+
+def test_ask_voice_confirmation_reads_a_spoken_no():
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = object()
+    loop._send = MagicMock()
+    loop._create_response_or_defer = MagicMock()
+
+    with patch("argus.voice.realtime.ui_commands.get_confirmation_answer", return_value="no, don't"), \
+         patch("argus.voice.realtime.ui_commands.set_voice_confirmation_active"), \
+         patch("argus.voice.realtime.ui_events.publish"):
+        result = loop._ask_voice_confirmation("May I delete email? Say yes or no.")
+
+    assert result is False
+
+
+def test_ask_voice_confirmation_returns_none_on_silence_or_unclear_answer():
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = object()
+    loop._send = MagicMock()
+    loop._create_response_or_defer = MagicMock()
+
+    with patch("argus.voice.realtime.ui_commands.get_confirmation_answer", return_value=None), \
+         patch("argus.voice.realtime.ui_commands.set_voice_confirmation_active"), \
+         patch("argus.voice.realtime.ui_events.publish"):
+        assert loop._ask_voice_confirmation("May I delete email? Say yes or no.") is None
+
+    with patch("argus.voice.realtime.ui_commands.get_confirmation_answer", return_value="what was that"), \
+         patch("argus.voice.realtime.ui_commands.set_voice_confirmation_active"), \
+         patch("argus.voice.realtime.ui_events.publish"):
+        assert loop._ask_voice_confirmation("May I delete email? Say yes or no.") is None
+
+
+def test_ask_voice_confirmation_returns_none_with_no_open_connection():
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = None
+
+    assert loop._ask_voice_confirmation("May I delete email? Say yes or no.") is None
+
+
+def test_transcript_during_pending_confirmation_is_diverted_not_treated_as_a_new_turn():
+    """This is the actual mechanism behind "verbal yes didn't work": the
+    old confirmer had no path for the mic's normal transcript stream to
+    resolve a pending confirmation at all. Confirmed here that a spoken
+    answer arriving while a confirmation is active is routed to
+    submit_confirmation_answer instead of falling into the ordinary
+    should_use_tools/response.create turn-handling path."""
+    import json
+    import threading
+
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._stop = threading.Event()
+    loop._connection_lost = threading.Event()
+    loop._connection_error = None
+    loop._transcript = []
+    loop._output_captioned = True
+    loop._pending_calls = []
+    loop._pending_create_after_cancel = False
+    loop._speech_lock = threading.Lock()
+    loop._resume_timer = None
+    loop.tools = MagicMock()
+    sent = []
+    loop._send = lambda socket, event: sent.append(event)
+    event = json.dumps({
+        "type": "conversation.item.input_audio_transcription.completed",
+        "transcript": "yes",
+    })
+
+    with patch("argus.voice.realtime.ui_commands.is_voice_confirmation_active", return_value=True), \
+         patch("argus.voice.realtime.ui_commands.submit_confirmation_answer") as submit, \
+         patch("argus.voice.realtime.ui_events.publish"):
+        loop._receive([event])
+
+    submit.assert_called_once_with("yes")
+    # No response.create/cancel and no task-autonomy reset -- this must
+    # not be treated as an ordinary new conversational turn.
+    assert sent == []
+    loop.tools.reset_task_autonomy.assert_not_called()
