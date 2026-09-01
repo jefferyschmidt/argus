@@ -18,9 +18,10 @@ class _CountingSensor(Sensor):
         return [Observation(source=self.name, kind="git.commit", ts=time.time(), dedupe_key=f"c-{self.polls}")]
 
 
-def test_default_sensors_is_empty_until_units_4_and_5_populate_it(tmp_path):
+def test_default_sensors_includes_unit_4_sensors(tmp_path):
     engine = SpineEngine(store=SpineStore(tmp_path / "spine.db"))
-    assert engine.sensors == []
+    names = {s.name for s in engine.sensors}
+    assert names == {"window_focus", "mail", "argus.health"}
 
 
 def test_start_runs_every_injected_sensor_on_its_own_thread(tmp_path):

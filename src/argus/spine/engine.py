@@ -20,7 +20,15 @@ class SpineEngine:
         self.sensors: list[Sensor] = sensors if sensors is not None else self._default_sensors()
 
     def _default_sensors(self) -> list[Sensor]:
-        return []
+        from argus.spine.sensors.argus_health import ArgusHealthSensor
+        from argus.spine.sensors.mail import MailSensor
+        from argus.spine.sensors.window_focus import WindowFocusSensor
+
+        return [
+            WindowFocusSensor(),
+            MailSensor(),
+            ArgusHealthSensor(),
+        ]
 
     def start(self) -> None:
         for sensor in self.sensors:
