@@ -182,6 +182,23 @@ def score(
     matching (RuleMatcher operates on Observations, which carry
     source/confidence/payload that Candidate deliberately doesn't). If
     omitted, no rules can match -- a conservative default, not a crash."""
+    decision, _final_score = score_with_value(
+        candidate, snapshot, matcher=matcher, rhythm_fit=rhythm_fit, interruption_cost=interruption_cost,
+        observation=observation, llm_tiebreak=llm_tiebreak, now=now,
+    )
+    return decision
+
+
+def score_with_value(
+    candidate: Candidate, snapshot: WorldSnapshot, *,
+    matcher: RuleMatcher, rhythm_fit: float, interruption_cost: float,
+    observation=None, llm_tiebreak: Callable[[Candidate], bool | None] | None = None,
+    now: float | None = None,
+) -> tuple[Decision, float]:
+    """Same as score(), but also returns the numeric 0..1 score --
+    Decision itself deliberately carries no such field (PRD §5.1's exact
+    shape), but held_items (§5.4) has a `score REAL` column, so whoever
+    persists a held candidate needs the number too."""
     now = now if now is not None else time.time()
 
     matched_rules = matcher.match(observation, candidate.observation_id) if observation is not None else []
@@ -190,7 +207,8 @@ def score(
     # outvoted by urgency: this ordering is not negotiable (Appendix A.2).
     for rule in matched_rules:
         if rule.action.get("type") == "suppress":
-            return Decision(action="suppress", reason=f"suppressed by rule {rule.id}: {rule.natural_language}")
+            decision = Decision(action="suppress", reason=f"suppressed by rule {rule.id}: {rule.natural_language}")
+            return decision, 0.0
 
     # Step 2 -- the formula.
     rhythm_term = rhythm_fit - 0.5
@@ -217,7 +235,7 @@ def score(
         action = "hold"
         reason = f"score {final_score:.3f} below ambient threshold {settings.ambient_threshold}"
 
-    return Decision(action=action, reason=reason)
+    return Decision(action=action, reason=reason), final_score
 
 
 def _ambiguous_band_decision(

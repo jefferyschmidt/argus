@@ -318,6 +318,8 @@ class Settings(BaseSettings):
     salience_ambiguous_band_low: float = 0.45
     salience_ambiguous_band_high: float = 0.55
     salience_llm_calls_per_hour: int = 6
+    # PRD §5.3 -- persisted so a restart doesn't refill it.
+    interruptions_per_hour: int = 3
 
     @property
     def data_dir(self) -> Path:

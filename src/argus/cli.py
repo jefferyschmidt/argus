@@ -284,6 +284,36 @@ def timeline(since: str | None, kind: str | None, limit: int) -> None:
         console.print(f"[dim]{when}[/dim] {obs.kind}{subject}  [dim]({obs.source})[/dim]")
 
 
+def held(action: str, item_id: int | None) -> None:
+    """PRD.md §5.4 -- nothing is ever silently dropped; until Phase H
+    renders held_items, this is how you see what's waiting."""
+    from datetime import datetime
+
+    from argus.salience.held import HeldQueue
+    from rich.markup import escape
+
+    queue = HeldQueue()
+
+    if action == "dismiss":
+        if item_id is None:
+            console.print("[red]Usage: argus held dismiss <id>[/red]")
+            return
+        if queue.dismiss(item_id):
+            console.print(f"Dismissed held item #{item_id}.")
+        else:
+            console.print(f"[red]No pending held item with id {item_id}.[/red]")
+        return
+
+    items = queue.pending()
+    if not items:
+        console.print("Nothing held.")
+        return
+    for item in items:
+        when = datetime.fromtimestamp(item.created_ts).strftime("%Y-%m-%d %H:%M:%S")
+        subject = escape(f" [{item.subject}]") if item.subject else ""
+        console.print(f"[dim]#{item.id} {when}[/dim] {escape(item.text)}{subject}  [dim](score {item.score:.2f}, {item.kind})[/dim]")
+
+
 def _make_dpi_aware() -> None:
     """Without this, a scaled Windows display (anything above 100%) puts
     pyautogui's screenshot/click coordinates in two DIFFERENT spaces --
@@ -340,6 +370,11 @@ def main() -> None:
     timeline_parser.add_argument("--kind", default=None, help="Filter to one observation kind, e.g. mail.received")
     timeline_parser.add_argument("--limit", type=int, default=50)
 
+    held_parser = sub.add_parser("held", help="Show items salience held back rather than spoke (PRD.md §5.4)")
+    held_sub = held_parser.add_subparsers(dest="held_command")
+    dismiss_parser = held_sub.add_parser("dismiss", help="Dismiss a held item")
+    dismiss_parser.add_argument("id", type=int)
+
     args = parser.parse_args()
 
     if args.command == "memory" and args.memory_command == "review":
@@ -362,6 +397,10 @@ def main() -> None:
         calendar_parser.print_help()
     elif args.command == "timeline":
         timeline(args.since, args.kind, args.limit)
+    elif args.command == "held" and args.held_command == "dismiss":
+        held("dismiss", args.id)
+    elif args.command == "held":
+        held("list", None)
     elif args.command == "voice":
         voice()
     elif args.command == "agent":
