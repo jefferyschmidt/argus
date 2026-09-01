@@ -14,6 +14,6 @@ def test_observation_kinds_cover_the_prd_vocabulary():
         "focus.changed", "mail.received", "calendar.event_upcoming",
         "reminder.due", "routine.due", "git.commit", "git.branch_stale",
         "argus.integration_failed", "argus.credential_failed", "argus.spend_recorded",
-        "task.finished", "document.composed", "thread.opened",
+        "task.finished", "document.composed", "thread.opened", "thread.acknowledged",
     ):
         assert kind in KINDS

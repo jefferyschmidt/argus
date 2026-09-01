@@ -15,6 +15,11 @@ KINDS = frozenset({
     "task.started", "task.progress", "task.finished", "task.failed",
     "document.composed",
     "thread.opened", "thread.closed",
+    # PRD Appendix A.1: emitted when the user acknowledges an open thread
+    # (voice "got it", or a dashboard click) -- the observation that
+    # satisfies the `user_acknowledged` predicate type.
+    # payload: {"thread_id": <int>, "via": "voice" | "ui"}
+    "thread.acknowledged",
 })
 
 
