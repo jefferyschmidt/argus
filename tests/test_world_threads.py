@@ -1,13 +1,13 @@
+import threading
 import time
 
-from argus.memory.store import get_connection
 from argus.spine.observation import Observation
 from argus.spine.store import SpineStore
 from argus.world.threads import DEFAULT_CLOSE_CONDITIONS, ThreadStore
 
 
 def _store(tmp_path) -> ThreadStore:
-    return ThreadStore(get_connection(tmp_path / "argus.db"))
+    return ThreadStore(SpineStore(tmp_path / "spine.db"), tmp_path / "argus.db")
 
 
 def test_open_returns_id_and_get_reads_it_back(tmp_path):
@@ -52,11 +52,11 @@ def test_close_on_nonexistent_thread_returns_false(tmp_path):
 
 def test_open_and_close_persists_across_restart(tmp_path):
     db_path = tmp_path / "argus.db"
-    store = ThreadStore(get_connection(db_path))
+    store = ThreadStore(SpineStore(tmp_path / "spine.db"), db_path)
     thread_id = store.open("manual", "x")
     store.close(thread_id, "done")
 
-    reopened = ThreadStore(get_connection(db_path))
+    reopened = ThreadStore(SpineStore(tmp_path / "spine2.db"), db_path)
     thread = reopened.get(thread_id)
     assert thread.closed_ts is not None
     assert thread.closed_reason == "done"
@@ -97,6 +97,101 @@ def test_find_open_returns_most_recent_open(tmp_path):
     second = store.open("email_reply", "second", subject="a@x.com")
     found = store.find_open("email_reply", "a@x.com")
     assert found.id == second
+
+
+# -- dedicated connection (unit 10a) -----------------------------------------
+
+def test_concurrent_open_and_close_do_not_raise_database_is_locked(tmp_path):
+    store = _store(tmp_path)
+    errors = []
+
+    def _work(n: int) -> None:
+        try:
+            for i in range(25):
+                tid = store.open("manual", f"t{n}-{i}")
+                store.close(tid, "done")
+        except Exception as e:  # pragma: no cover - failure path
+            errors.append(e)
+
+    threads = [threading.Thread(target=_work, args=(n,)) for n in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+
+
+def test_each_threadstore_owns_its_own_connection_object(tmp_path):
+    a = _store(tmp_path)
+    b = _store(tmp_path)
+    assert a._conn is not b._conn
+
+
+# -- thread.opened / thread.closed spine emission (unit 10a) ----------------
+
+def test_open_emits_thread_opened_observation(tmp_path):
+    spine = SpineStore(tmp_path / "spine.db")
+    store = ThreadStore(spine, tmp_path / "argus.db")
+
+    thread_id = store.open("email_reply", "Reply to a@x.com", subject="a@x.com")
+
+    observations = spine.query(kinds=["thread.opened"])
+    assert len(observations) == 1
+    assert observations[0].payload == {"thread_id": thread_id, "kind": "email_reply", "title": "Reply to a@x.com"}
+    assert observations[0].subject == "a@x.com"
+
+
+def test_close_emits_thread_closed_observation(tmp_path):
+    spine = SpineStore(tmp_path / "spine.db")
+    store = ThreadStore(spine, tmp_path / "argus.db")
+    thread_id = store.open("manual", "x")
+
+    store.close(thread_id, "handled")
+
+    observations = spine.query(kinds=["thread.closed"])
+    assert len(observations) == 1
+    assert observations[0].payload == {"thread_id": thread_id, "reason": "handled"}
+
+
+def test_close_on_already_closed_thread_does_not_emit_again(tmp_path):
+    spine = SpineStore(tmp_path / "spine.db")
+    store = ThreadStore(spine, tmp_path / "argus.db")
+    thread_id = store.open("manual", "x")
+    store.close(thread_id, "first")
+
+    store.close(thread_id, "second")  # no-op, already closed
+
+    assert spine.count(kind="thread.closed") == 1
+
+
+def test_touch_does_not_emit_thread_opened_again(tmp_path):
+    """open_email_reply's touch()-on-reuse path must not look like a
+    second open to anything reading the spine."""
+    spine = SpineStore(tmp_path / "spine.db")
+    store = ThreadStore(spine, tmp_path / "argus.db")
+
+    store.open_email_reply(sender="a@x.com", mail_subject="Hi")
+    store.open_email_reply(sender="a@x.com", mail_subject="Hi again")
+
+    assert spine.count(kind="thread.opened") == 1
+
+
+def test_reap_closes_via_thread_closed_observation_now_resolvable(tmp_path):
+    """thread_closed predicate (Appendix A.1 type 5) reads thread.closed
+    observations off the spine -- now that open()/close() actually emit
+    them, a rule/thread watching another thread's closed state resolves."""
+    from argus.world.predicates import evaluate
+
+    spine = SpineStore(tmp_path / "spine.db")
+    store = ThreadStore(spine, tmp_path / "argus.db")
+    watched_id = store.open("manual", "watched")
+
+    assert evaluate({"type": "thread_closed", "thread_id": watched_id}, thread=None, spine=spine, now=time.time()) is False
+
+    store.close(watched_id, "done")
+
+    assert evaluate({"type": "thread_closed", "thread_id": watched_id}, thread=None, spine=spine, now=time.time()) is True
 
 
 # -- openers --------------------------------------------------------------
@@ -147,7 +242,7 @@ def test_open_commitment_creates_a_thread(tmp_path):
 
 def test_reap_closes_threads_whose_condition_is_satisfied(tmp_path):
     thread_store = _store(tmp_path)
-    spine = SpineStore(tmp_path / "spine.db")
+    spine = SpineStore(tmp_path / "spine2.db")
     thread_id = thread_store.open("manual", "x", close_condition={"type": "timeout", "seconds": 10})
 
     thread_store.reap(spine, now=thread_store.get(thread_id).opened_ts + 5)
@@ -158,9 +253,17 @@ def test_reap_closes_threads_whose_condition_is_satisfied(tmp_path):
     assert thread_store.get(thread_id).closed_ts is not None
 
 
+def test_reap_defaults_to_its_own_spine(tmp_path):
+    thread_store = _store(tmp_path)
+    thread_id = thread_store.open("manual", "x", close_condition={"type": "timeout", "seconds": 10})
+
+    closed_count = thread_store.reap(now=thread_store.get(thread_id).opened_ts + 20)
+    assert closed_count == 1
+
+
 def test_reap_leaves_unsatisfied_threads_open(tmp_path):
     thread_store = _store(tmp_path)
-    spine = SpineStore(tmp_path / "spine.db")
+    spine = SpineStore(tmp_path / "spine2.db")
     thread_store.open("manual", "x", close_condition={"type": "manual_only"})
 
     closed_count = thread_store.reap(spine)
@@ -170,7 +273,7 @@ def test_reap_leaves_unsatisfied_threads_open(tmp_path):
 
 def test_reap_bad_predicate_does_not_raise_and_leaves_thread_open(tmp_path):
     thread_store = _store(tmp_path)
-    spine = SpineStore(tmp_path / "spine.db")
+    spine = SpineStore(tmp_path / "spine2.db")
     thread_id = thread_store.open("manual", "x", close_condition={"type": "totally_unknown"})
 
     closed_count = thread_store.reap(spine)
@@ -180,7 +283,7 @@ def test_reap_bad_predicate_does_not_raise_and_leaves_thread_open(tmp_path):
 
 def test_reap_over_1000_open_threads_makes_zero_llm_calls_and_is_fast(tmp_path):
     thread_store = _store(tmp_path)
-    spine = SpineStore(tmp_path / "spine.db")
+    spine = SpineStore(tmp_path / "spine2.db")
     for i in range(1000):
         thread_store.open("manual", f"t{i}", close_condition={"type": "manual_only"})
 
@@ -194,7 +297,7 @@ def test_reap_over_1000_open_threads_makes_zero_llm_calls_and_is_fast(tmp_path):
 
 def test_reap_email_reply_thread_closes_on_acknowledgement(tmp_path):
     thread_store = _store(tmp_path)
-    spine = SpineStore(tmp_path / "spine.db")
+    spine = SpineStore(tmp_path / "spine2.db")
     thread_id = thread_store.open_email_reply(sender="a@x.com", mail_subject="Hi")
 
     spine.record(Observation(

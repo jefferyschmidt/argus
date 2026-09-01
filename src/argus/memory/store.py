@@ -77,25 +77,14 @@ CREATE TABLE IF NOT EXISTS consolidation_state (
 );
 INSERT OR IGNORE INTO consolidation_state (id, last_episode_id) VALUES (1, 0);
 
--- PRD.md §4.1 -- the world model's persisted "things not yet resolved."
--- opened_by_obs_id references a spine observation's row id, which lives
--- in the separate spine.db (P1) -- no FK constraint across databases, so
--- it's stored as a plain int.
-CREATE TABLE IF NOT EXISTS threads (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind              TEXT    NOT NULL,   -- email_reply | commitment | system_health | task | manual
-    title             TEXT    NOT NULL,
-    subject           TEXT,
-    opened_ts         REAL    NOT NULL,
-    opened_by_obs_id  INTEGER,
-    close_condition   TEXT    NOT NULL DEFAULT '{}',
-    closed_ts         REAL,
-    closed_reason     TEXT,
-    last_activity_ts  REAL,
-    sensitivity       TEXT    NOT NULL DEFAULT 'normal',
-    metadata          TEXT    NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_threads_open ON threads(closed_ts, last_activity_ts);
+-- NOTE: the `threads` table (PRD §4.1) is no longer created here.
+-- world/threads.py::ThreadStore now manages its own dedicated connection
+-- (own Connection object, own lock, WAL) against this same argus.db file
+-- and applies its own schema on construction -- see that module's
+-- docstring for why (P1: a single shared connection object used from
+-- multiple threads without synchronization is unsafe once reap() runs on
+-- a timer and the world model is read from other threads). Defining the
+-- table in two places would just invite drift.
 
 -- PRD.md Appendix A.4 -- derived behavioral baselines, recomputed once
 -- daily from the spine, never on a hot path. One row per named baseline;
