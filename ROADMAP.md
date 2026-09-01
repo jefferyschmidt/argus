@@ -646,3 +646,79 @@ rather than merely configurable:
 first step is a `GET /api/state` returning a world-model snapshot plus incremental updates
 over the existing event bus — the transport and the page already exist; what is missing is
 something with actual state to render.
+
+---
+
+# Part IV — Accepted from the capability audit (2026-09-01)
+
+A hundred candidate capabilities were cross-checked against Parts I–III: 63 covered, 29
+needing an unplanned integration, 8 genuine architectural gaps. Of those gaps, the following
+were **accepted for the roadmap now**. One was accepted as a future note. The rest were left
+open pending a decision.
+
+## Phase I — Long-horizon autonomous work (ACCEPTED)
+
+**The gap:** the entire Part II architecture is *reactive* — sensor fires, salience judges,
+action executes. There is no way for Argus to go and *do* something over minutes or hours:
+"research this and report back", "draft the weekly security report", "work out why the build
+broke". This is the most characteristic Enterprise-computer behavior missing, and it is what
+unlocks most of the security day-job block.
+
+- Task registry with durable status, queryable progress ("how's that coming?"), hard budgets,
+  and cancellation.
+- Bounded concurrency; a task is never allowed to run unbounded in tokens or wall-clock.
+- Completion emits an Observation onto the spine so the salience engine — not the task —
+  decides how and when to tell the user.
+- Builds on the existing `agent/runner.py`, which Parts I–III never touched.
+- **Depends on:** Phase A (to emit results onto the spine). Independent of B and C otherwise,
+  so it can be built in parallel with B.
+
+## Phase G4 — Rule induction (ACCEPTED)
+
+**The gap:** every rule in Phase G is authored by the user. Nothing lets Argus notice a
+pattern and *propose* one. Phase B's rhythms produce exactly the raw material and nothing
+consumes it. This is the most direct answer to the original ask — "proactive stuff it picks
+up on that I haven't even noticed" — and is cheap once B exists.
+
+- Slow cadence (daily), over the spine plus the world model.
+- Candidate patterns: repeated dismissals, repeated identical manual actions, consistent
+  timing of when the user actually deals with a category.
+- **Proposes only — never self-activates.** Goes through the same propose/confirm path as a
+  user-authored rule (G-c), so an induced rule is inspectable and revocable identically.
+- Hard rate limit on proposals, or it becomes the nagging it was meant to remove.
+- **Depends on:** B (rhythms) and G1–G2 (a rule store to propose into).
+
+## Phase E-compose — Producing documents (ACCEPTED)
+
+**The gap:** the action layer is speak / hold / prep / ambient / push. There is no "produce
+an artifact". A real share of the user's work is documents — client security summaries,
+weekly reports, project briefs — and speaking a report aloud is the wrong output shape.
+
+- New `compose` action: takes a spec plus world-model and spine queries, writes a document to
+  `data/documents/`, emits an Observation, and lets salience announce that it is ready.
+- Markdown and HTML output. **Never auto-sends anything.**
+- Pairs directly with Phase I — most compose jobs are long-horizon tasks.
+
+## Noted for the future, not scheduled — speaker identity and disclosure
+
+**Deferred by decision, recorded so the schema stays ready for it.** Two related problems the
+architecture currently ignores:
+
+- **Identity** — Argus assumes a single user. With an always-on daemon in a shared house,
+  another person speaking raises whose calendar, whose threads, whose authority applies.
+- **Disclosure** — independent of identity: saying something private aloud when someone else
+  is in the room is a real failure. Phase C decides *whether* to speak but has no concept of
+  *who can hear*.
+
+**Forward-compatibility requirement, to be honored now at zero behavioral cost:** the
+`threads` table carries a `sensitivity` column (`'normal' | 'private'`) from the day it is
+created, and the salience `Decision` record carries an optional `audience` field. Neither is
+read by any code in Phases A–I. This costs nothing now and avoids a migration later.
+
+## Left open, no decision taken
+
+Honest counsel (telling the user unwelcome things grounded in observed data), simulation and
+what-if, financial data sources plus an explicit "reads money, never moves it" policy line,
+the day-job integrations (Sentinel / Netsparker / Monday / Entra ID / CVE feeds), degraded
+offline operation, and backup/export/retention for the accumulated spine and world model.
+All remain open items from the audit; none are scheduled.
