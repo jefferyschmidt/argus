@@ -230,3 +230,173 @@ server's own setup-instructions tool rather than needing separate documentation 
 - `delete_core_memory` being `ALLOW`-tier vs. the codebase's `CONFIRM`+`high_risk` pattern
   for other irreversible deletes — noted, not raised as urgent given the security stance
   above; revisit only if it becomes an actual problem.
+
+---
+
+# Part II — From assistant to "brain of my personal life"
+
+Added 2026-09-01, after a direct architecture review against the stated goal: Claude Cowork
++ Alexa + something new — email monitoring, home automation, appointment/calendar
+management, call screening via a separate AI call assistant, and proactive insight the user
+hasn't noticed yet. Part I (Phases 0–7) built the *tool* half well. This part rebuilds the
+*perception* half, which is structurally wrong for that goal.
+
+## Diagnosis — why it still feels like a chatbot with clunky signals
+
+The seven proactive workers are each a closed loop: **poll one signal → judge alone with an
+LLM → speak directly**. That shape has five consequences, and all of them are architectural,
+not prompt-tuning problems:
+
+1. **Information poverty.** `ContextAwarenessWorker` is handed a single window-title string
+   and asked "is there something worth saying?" It has no calendar, no open email threads,
+   no project state, no history of what the user is actually working on. With nothing to
+   reason *from*, the only thing a model can generate is a greeting — which is exactly why
+   the observed output is "I see you've opened Claude. Need any assistance?" No prompt
+   rewrite fixes this; the context genuinely isn't there.
+2. **No world model.** There is memory (episodic/semantic/core/knowledge-graph) — a
+   searchable *past* — but no continuously-maintained model of the *present*: what's open,
+   what's owed, what's coming, what's normal. You cannot notice a deviation without a
+   baseline, so "proactive stuff it picks up on that I haven't noticed" is currently
+   impossible by construction.
+3. **No arbitration.** Every worker speaks whenever it wins `interaction_lock`. That lock is
+   a *concurrency* primitive being used as an *attention* policy — different problems. Seven
+   workers each politely honoring a 20-minute local cooldown still yields an interruption
+   roughly every 3 minutes, with no notion of whether this one is more important than the
+   last.
+4. **Speech is the only output.** A worker that notices something can only say it out loud,
+   right now, or drop it forever (`ContextAwarenessWorker._deliver` literally discards on
+   lock contention). That binary — interrupt or vanish — is the direct cause of the "clunky"
+   feel. Most real observations deserve neither.
+5. **No daemon.** Everything lives inside the `argus voice` process. Close it and all
+   monitoring stops. Always-on home automation, overnight email triage, and an external call
+   screener querying Argus are all hard-blocked by this. A brain for a life cannot be a mode
+   of a CLI.
+
+Also non-durable: `_triaged_uids`, `_suppressed_titles`, and context history are in-process
+only and reset every restart, so Argus re-learns the same things forever.
+
+**What is already right and should be kept:** the shared `ToolRegistry` + permission tiers,
+`McpServerBridge` (integration cost is now near-zero), `ProactiveEngine` as a seam, and the
+memory subsystem. Part II keeps all of it and changes what sits *above* it.
+
+## Target architecture
+
+```
+  SENSORS          dumb, cheap, no LLM. Emit normalized Observations only.
+  (window focus, mail, calendar, HA state, call events, files, git, location)
+        |
+        v
+  EVENT SPINE      append-only, durable, queryable (SQLite). One timeline of the
+                   user's life. Everything downstream reads from here.
+        |
+        v
+  WORLD MODEL      continuously projected state of the PRESENT:
+                   threads (open loops) | entities | rhythms | focus | horizon
+        |
+        v
+  SALIENCE ENGINE  single arbiter. urgency x relevance x timing, against a global
+                   interruption budget. Replaces 7 independent "should I speak?" calls.
+        |
+        v
+  ACTION LAYER     speak | queue for next pause | prep work | ambient surface |
+                   phone push | act under standing authorization
+        |
+        v
+  DAEMON (argusd)  owns all of the above + the tool registry.
+                   Clients attach: voice loop, console, chat, Telegram,
+                   phone, call screener, MCP.
+```
+
+The one-sentence version: **stop building workers that talk; build a system that perceives,
+and make speech one of its several possible responses.**
+
+## Phase A — Event spine (foundation, nothing smart yet)
+
+Everything after this depends on it, and it is independently useful on day one (a real
+queryable timeline).
+
+- `argus/events/` — `Observation` record (source, kind, ts, subject, payload, dedupe key)
+  and a SQLite-backed append-only store with retention.
+- Convert each existing worker's *detection* half into a sensor that emits Observations and
+  makes no judgment: window focus changes, new mail, calendar deltas, reminders due,
+  routines due, research hits. Keep their current announce behavior temporarily so nothing
+  regresses while B and C are built.
+- Move `_triaged_uids` / `_suppressed_titles` / context history into durable storage —
+  fixes the amnesia-on-restart bug directly.
+- New sensors worth adding once the spine exists (cheap, high signal): git activity,
+  active-file/project detection, idle/away detection, battery/power, network location.
+
+## Phase B — World model (the piece that makes proactivity smart)
+
+A persisted, continuously-updated projection over the event spine. Four parts:
+
+- **Threads** — open loops with a close condition: unanswered mail, a commitment made aloud
+  ("I'll look at that tomorrow"), a blocked task, a bill due, a broken credential (the live
+  Yahoo `AUTHENTICATIONFAILED` is a textbook example Argus should be *tracking*, not
+  re-discovering hourly).
+- **Entities** — people/projects/places/devices with current *status*, not just facts. The
+  knowledge graph holds facts; this holds state.
+- **Rhythms** — learned baselines: work hours, focus vs. browsing apps, which senders
+  actually matter, typical session length. Derived from the accumulated event log. This is
+  the prerequisite for noticing anything unnoticed.
+- **Focus & horizon** — what the user is doing now (with confidence) and the next N hours of
+  obligations.
+
+Exposed as one cheap `world_model.snapshot()` injectable into any prompt. This is what turns
+"he opened Claude" into "he's 90 minutes into the voice-bot repo, has a 3pm call, and the
+client email about that exact project has been open two days."
+
+## Phase C — Salience engine + delivery channels (where the change is felt)
+
+- One arbiter consuming Observations + world model. Scores urgency x relevance x timing.
+  Deletes the seven independent judgment calls.
+- **Global interruption budget** — a finite number of unprompted interruptions per hour,
+  spent on the best available item. Structural prioritization instead of prompt-wording.
+- **Deferral instead of drop** — the binary that causes the clunk. Most items become "tell
+  him at the next natural pause" or "put it in the morning brief," not "say now or lose it."
+- **Channel routing** — urgent: speak. useful: queue for next pause. informational: ambient
+  console surface / digest. away-and-actionable: Telegram push.
+- Retire `ContextAwarenessWorker`'s standalone generation path; window focus becomes one
+  input among many rather than its own reason to talk.
+
+## Phase D — `argusd` daemon + client split (unblocks the ambitious half)
+
+- Long-lived process owning spine, world model, salience, actions, tool registry.
+- Local API (HTTP/socket) + the existing Part I Phase 7 MCP wrapper as one client interface.
+- Voice loops, console, chat, Telegram become thin clients that attach/detach freely.
+- Directly unblocks: overnight/always-on monitoring, home automation reacting when no voice
+  session is open, and the **call screener handoff** — the separate AI call assistant asks
+  `argusd` "who is this, is Jeff expecting them, what's his calendar" over the API. That is
+  an API question, not something a CLI voice loop can ever serve.
+- Windows service/scheduled-task install path; the existing `restart.py` needs revisiting.
+
+## Phase E — Actions beyond speech
+
+- **Prep work** — draft the reply, stage the calendar hold, pre-pull the file; present it
+  ready rather than announcing it. Highest-value shift toward "Cowork," and safe because it
+  stops short of sending.
+- **Standing authorizations** — durable, scoped, revocable grants ("archive newsletters
+  automatically"), replacing per-call confirmation for repeated benign work. Builds on the
+  existing tier system rather than replacing it.
+- **Briefings** — morning/evening digests assembled from deferred items instead of
+  scattered interruptions.
+
+## Phase F — Integrations that only make sense after A–E
+
+- Home automation with real context (Home Assistant MCP is already wired; it becomes useful
+  once the world model can say *why* to act, not just how).
+- Call screening loop: screener → `argusd` → world model → decision, with the outcome
+  written back to the spine as an Observation.
+- Location/presence, health/wearable, financial monitoring — all just new sensors on the
+  spine at that point, which is the payoff of building A first.
+
+## Sequencing note
+
+A and B are unglamorous and must come first: C is where the experience visibly changes, but
+a salience engine with nothing to reason over is just today's problem with more indirection.
+D can be built in parallel with C if desired, since it is a process-model change rather than
+a reasoning change.
+
+**Security posture:** an always-on daemon holding standing authorizations is a materially
+different exposure than a user-launched CLI — noted as a real factor per the existing
+stance, not planned around; raise it when Phase D and E are actually being built.
