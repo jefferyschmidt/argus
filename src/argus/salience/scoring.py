@@ -13,6 +13,7 @@ result."""
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Callable, Literal
 
 from argus.config import settings
@@ -104,13 +105,18 @@ def staleness(candidate: Candidate, snapshot: WorldSnapshot, now: float) -> floa
 
 
 # -- interruption_cost ---------------------------------------------------
-# Appendix A.2's table, first match wins. Two rows still have no signal
-# source in this build and are structurally present but unreachable:
-# "in a meeting" (calendar.event_upcoming carries no end time -- see the
-# pre-U-C4 requirement in PRD Sec 5.2) and "on a call" (no call sensor
-# until Phase F). A future signal slots straight in.
+# Appendix A.2's table, first match wins. One row still has no signal
+# source in this build and is structurally present but unreachable: "on
+# a call" (no call sensor until Phase F). A future signal slots straight
+# in.
 #
-# Quiet mode and listening-paused ARE wired, below. They were initially
+# "in a meeting" IS wired, below -- the pre-U-C4 binding requirement in
+# PRD §5.2: CalendarSensor/google_calendar now carry an event's end time
+# (google_calendar.list_upcoming_events, world/model.py::CalendarItem.end),
+# so interruption_cost can tell an ongoing calendar event from a merely
+# upcoming one.
+#
+# Quiet mode and listening-paused are also wired. They were initially
 # left out on the reasoning that they live in voice/UI state this module
 # has no reason to import -- a fair instinct, but wrong on the merits: a
 # module deciding whether to speak has every reason to know whether the
@@ -119,6 +125,12 @@ def staleness(candidate: Candidate, snapshot: WorldSnapshot, now: float) -> floa
 # interrupting while explicitly muted.
 
 def interruption_cost(snapshot: WorldSnapshot, spine, rhythms, now: float) -> float:
+    # Checked first, matching Appendix A.2's literal table order -- a
+    # calendar event in progress is as strong a signal as the mic being
+    # off, so it shouldn't be shadowed by a check below it.
+    if _in_a_meeting(snapshot, now):
+        return 1.0
+
     # Checked before the focus row, correcting A.2's own table order: the
     # table says "first match wins" but lists listening-paused (1.0) below
     # focused (0.7), so a focused user with the mic off scored 0.7 instead
@@ -157,6 +169,26 @@ def interruption_cost(snapshot: WorldSnapshot, spine, rhythms, now: float) -> fl
             return 0.2  # active in the last 5 min, not focused
 
     return 0.3  # otherwise
+
+
+def _in_a_meeting(snapshot: WorldSnapshot, now: float) -> bool:
+    """True if `now` falls within any calendar item's [start, end) --
+    i.e. a meeting is actually in progress, not merely upcoming."""
+    for item in snapshot.horizon:
+        start_ts = _parse_calendar_ts(item.start)
+        end_ts = _parse_calendar_ts(item.end)
+        if start_ts is not None and end_ts is not None and start_ts <= now < end_ts:
+            return True
+    return False
+
+
+def _parse_calendar_ts(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def _app_key(title: str) -> str:

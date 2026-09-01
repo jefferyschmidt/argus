@@ -93,6 +93,21 @@ def test_calendar_horizon_dedupes_rescheduled_events_by_id(tmp_path):
     assert matching[0].start == new_start
 
 
+def test_calendar_horizon_carries_end_time(tmp_path):
+    model = _model(tmp_path)
+    from datetime import datetime, timedelta, timezone
+
+    start = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    end = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    model.spine.record(Observation(
+        source="calendar", kind="calendar.event_upcoming", ts=time.time(),
+        payload={"id": "1", "summary": "Standup", "start": start, "end": end}, dedupe_key="a",
+    ))
+
+    snap = model.snapshot()
+    assert snap.horizon[0].end == end
+
+
 # -- rhythms ------------------------------------------------------------------
 
 def test_snapshot_rhythm_summary_reflects_recomputed_confidence(tmp_path, monkeypatch):

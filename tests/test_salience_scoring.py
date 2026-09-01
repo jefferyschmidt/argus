@@ -373,6 +373,51 @@ def test_interruption_cost_active_recently_not_focused(tmp_path):
     assert interruption_cost(_empty_snapshot(), spine, now=now, rhythms=None) == 0.2
 
 
+def _snapshot_with_calendar_item(start_offset_seconds, end_offset_seconds, now):
+    from datetime import datetime, timezone
+
+    from argus.world.model import CalendarItem
+
+    snap = _empty_snapshot()
+    start = datetime.fromtimestamp(now + start_offset_seconds, tz=timezone.utc).isoformat()
+    end = datetime.fromtimestamp(now + end_offset_seconds, tz=timezone.utc).isoformat()
+    snap.horizon = [CalendarItem(summary="Standup", start=start, end=end)]
+    return snap
+
+
+def test_ongoing_meeting_returns_full_interruption_cost():
+    """Pre-U-C4 binding requirement, PRD §5.2: CalendarSensor/WorldSnapshot
+    now carry an event's end time, so an in-progress meeting scores 1.0
+    instead of falling through to "otherwise" (0.3)."""
+    now = time.time()
+    snapshot = _snapshot_with_calendar_item(start_offset_seconds=-600, end_offset_seconds=600, now=now)
+
+    assert interruption_cost(snapshot, None, None, now) == 1.0
+
+
+def test_upcoming_meeting_not_yet_started_does_not_count_as_in_a_meeting():
+    now = time.time()
+    snapshot = _snapshot_with_calendar_item(start_offset_seconds=600, end_offset_seconds=1200, now=now)
+
+    assert interruption_cost(snapshot, None, None, now) == 0.3
+
+
+def test_meeting_already_ended_does_not_count_as_in_a_meeting():
+    now = time.time()
+    snapshot = _snapshot_with_calendar_item(start_offset_seconds=-1200, end_offset_seconds=-600, now=now)
+
+    assert interruption_cost(snapshot, None, None, now) == 0.3
+
+
+def test_meeting_check_beats_a_focused_but_unrelated_app_session():
+    now = time.time()
+    snapshot = _snapshot_with_calendar_item(start_offset_seconds=-600, end_offset_seconds=600, now=now)
+    from argus.world.model import FocusState
+    snapshot.focus = FocusState(title="Code - argus", minutes=40, confidence=1.0)
+
+    assert interruption_cost(snapshot, None, _focus_rhythms(), now) == 1.0
+
+
 def _snapshot_focused_for_minutes(minutes):
     from argus.world.model import FocusState
 

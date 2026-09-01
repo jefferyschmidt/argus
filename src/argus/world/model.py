@@ -28,6 +28,7 @@ class FocusState:
 class CalendarItem:
     summary: str
     start: str
+    end: str = ""
     location: str = ""
 
 
@@ -165,6 +166,7 @@ class WorldModel:
             items.append(CalendarItem(
                 summary=obs.payload.get("summary", "(no title)"),
                 start=obs.payload.get("start", ""),
+                end=obs.payload.get("end", ""),
                 location=obs.payload.get("location", ""),
             ))
         items.sort(key=lambda c: c.start)

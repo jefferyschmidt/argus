@@ -104,10 +104,12 @@ def list_upcoming_events(max_results: int = 10, days_ahead: int = 14) -> list[di
     events = []
     for item in result.get("items", []):
         start = item.get("start", {}).get("dateTime") or item.get("start", {}).get("date")
+        end = item.get("end", {}).get("dateTime") or item.get("end", {}).get("date")
         events.append({
             "id": item.get("id"),
             "summary": item.get("summary", "(no title)"),
             "start": start,
+            "end": end,
             "location": item.get("location", ""),
         })
     return events
