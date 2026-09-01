@@ -390,6 +390,105 @@ client email about that exact project has been open two days."
 - Location/presence, health/wearable, financial monitoring — all just new sensors on the
   spine at that point, which is the payoff of building A first.
 
+## Phase G — Standing rules & preferences (user-programmable behavior)
+
+Direct request: be able to say *"you don't need to prompt me any more when you see I have
+Claude open"* or *"when I get an important email, change the office bulb to blue until I've
+acknowledged it"* and have Argus remember and act on it — without going back to code.
+
+Decided at the same time: **the always-on daemon with standing authorizations (Phase D + E)
+is confirmed as the intended direction**, not an open question. Phase G depends on it.
+
+### Why core memory can't do this
+
+`CoreMemoryStore` is the closest existing mechanism and it is the wrong substrate. It stores
+**prose**, injected into the prompt verbatim. That is right for facts and cannot work for
+rules, because a rule must be:
+
+- **evaluated deterministically** on every matching event — running an LLM over N rules per
+  event is neither affordable nor reliable;
+- **individually inspectable and revocable** — "what rules do I have?", "forget that one";
+- **able to hold live state** — the "until I've acknowledged it" half has a lifecycle;
+- **able to carry an authorization grant** — the bulb rule acts with no human in the loop.
+
+A sentence in a prompt does none of those. Rules need structure.
+
+### Three classes, deliberately distinguished
+
+Conflating these produces a bad design, because they attach at different points:
+
+1. **Suppression** — "stop doing X." Gates existing behavior. No action, no state.
+2. **Preference** — "when you do X, do it this way." Modulates timing, channel, threshold, tone.
+3. **Automation** — "when TRIGGER, do ACTION until CONDITION." Genuinely new behavior composed
+   at runtime from existing tools. Stateful. The bulb example.
+
+(1) and (2) are inputs to the salience engine. (3) emits into the action layer directly. One
+store, one engine, two output types.
+
+### What's genuinely new to build
+
+**G-a. Rule representation.** A structured record, not free text:
+`id · natural_language · source_utterance · kind · trigger · conditions · action · until ·
+scope · authorization · provenance · hit_count · last_fired · revoked_at`.
+
+**G-b. The compiler — author once, evaluate many.** The critical split. A frontier model
+turns the spoken sentence into a structured rule **once**, at authoring time. Evaluation is
+then cheap deterministic matching. Rule matching must never run through an LLM per event.
+
+**G-c. Authoring confirmation, with a scope question.** "You don't need to prompt me about
+Claude" is genuinely ambiguous — just Claude? window check-ins as a category? being chatty in
+general? The compiler proposes a scope, asks exactly one clarifying question, then reads the
+rule back. This reuses `CoreMemoryStore`'s existing propose/confirm precedent with a
+structured payload instead of prose. It is also where the rule's authorization grant is
+captured, so one confirmation does both jobs.
+
+**G-d. Matcher.** Deterministic, indexed by event kind, fast path first. Fuzzy predicates
+("important email") delegate to the existing triage call and cache the verdict rather than
+being re-judged once per rule.
+
+**G-e. Stateful rule instances.** The subtle part, and where Phase B earns its place. "Until
+I've acknowledged it" requires a live instance with a lifecycle (armed → fired → active →
+resolved), persisted so it survives a restart, and a definition of "acknowledged" that is a
+real Observation. The clean answer: the email becomes an **open thread** in the world model,
+the instance watches that thread, and the thread closing resolves the instance. Every
+instance needs a safety timeout so nothing can run forever — including across a crash, which
+needs a reconciliation pass on daemon startup (otherwise the bulb stays blue indefinitely).
+
+**G-f. Effect reversal.** "Until" implies undoing. The bulb had a prior color that must be
+snapshotted before the action and restored after. `undo_log.py` already has exactly the right
+pattern (snapshot-before-write) but is file-specific and says so in its own docstring; this
+generalizes it to any reversible tool action.
+
+**G-g. Conflict resolution.** Two rules will eventually disagree ("never interrupt during
+focus time" vs. "always tell me about anything from Julia"). Precedence by specificity, then
+recency, with suppression winning ties by default. Critically, detect and surface the conflict
+**at authoring time** — "that contradicts one you set last week, replace it?" — not silently
+at runtime.
+
+**G-h. Introspection and decay.** "What rules do you have?" / "Why did you just do that?" /
+"Forget the bulb thing." Plus hygiene: rules that never fire get flagged, rules that fire
+constantly get surfaced for review. Without this, accumulated invisible rules make Argus's
+behavior inexplicable — the specific failure mode that kills systems like this.
+
+### Staging — there is an early win here
+
+- **G1 — Suppressions.** Needs only Phase A. Durable, revocable "stop doing X," replacing
+  `ContextAwarenessWorker._suppressed_titles` (in-process today, lost every restart). Small,
+  and it fixes the immediate annoyance long before the rest of the system exists.
+- **G2 — Preferences.** Needs C. Timing, channel, threshold and tone modulation of salience.
+- **G3 — Automations.** Needs B (threads, for `until`) and E (standing authorizations, to act
+  unattended). The bulb example lands here.
+
+### Why this matters strategically
+
+This is the feature that makes Argus **user-programmable by speech**. Alexa has rigid
+prebuilt routines; Cowork has no persistent personal state. A system where you say one
+sentence and durably change the assistant's standing behavior — with introspection,
+conflict-checking and revocation — is the "something nobody has seen yet" part of the goal.
+It is only cheap to build *because* A–E put an event spine, a world model, and an
+authorization system underneath it. Attempted today, without those, every rule would need
+hand-coded evaluation points — which is exactly the "going back to code" this is meant to end.
+
 ## Sequencing note
 
 A and B are unglamorous and must come first: C is where the experience visibly changes, but
@@ -398,5 +497,6 @@ D can be built in parallel with C if desired, since it is a process-model change
 a reasoning change.
 
 **Security posture:** an always-on daemon holding standing authorizations is a materially
-different exposure than a user-launched CLI — noted as a real factor per the existing
-stance, not planned around; raise it when Phase D and E are actually being built.
+different exposure than a user-launched CLI. Raised and explicitly decided on 2026-09-01:
+the user confirmed this is the right call and the intended direction. Not an open question;
+build D and E accordingly.
