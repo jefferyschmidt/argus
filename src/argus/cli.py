@@ -1,6 +1,7 @@
 import argparse
 import ctypes
 import logging
+import re
 import sys
 
 from rich.console import Console
@@ -235,6 +236,54 @@ def calendar_auth() -> None:
     console.print("[green]Authorized.[/green] Argus can now read and create calendar events.")
 
 
+_SINCE_PATTERN = re.compile(r"(\d+(?:\.\d+)?)([smhd])")
+_SINCE_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _parse_since(value: str) -> float:
+    """"24h", "30m", "7d", "90s" -> a unix epoch timestamp that far in the
+    past. Kept deliberately simple (no full duration-string library) --
+    this is the only format `argus timeline --since` needs to accept."""
+    import time
+
+    match = _SINCE_PATTERN.fullmatch(value.strip())
+    if not match:
+        raise ValueError(f"Invalid --since value {value!r} (expected e.g. 24h, 30m, 7d)")
+    amount, unit = match.groups()
+    return time.time() - float(amount) * _SINCE_UNIT_SECONDS[unit]
+
+
+def timeline(since: str | None, kind: str | None, limit: int) -> None:
+    """PRD.md §3.6 -- the proof Phase A works, independently useful on
+    its own as a way to see what Argus has actually observed."""
+    from datetime import datetime, timezone
+
+    from argus.spine.store import SpineStore
+
+    try:
+        since_ts = _parse_since(since) if since else None
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        return
+
+    store = SpineStore()
+    observations = store.query(kinds=[kind] if kind else None, since=since_ts, limit=limit)
+    if not observations:
+        console.print("No observations recorded yet.")
+        return
+    from rich.markup import escape
+
+    for obs in observations:
+        when = datetime.fromtimestamp(obs.ts, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        # escape() the whole bracketed segment, not just obs.subject --
+        # Console.print() treats [...] as markup, and it's the literal
+        # brackets added here (not just characters that might appear
+        # inside an observed subject) that need protecting, or the
+        # subject is silently swallowed as an unrecognized style tag.
+        subject = escape(f" [{obs.subject}]") if obs.subject else ""
+        console.print(f"[dim]{when}[/dim] {obs.kind}{subject}  [dim]({obs.source})[/dim]")
+
+
 def _make_dpi_aware() -> None:
     """Without this, a scaled Windows display (anything above 100%) puts
     pyautogui's screenshot/click coordinates in two DIFFERENT spaces --
@@ -286,6 +335,11 @@ def main() -> None:
     calendar_sub = calendar_parser.add_subparsers(dest="calendar_command")
     calendar_sub.add_parser("auth", help="One-time OAuth authorization for Google Calendar")
 
+    timeline_parser = sub.add_parser("timeline", help="Show recent spine observations (PRD.md Phase A)")
+    timeline_parser.add_argument("--since", default=None, help="e.g. 24h, 30m, 7d")
+    timeline_parser.add_argument("--kind", default=None, help="Filter to one observation kind, e.g. mail.received")
+    timeline_parser.add_argument("--limit", type=int, default=50)
+
     args = parser.parse_args()
 
     if args.command == "memory" and args.memory_command == "review":
@@ -306,6 +360,8 @@ def main() -> None:
         calendar_auth()
     elif args.command == "calendar":
         calendar_parser.print_help()
+    elif args.command == "timeline":
+        timeline(args.since, args.kind, args.limit)
     elif args.command == "voice":
         voice()
     elif args.command == "agent":
