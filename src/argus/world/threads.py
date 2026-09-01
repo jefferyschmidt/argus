@@ -1,9 +1,26 @@
 """PRD.md §4.1. Persisted, continuously open/closed tracking of "things
-not yet resolved" -- the world model's memory of loose ends. Uses the
-existing shared argus.db (memory.store.get_connection), the same as
-ReminderStore/RoutineStore -- only the spine's own db needs the
-separate-connection treatment (P1); this is ordinary state read/written
-synchronously, not from an unlocked background thread.
+not yet resolved" -- the world model's memory of loose ends.
+
+CONNECTION DISCIPLINE (P1) -- read before wiring this up. This class takes
+an injected connection and is deliberately agnostic about which one, so
+the concurrency decision belongs to whoever constructs it. Today only
+tests do, on a plain argus.db connection, which is safe because tests are
+single-threaded.
+
+That stops being true the moment reap() is put on its timer
+(settings.thread_reap_seconds, Appendix A.1) or the world model is read
+from the UI/salience threads. argus.db's shared connection
+(memory.store.get_connection) is only safe for concurrent use because
+VoiceLoop's _interaction_lock serializes every caller of it -- a reap
+timer is not covered by that lock, and a per-component lock here would
+not help either, since a sqlite3 Connection is not safe for interleaved
+use by two components holding two different locks.
+
+So: whoever first constructs a ThreadStore for production use must give
+it a DEDICATED connection with the spine's treatment (own connection
+object, own lock, WAL) -- see spine/store.py -- not the shared argus.db
+one. Recorded as a requirement in PRD §4.1 rather than pre-built here,
+because nothing constructs it yet and there is no live bug to fix.
 
 `sensitivity` is written but never read here or anywhere else in Phases
 A-I (PRD §4.1) -- it exists purely so the deferred speaker-identity/

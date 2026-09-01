@@ -259,6 +259,23 @@ CREATE TABLE IF NOT EXISTS threads (
 CREATE INDEX IF NOT EXISTS idx_threads_open ON threads(closed_ts, last_activity_ts);
 ```
 
+**Connection discipline (P1) — binding requirement.** `ThreadStore` takes an injected
+connection. The first production construction site **must** give it a *dedicated* connection
+with the spine's treatment (own connection object, own lock, WAL), **not** the shared
+`memory.store.get_connection` one. That shared connection is only safe for concurrent use
+because `_interaction_lock` serializes every caller, and neither the `reap()` timer nor a
+world-model read from the UI or salience thread is covered by that lock. A per-component lock
+does not rescue it either: one `sqlite3.Connection` interleaved by two components holding two
+different locks is still unsafe. This is P1 in a new place, and it is latent rather than live
+only because nothing constructs a `ThreadStore` in production yet.
+
+**Spine emission — required before the `thread_closed` predicate is usable.** `open()` and
+`close()` must record `thread.opened` / `thread.closed` observations onto the spine. Both
+kinds are already in the §3.1 vocabulary but nothing emits them, which leaves Appendix A.1's
+`thread_closed` predicate wired and permanently dormant, and leaves thread lifecycle off the
+timeline that Phase H renders. Needs a spine reference on `ThreadStore`; do it at the same
+time as the connection-discipline change above, since both touch construction.
+
 **`sensitivity` is written but never read in Phases A–I.** It exists so the deferred
 speaker-identity/disclosure work (`ROADMAP.md` Part IV) does not require a migration later.
 Do not build behavior on it. Do not remove it.
@@ -618,6 +635,7 @@ must use a temporary database file, never the real `data/` one.
 | 8 | `ThreadStore` + openers | 7 |
 | 9 | `rhythms.py` | 7 |
 | 10 | `WorldSnapshot` + `to_prompt_block` | 8, 9 |
+| 10a | ThreadStore dedicated connection + `thread.opened`/`thread.closed` emission (§4.1) | 10 |
 | 11 | **Phase B acceptance review** | 8–10 |
 | 12 | Task registry + runner + budgets | 7 |
 | 13 | Task tools + startup reconciliation | 12 |
