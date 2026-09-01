@@ -1,6 +1,10 @@
 # Argus — Perception Layer PRD
 
 **Status:** approved for build, 2026-09-01
+**Appendix A (mandatory):** exact specifications for the predicate language, salience
+scoring, rule trigger/action schemas, and the rhythms algorithm. Read it before building
+units 8, 9, 15 or 16 — those four were prose in the body and must not be improvised.
+
 **Covers:** Phase A (event spine), Phase B (world model), Phase C (salience), Phase I
 (autonomous tasks), Phase G (rules, incl. G4 induction), Phase E-compose (documents).
 **Does not cover:** Phases D (daemon), F (integrations), H (dashboard) — see §12.
@@ -245,7 +249,7 @@ CREATE TABLE IF NOT EXISTS threads (
     subject           TEXT,
     opened_ts         REAL    NOT NULL,
     opened_by_obs_id  INTEGER,
-    close_condition   TEXT    NOT NULL DEFAULT '{}',   -- JSON predicate
+    close_condition   TEXT    NOT NULL DEFAULT '{}',   -- JSON predicate; grammar in Appendix A.1
     closed_ts         REAL,
     closed_reason     TEXT,
     last_activity_ts  REAL,
@@ -278,6 +282,7 @@ Thread openers to implement:
 
 ### 4.2 Rhythms — `src/argus/world/rhythms.py`
 
+**Specified exactly in Appendix A.4 — build from there, not from this paragraph.**
 Derived baselines over the spine: typical active hours, focus vs. browsing applications,
 which senders the user actually acts on, typical uninterrupted session length.
 
@@ -354,6 +359,7 @@ class Decision:
 
 ### 5.2 Scoring — deterministic first
 
+**Specified exactly in Appendix A.2, including the weight table and a worked example.**
 `score(candidate, snapshot) -> float` combines, with no LLM:
 static `base_urgency` by kind · thread age and staleness · rhythm fit (is now a time the user
 deals with this?) · whether the user is in a meeting or focused · matching rule policy from
@@ -471,9 +477,9 @@ CREATE TABLE IF NOT EXISTS rules (
     natural_language TEXT NOT NULL,     -- read back to the user verbatim
     source_utterance TEXT,
     kind TEXT NOT NULL,                 -- suppression | preference | automation
-    trigger TEXT NOT NULL,              -- JSON
+    trigger TEXT NOT NULL,              -- JSON; schema in Appendix A.3
     conditions TEXT NOT NULL DEFAULT '[]',
-    action TEXT NOT NULL,               -- JSON
+    action TEXT NOT NULL,               -- JSON; schema in Appendix A.3
     until_condition TEXT,               -- JSON, automations only
     group_name TEXT,                    -- named modes, G-delta 1
     status TEXT NOT NULL DEFAULT 'proposed',  -- proposed|active|disabled|revoked
@@ -645,3 +651,405 @@ Also out of scope and not to be built opportunistically: honest-counsel behavior
 and what-if, financial data sources, day-job integrations (Sentinel, Netsparker, Monday,
 Entra ID), degraded/offline operation, spine backup and export. All are open items in the
 audit awaiting a decision.
+
+---
+
+# Appendix A — Specifications that must not be improvised
+
+Added 2026-09-01. Sections 4, 5 and 7 referenced four structures as "JSON" or described them
+in prose. Each is load-bearing, and an implementer inventing its own version produces
+something that looks right and is quietly wrong. **These four are closed vocabularies. Do not
+extend them without an explicit decision recorded in this file.**
+
+An unknown `type`, `op` or `kind` anywhere below must **return a safe default and log a
+warning** — never raise, never guess. Safe default means: predicates return `False`, filters
+return no-match, scoring contributions return neutral.
+
+---
+
+## A.1 Predicate language (thread `close_condition`, rule `until_condition`)
+
+Used by §4.1 `threads.close_condition` and §7.1 `rule_instances` / `rules.until_condition`.
+One evaluator serves both.
+
+### File: `src/argus/world/predicates.py`
+
+```python
+def evaluate(predicate: dict, *, thread: Thread | None,
+             spine: SpineStore, now: float) -> bool:
+    """Pure and deterministic. No LLM. No side effects. Total: an unknown
+    'type' logs a warning and returns False, so a malformed predicate
+    leaves a thread open rather than silently closing it."""
+```
+
+**Failing open is deliberate.** A thread that should have closed and didn't is visible and
+annoying; a thread that closes when it shouldn't loses the item silently — the exact defect
+Phase C exists to remove.
+
+### The complete vocabulary — seven types, no others
+
+```jsonc
+// 1. An observation of this kind has been recorded since the thread opened.
+//    "subject" may be the literal string "$thread.subject" to bind to the thread.
+{"type": "observation_seen",
+ "kind": "mail.replied",
+ "subject": "$thread.subject",     // optional; omit to match any subject
+ "since": "$thread.opened_ts"}     // optional; or a literal epoch float
+
+// 2. The user explicitly acknowledged this thread (voice "got it", or a
+//    dashboard click). Backed by a thread.acknowledged observation.
+{"type": "user_acknowledged"}
+
+// 3. Wall-clock timeout measured from thread open.
+{"type": "timeout", "seconds": 604800}
+
+// 4. Never closes on its own; only an explicit close() call.
+{"type": "manual_only"}
+
+// 5. A named thread's state.
+{"type": "thread_closed", "thread_id": 42}
+
+// 6. Numeric comparison against the payload of the newest observation of a kind.
+{"type": "value_threshold",
+ "kind": "argus.spend_recorded", "field": "payload.usd",
+ "op": "gt", "value": 50.0}
+
+// 7. Composition.
+{"type": "any_of", "predicates": [ ... ]}
+{"type": "all_of", "predicates": [ ... ]}
+```
+
+`op` for `value_threshold` is one of: `gt`, `gte`, `lt`, `lte`, `eq`, `neq`.
+
+### Required addition to the spine vocabulary (§3.1)
+
+```
+thread.acknowledged     payload: {"thread_id": <int>, "via": "voice" | "ui"}
+```
+
+Emitted when the user acknowledges. This is the single observation that closes the bulb loop:
+`mail.received` opens an `email_reply` thread → the rule instance watches it →
+`thread.acknowledged` satisfies `user_acknowledged` → thread closes → instance resolves →
+prior bulb colour restored.
+
+### Default close conditions by thread kind
+
+| Thread kind | Default `close_condition` |
+|---|---|
+| `email_reply` | `{"type":"any_of","predicates":[{"type":"user_acknowledged"},{"type":"observation_seen","kind":"mail.replied","subject":"$thread.subject"},{"type":"observation_seen","kind":"mail.deleted","subject":"$thread.subject"},{"type":"timeout","seconds":1209600}]}` |
+| `commitment` | `{"type":"any_of","predicates":[{"type":"user_acknowledged"},{"type":"timeout","seconds":2592000}]}` |
+| `system_health` | `{"type":"manual_only"}` — a broken credential closes when it actually works again, which only the sensor can determine; it calls `close()` directly |
+| `task` | `{"type":"any_of","predicates":[{"type":"observation_seen","kind":"task.finished"},{"type":"observation_seen","kind":"task.failed"}]}` |
+
+### Evaluation cadence
+
+`ThreadStore.reap()` evaluates every open thread's condition. Called on a timer
+(`settings.thread_reap_seconds`, default 60) and immediately after any observation whose kind
+appears in an open thread's condition. **Never on every observation.**
+
+### Acceptance
+
+- [ ] Each of the seven types has a passing and a failing test.
+- [ ] An unknown `type` returns `False` and logs, never raises.
+- [ ] `$thread.subject` and `$thread.opened_ts` bind correctly.
+- [ ] `any_of` / `all_of` nest at least three deep.
+- [ ] `reap()` over 1000 open threads makes no LLM call and completes under one second.
+
+---
+
+## A.2 Salience scoring
+
+Replaces §5.2's prose. Every weight is a `settings` field so it is tunable without a code
+change.
+
+### File: `src/argus/salience/scoring.py`
+
+### Step 1 — suppression short-circuits, before any scoring
+
+```python
+if any(rule matches candidate and rule.action.type == "suppress"):
+    return Decision(action="suppress", reason=f"suppressed by rule {rule.id}: {rule.natural_language}")
+```
+
+**A suppression can never be outvoted by a high score.** If the user said "stop telling me
+about this", no urgency calculation overrides that. This ordering is not negotiable.
+
+### Step 2 — the formula
+
+```python
+score = clamp01(
+      W_URGENCY   * base_urgency          # 0..1, static table below
+    + W_STALENESS * staleness             # 0..1
+    + W_RHYTHM    * (rhythm_fit - 0.5)    # -0.5..+0.5, centred so neutral contributes nothing
+    + W_RULE      * rule_bias             # -1..+1
+    - W_COST      * interruption_cost     # 0..1
+)
+```
+
+Defaults: `W_URGENCY = 0.45`, `W_STALENESS = 0.20`, `W_RHYTHM = 0.20`, `W_RULE = 0.30`,
+`W_COST = 0.35`.
+
+**`base_urgency` — static table, ship exactly this:**
+
+| kind | value |
+|---|---|
+| `argus.credential_failed` | 0.75 |
+| `argus.integration_failed` | 0.60 |
+| `reminder.due` | 0.80 |
+| `calendar.event_upcoming` | 0.70 |
+| `mail.received` (triaged important) | 0.55 |
+| `mail.received` (not important) | 0.10 |
+| `task.finished` | 0.45 |
+| `task.failed` | 0.60 |
+| `document.composed` | 0.40 |
+| `routine.due` | 0.50 |
+| `git.branch_stale` | 0.15 |
+| `focus.changed` | 0.05 |
+| *(unknown kind)* | 0.30 |
+
+**`staleness`** — `0.0` with no thread; otherwise
+`min(1.0, thread_age_hours / settings.staleness_saturation_hours)` (default 72).
+
+**`rhythm_fit`** — `0.5` (neutral) whenever the relevant rhythm's confidence is below
+`settings.rhythm_min_confidence` (default 0.5). This is where honest uncertainty enters the
+arithmetic: an unproven baseline contributes nothing rather than a guess. Above the threshold,
+the fraction of this kind historically handled in the current hour bucket, normalized 0..1.
+
+**`rule_bias`** — sum of matching `boost` rule amounts, clamped to `-1..+1`.
+
+**`interruption_cost`** — first match wins:
+
+| state | cost |
+|---|---|
+| calendar says in a meeting | 1.0 |
+| on a call (call sensor active) | 1.0 |
+| focused ≥ 25 min in a focus-classified app | 0.7 |
+| quiet mode on | 0.6 |
+| listening paused | 1.0 |
+| active in the last 5 min, not focused | 0.2 |
+| idle / away | 0.4 |
+| otherwise | 0.3 |
+
+### Step 3 — thresholds
+
+```python
+if score >= settings.speak_threshold:      # 0.62
+    action = "speak"
+elif LOW <= score <= HIGH:                 # ambiguous band, 0.45..0.55
+    action = llm_tiebreak(...) or "hold"   # subject to the per-hour cap in §5.2
+elif score >= settings.ambient_threshold:  # 0.30
+    action = "ambient"
+else:
+    action = "hold"
+```
+
+Then, unconditionally: **if `action == "speak"` and the interruption budget is empty, it
+becomes `hold`.** Budget is checked after scoring, never folded into the score.
+
+### Worked example — use this as a test fixture
+
+Important email, 4h-old thread, no matching rules, user active but not focused, rhythm
+confidence below threshold:
+
+```
+base_urgency      = 0.55  -> 0.45 * 0.55  =  0.2475
+staleness         = 4/72  =  0.0556 -> 0.20 * 0.0556 = 0.0111
+rhythm_fit        = 0.5 (unproven) -> 0.20 * 0.0 = 0.0
+rule_bias         = 0.0
+interruption_cost = 0.2   -> -0.35 * 0.2  = -0.0700
+                                    score =  0.1886  -> "hold"
+```
+
+Correct and deliberate: a merely-important email does not interrupt on its own. It is held,
+surfaced at the next pause or in a briefing, and only escalates through staleness or an
+explicit rule. Compare the credential failure at 18h with no rules and idle state:
+
+```
+0.45*0.75 + 0.20*0.25 + 0 + 0 - 0.35*0.4 = 0.3375 + 0.05 - 0.14 = 0.2475 -> "hold"
+```
+
+Also correct: it goes in the health widget and the briefing, not into an interruption. It
+reaches `speak` only via a user rule boosting it, which is exactly the intended division of
+labour between the engine's defaults and the user's stated preferences.
+
+### Acceptance
+
+- [ ] A suppression rule returns `suppress` without scoring being computed at all.
+- [ ] The worked example above reproduces to within 0.001.
+- [ ] Unknown kind uses 0.30 and logs once, not per event.
+- [ ] Rhythm confidence below threshold contributes exactly 0.0.
+- [ ] Budget exhaustion converts `speak` to `hold` and never alters the score.
+- [ ] Scoring 10,000 candidates makes zero LLM calls.
+
+---
+
+## A.3 Rule `trigger` and `action` schemas
+
+Replaces the bare "JSON" in §7.1. The compiler (§7.2) emits exactly these shapes; the matcher
+(§7.3) indexes on `trigger.kind`.
+
+### Trigger
+
+```jsonc
+{"kind": "mail.received",
+ "filters": [{"field": "payload.sender", "op": "contains", "value": "@gov"}]}
+
+{"kind": "focus.changed",
+ "filters": [{"field": "subject", "op": "contains", "value": "Claude"}]}
+
+{"kind": "thread_opened",
+ "filters": [{"field": "kind", "op": "eq", "value": "email_reply"}]}
+
+{"kind": "schedule", "cron": "0 17 * * 5"}      // Fridays 17:00 local
+
+{"kind": "mode_activated", "filters": [{"field": "group", "op": "eq", "value": "focus"}]}
+```
+
+`filters` is an implicit AND. An empty list matches every observation of that kind.
+
+**`field`** is a dotted path resolved against the `Observation`: `subject`, `source`,
+`confidence`, or `payload.<key>` (nested allowed). An unresolvable path is no-match.
+
+**`op`** — closed set: `eq`, `neq`, `contains`, `not_contains`, `matches` (regex, compiled
+once and cached), `gt`, `gte`, `lt`, `lte`, `in` (value is a list), `fuzzy`.
+
+**`fuzzy` is the only op permitted an LLM**, and it must go through the shared per-observation
+verdict cache so N rules asking "is this important?" about the same observation cost one call:
+
+```jsonc
+{"field": "self", "op": "fuzzy", "value": "an important email"}
+```
+
+Cache key is `(observation_id, value)`. Cache is in-memory with a 1-hour TTL; a cache miss on
+a rule evaluation for an observation older than the TTL evaluates to `False` rather than
+issuing a fresh call, so a backlog replay cannot trigger a burst of LLM calls.
+
+### Action
+
+```jsonc
+{"type": "suppress"}
+
+{"type": "boost", "amount": 0.3}                     // -1.0..1.0, feeds rule_bias
+
+{"type": "notify", "channel": "speak", "text": "..."}  // speak | ambient | push
+
+{"type": "tool_call",
+ "tool": "home_assistant_set_light",
+ "arguments": {"entity_id": "light.office", "rgb_color": [0, 0, 255]},
+ "reversible": true,
+ "read_tool": "home_assistant_get_state",
+ "read_arguments": {"entity_id": "light.office"}}
+
+{"type": "activate_group", "group": "focus"}
+{"type": "deactivate_group", "group": "focus"}
+```
+
+### Effect reversal — the concrete mechanism
+
+`reversible: true` **requires** `read_tool` and `read_arguments`. The instance lifecycle is:
+
+1. Before firing, call `read_tool(read_arguments)`; store the raw result in
+   `rule_instances.prior_state` as JSON.
+2. Fire `tool_call`.
+3. On resolve (or on `expires_ts`, or on startup reconciliation), call `tool_call`'s tool again
+   with arguments reconstructed from `prior_state`.
+
+**If `read_tool` fails, the rule does not fire at all** and the failure is surfaced. An
+irreversible "temporary" change is worse than not acting — this is what stops a crash leaving
+the bulb blue permanently.
+
+The compiler must refuse to emit `reversible: true` without a working `read_tool`, and must
+say so to the user at authoring time.
+
+### Acceptance
+
+- [ ] Every `op` has a passing and a failing test.
+- [ ] Unknown `op` is no-match and logs.
+- [ ] Two rules with the same `fuzzy` predicate on one observation produce exactly one LLM call.
+- [ ] A fuzzy evaluation for an observation older than the cache TTL returns `False` without an LLM call.
+- [ ] `reversible: true` with a failing `read_tool` does not fire the action.
+- [ ] Prior state round-trips: set, fire, resolve, and the entity returns to its recorded value.
+
+---
+
+## A.4 Rhythms algorithm
+
+Replaces §4.2's prose. Histograms and ratios only — **no ML, no clustering, no libraries.**
+
+### Storage
+
+```sql
+CREATE TABLE IF NOT EXISTS rhythms (
+    name          TEXT PRIMARY KEY,   -- 'active_hours' | 'app_class' | 'sender_importance' | 'session_length'
+    value         TEXT NOT NULL,      -- JSON
+    days_observed INTEGER NOT NULL,
+    samples       INTEGER NOT NULL,
+    confidence    REAL NOT NULL,
+    computed_ts   REAL NOT NULL
+);
+```
+
+Recomputed once daily over a trailing `settings.rhythm_window_days` (default 30). Never
+computed on a hot path; readers always read the stored row.
+
+### Confidence — one formula for all four
+
+```python
+confidence = 0.0 if days_observed < settings.rhythm_min_days      # default 14
+             else min(1.0, (days_observed / rhythm_window_days) * min(1.0, samples / min_samples))
+```
+
+`min_samples` per baseline: `active_hours` 200, `app_class` 30 per app, `sender_importance` 5
+per sender, `session_length` 20. **A baseline below its floor reports `confidence = 0.0` and
+must never be asserted as fact** (`ROADMAP.md` P1) — the scoring function in A.2 already
+treats that as neutral.
+
+### The four baselines
+
+**`active_hours`** — 24-bucket histogram of local hour → count of observations of any kind.
+Stored normalized against the peak bucket. A bucket ≥ 0.20 of peak is "active."
+`value = {"buckets": [0.0, ...24 floats...]}`
+
+**`app_class`** — per app key (the window title truncated at the first ` - ` / ` — `, lowercased):
+mean contiguous session minutes and observation count. Classify `focus` if mean session ≥
+`settings.focus_session_minutes` (default 12), else `browse`.
+`value = {"vscode": {"class": "focus", "mean_minutes": 34.2, "n": 88}, ...}`
+
+**`sender_importance`** — per sender: `acted / received`, where *acted* means a
+`mail.replied`, `mail.deleted`, or `thread.acknowledged` observation referencing that sender.
+`value = {"julia@…": {"ratio": 0.92, "n": 24}, ...}`
+
+**`session_length`** — median contiguous minutes within one app key, across the window.
+`value = {"median_minutes": 27.5}`
+
+### `rhythm_fit` — how A.2 consumes this
+
+For a candidate of kind K at local hour H: from the trailing window, the fraction of
+observations of kind K that were *acted on* within hour bucket H, divided by the maximum such
+fraction across all buckets. Returns `0.5` when the underlying confidence is below
+`rhythm_min_confidence`, so an unproven rhythm is neutral rather than a guess.
+
+### Acceptance
+
+- [ ] A dataset spanning fewer than `rhythm_min_days` yields `confidence == 0.0` for all four.
+- [ ] `active_hours` buckets sum consistently and are normalized to a peak of 1.0.
+- [ ] An app seen 3 times does not receive a class (below `min_samples`).
+- [ ] Recompute over 100,000 observations completes in under 5 seconds and makes zero LLM calls.
+- [ ] `rhythm_fit` returns exactly 0.5 for any baseline below the confidence threshold.
+
+---
+
+## A.5 Build-order amendment
+
+Insert into §11, before the units that depend on them:
+
+| # | Unit | Depends on | Insert |
+|---|---|---|---|
+| 8a | `predicates.py` + `thread.acknowledged` kind | 7 | **before** unit 8 |
+| 9a | `rhythms.py` per A.4 (replaces the sketch in unit 9) | 7 | replaces unit 9 |
+| 15a | Trigger/action schemas + filter ops + fuzzy cache | 7 | with unit 15 |
+| 16a | `scoring.py` per A.2 | 11, 15a | **before** unit 16 |
+
+Units 8a and 9a fall inside the Phase B gate (unit 11); 15a and 16a inside the Phase C gate
+(unit 19). Both gates now additionally require every acceptance box in this appendix to be
+ticked.
