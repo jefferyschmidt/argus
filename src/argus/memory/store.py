@@ -76,6 +76,26 @@ CREATE TABLE IF NOT EXISTS consolidation_state (
     last_episode_id INTEGER NOT NULL DEFAULT 0
 );
 INSERT OR IGNORE INTO consolidation_state (id, last_episode_id) VALUES (1, 0);
+
+-- PRD.md §4.1 -- the world model's persisted "things not yet resolved."
+-- opened_by_obs_id references a spine observation's row id, which lives
+-- in the separate spine.db (P1) -- no FK constraint across databases, so
+-- it's stored as a plain int.
+CREATE TABLE IF NOT EXISTS threads (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind              TEXT    NOT NULL,   -- email_reply | commitment | system_health | task | manual
+    title             TEXT    NOT NULL,
+    subject           TEXT,
+    opened_ts         REAL    NOT NULL,
+    opened_by_obs_id  INTEGER,
+    close_condition   TEXT    NOT NULL DEFAULT '{}',
+    closed_ts         REAL,
+    closed_reason     TEXT,
+    last_activity_ts  REAL,
+    sensitivity       TEXT    NOT NULL DEFAULT 'normal',
+    metadata          TEXT    NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_threads_open ON threads(closed_ts, last_activity_ts);
 """
 
 
