@@ -320,6 +320,11 @@ class Settings(BaseSettings):
     salience_llm_calls_per_hour: int = 6
     # PRD §5.3 -- persisted so a restart doesn't refill it.
     interruptions_per_hour: int = 3
+    # PRD §5.5 -- how often the escalation scheduler thread checks for due
+    # steps. Not given an explicit default in the PRD; chosen fine enough
+    # to feel timely against escalation windows measured in minutes
+    # without polling wastefully.
+    escalation_poll_seconds: float = 15.0
 
     @property
     def data_dir(self) -> Path:
