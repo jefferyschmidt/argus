@@ -301,6 +301,24 @@ class Settings(BaseSettings):
     horizon_hours: float = 12.0
     world_snapshot_ttl_seconds: float = 5.0
 
+    # Phase C salience scoring (PRD Appendix A.2). Every weight is its own
+    # setting so it's tunable without a code change; defaults are exactly
+    # A.2's worked example's weights.
+    salience_weight_urgency: float = 0.45
+    salience_weight_staleness: float = 0.20
+    salience_weight_rhythm: float = 0.20
+    salience_weight_rule: float = 0.30
+    salience_weight_cost: float = 0.35
+    staleness_saturation_hours: float = 72.0
+    speak_threshold: float = 0.62
+    ambient_threshold: float = 0.30
+    # Ambiguous band: a score landing between these two gets an LLM
+    # tie-break (capped by salience_llm_calls_per_hour) instead of a
+    # direct threshold decision.
+    salience_ambiguous_band_low: float = 0.45
+    salience_ambiguous_band_high: float = 0.55
+    salience_llm_calls_per_hour: int = 6
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir
