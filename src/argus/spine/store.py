@@ -101,11 +101,10 @@ class SpineStore:
             log.exception("Failed to record observation (kind=%s, source=%s)", obs.kind, obs.source)
             return None
 
-    def query(
-        self, *, kinds: list[str] | None = None, source: str | None = None,
-        subject: str | None = None, since: float | None = None,
-        until: float | None = None, limit: int = 200,
-    ) -> list[Observation]:
+    def _where_clause(
+        self, *, kinds: list[str] | None, source: str | None,
+        subject: str | None, since: float | None, until: float | None,
+    ) -> tuple[str, list]:
         clauses = []
         params: list = []
         if kinds:
@@ -124,11 +123,37 @@ class SpineStore:
             clauses.append("ts <= ?")
             params.append(until)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where, params
+
+    def query(
+        self, *, kinds: list[str] | None = None, source: str | None = None,
+        subject: str | None = None, since: float | None = None,
+        until: float | None = None, limit: int = 200,
+    ) -> list[Observation]:
+        where, params = self._where_clause(kinds=kinds, source=source, subject=subject, since=since, until=until)
         sql = f"SELECT * FROM observations {where} ORDER BY ts DESC, id DESC LIMIT ?"
-        params.append(limit)
+        params = [*params, limit]
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_observation(r) for r in rows]
+
+    def query_ts_subject(
+        self, *, kinds: list[str] | None = None, source: str | None = None,
+        subject: str | None = None, since: float | None = None,
+        until: float | None = None, limit: int = 1_000_000,
+    ) -> list[tuple[float, str | None]]:
+        """Lightweight variant of query() for callers that only need
+        (ts, subject) -- e.g. rhythms.py's histogram/session
+        computations over up to 100k+ rows, where building a full
+        Observation (with JSON payload decoding) per row is measurable
+        overhead that serves no purpose there. Same filters as query();
+        newest first."""
+        where, params = self._where_clause(kinds=kinds, source=source, subject=subject, since=since, until=until)
+        sql = f"SELECT ts, subject FROM observations {where} ORDER BY ts DESC, id DESC LIMIT ?"
+        params = [*params, limit]
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [(r[0], r[1]) for r in rows]
 
     def latest(self, kind: str, subject: str | None = None) -> Observation | None:
         clauses, params = ["kind = ?"], [kind]

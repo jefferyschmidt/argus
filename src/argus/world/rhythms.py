@@ -69,18 +69,20 @@ def _local_date(ts: float):
 def _focus_sessions(spine: SpineStore, since: float, until: float) -> list[tuple[str, float, float]]:
     """(app_key, duration_minutes, start_ts) for each contiguous span
     between one focus.changed observation and the next -- the shared
-    basis for both app_class and session_length."""
+    basis for both app_class and session_length. Uses query_ts_subject()
+    (ts, subject only, no payload decode) -- this is the hot path for
+    the 100k-observation performance requirement (Appendix A.4)."""
     observations = sorted(
-        spine.query(kinds=["focus.changed"], since=since, until=until, limit=1_000_000),
-        key=lambda o: o.ts,
+        spine.query_ts_subject(kinds=["focus.changed"], since=since, until=until),
+        key=lambda row: row[0],
     )
     sessions = []
-    for i, obs in enumerate(observations[:-1]):
-        if not obs.subject:
+    for i, (ts, subject) in enumerate(observations[:-1]):
+        if not subject:
             continue
-        duration_minutes = (observations[i + 1].ts - obs.ts) / 60
+        duration_minutes = (observations[i + 1][0] - ts) / 60
         if duration_minutes > 0:
-            sessions.append((_app_key(obs.subject), duration_minutes, obs.ts))
+            sessions.append((_app_key(subject), duration_minutes, ts))
     return sessions
 
 
@@ -110,27 +112,34 @@ class RhythmStore:
 
     def recompute(self, spine: SpineStore) -> None:
         """Never called on a hot path -- once daily, over the trailing
-        window. Makes zero LLM calls (Appendix A.4 acceptance)."""
+        window. Makes zero LLM calls (Appendix A.4 acceptance).
+
+        Computes the shared focus.changed session list once and hands it
+        to both app_class and session_length -- each independently
+        calling _focus_sessions() would query and sort the same
+        (potentially 100k+ row) window twice for no reason."""
         now = time.time()
         since = now - settings.rhythm_window_days * 86400
+        sessions = _focus_sessions(spine, since, now)
+
         for name, compute in (
-            ("active_hours", self._compute_active_hours),
-            ("app_class", self._compute_app_class),
-            ("sender_importance", self._compute_sender_importance),
-            ("session_length", self._compute_session_length),
+            ("active_hours", lambda s, u: self._compute_active_hours(spine, s, u)),
+            ("app_class", lambda s, u: self._compute_app_class(sessions)),
+            ("sender_importance", lambda s, u: self._compute_sender_importance(spine, s, u)),
+            ("session_length", lambda s, u: self._compute_session_length(sessions)),
         ):
-            value, days_observed, samples, confidence = compute(spine, since, now)
+            value, days_observed, samples, confidence = compute(since, now)
             self._save(name, value, days_observed, samples, confidence)
 
     # -- the four baselines (Appendix A.4) -------------------------------
 
     def _compute_active_hours(self, spine: SpineStore, since: float, until: float):
-        observations = spine.query(since=since, until=until, limit=1_000_000)
+        observations = spine.query_ts_subject(since=since, until=until)
         buckets = [0] * 24
         days = set()
-        for obs in observations:
-            buckets[_local_hour(obs.ts)] += 1
-            days.add(_local_date(obs.ts))
+        for ts, _subject in observations:
+            buckets[_local_hour(ts)] += 1
+            days.add(_local_date(ts))
         samples = sum(buckets)
         peak = max(buckets) if buckets else 0
         normalized = [b / peak for b in buckets] if peak else [0.0] * 24
@@ -138,8 +147,7 @@ class RhythmStore:
         confidence = _confidence(days_observed, samples, _MIN_SAMPLES["active_hours"])
         return {"buckets": normalized}, days_observed, samples, confidence
 
-    def _compute_app_class(self, spine: SpineStore, since: float, until: float):
-        sessions = _focus_sessions(spine, since, until)
+    def _compute_app_class(self, sessions: list[tuple[str, float, float]]):
         by_app: dict[str, list[float]] = defaultdict(list)
         days = set()
         for app_key, minutes, start_ts in sessions:
@@ -162,21 +170,21 @@ class RhythmStore:
         return value, days_observed, total_samples, confidence
 
     def _compute_sender_importance(self, spine: SpineStore, since: float, until: float):
-        received = spine.query(kinds=["mail.received"], since=since, until=until, limit=1_000_000)
-        acted = spine.query(kinds=list(_ACTED_KINDS), since=since, until=until, limit=1_000_000)
+        received = spine.query_ts_subject(kinds=["mail.received"], since=since, until=until)
+        acted = spine.query_ts_subject(kinds=list(_ACTED_KINDS), since=since, until=until)
 
         acted_by_sender: dict[str, int] = defaultdict(int)
-        for obs in acted:
-            if obs.subject:
-                acted_by_sender[obs.subject] += 1
+        for _ts, subject in acted:
+            if subject:
+                acted_by_sender[subject] += 1
 
         received_by_sender: dict[str, int] = defaultdict(int)
         days = set()
-        for obs in received:
-            if not obs.subject:
+        for ts, subject in received:
+            if not subject:
                 continue
-            received_by_sender[obs.subject] += 1
-            days.add(_local_date(obs.ts))
+            received_by_sender[subject] += 1
+            days.add(_local_date(ts))
 
         value = {}
         total_samples = 0
@@ -191,8 +199,7 @@ class RhythmStore:
         confidence = _confidence(days_observed, total_samples, _MIN_SAMPLES["sender_importance"])
         return value, days_observed, total_samples, confidence
 
-    def _compute_session_length(self, spine: SpineStore, since: float, until: float):
-        sessions = _focus_sessions(spine, since, until)
+    def _compute_session_length(self, sessions: list[tuple[str, float, float]]):
         durations = [minutes for _app_key, minutes, _ts in sessions]
         days = {_local_date(ts) for _app_key, _minutes, ts in sessions}
 
@@ -213,24 +220,24 @@ class RhythmStore:
         nothing to scoring rather than a guess."""
         now = time.time()
         since = now - settings.rhythm_window_days * 86400
-        observations = spine.query(kinds=[kind], since=since, until=now, limit=1_000_000)
+        observations = spine.query_ts_subject(kinds=[kind], since=since, until=now)
         if not observations:
             return 0.5
 
-        acted = spine.query(kinds=list(_ACTED_KINDS), since=since, until=now, limit=1_000_000)
+        acted = spine.query_ts_subject(kinds=list(_ACTED_KINDS), since=since, until=now)
         acted_subjects_by_hour: dict[int, set] = defaultdict(set)
-        for obs in acted:
-            if obs.subject:
-                acted_subjects_by_hour[_local_hour(obs.ts)].add(obs.subject)
+        for ts, subject in acted:
+            if subject:
+                acted_subjects_by_hour[_local_hour(ts)].add(subject)
 
         per_hour_total = [0] * 24
         per_hour_acted = [0] * 24
         days = set()
-        for obs in observations:
-            h = _local_hour(obs.ts)
+        for ts, subject in observations:
+            h = _local_hour(ts)
             per_hour_total[h] += 1
-            days.add(_local_date(obs.ts))
-            if obs.subject and obs.subject in acted_subjects_by_hour.get(h, set()):
+            days.add(_local_date(ts))
+            if subject and subject in acted_subjects_by_hour.get(h, set()):
                 per_hour_acted[h] += 1
 
         samples = sum(per_hour_total)

@@ -104,6 +104,17 @@ def test_query_filters_by_kind_and_since(tmp_path):
     assert results[0].dedupe_key == "c"
 
 
+def test_query_ts_subject_matches_query_filters_but_returns_lightweight_tuples(tmp_path):
+    store = SpineStore(tmp_path / "spine.db")
+    store.record(_obs(kind="mail.received", ts=100.0, subject="a@x.com", dedupe_key="a"))
+    store.record(_obs(kind="focus.changed", ts=200.0, subject="VS Code", dedupe_key="b"))
+    store.record(_obs(kind="mail.received", ts=300.0, subject="b@x.com", dedupe_key="c"))
+
+    results = store.query_ts_subject(kinds=["mail.received"], since=150.0)
+
+    assert results == [(300.0, "b@x.com")]
+
+
 def test_latest_returns_most_recent_of_a_kind(tmp_path):
     store = SpineStore(tmp_path / "spine.db")
     store.record(_obs(kind="mail.received", subject="a@x.com", ts=100.0, dedupe_key="a"))
