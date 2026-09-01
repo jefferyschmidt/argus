@@ -277,6 +277,12 @@ class Settings(BaseSettings):
     # (data_dir / "spine.db").
     spine_db_path: str = ""
     spine_retention_days: int = 400
+    # Local repo directories GitActivitySensor scans for new commits and
+    # stale branches (PRD §3.4). Empty by default -- opt-in, like
+    # knowledge_watch_folder above, since it's pointed at arbitrary local
+    # paths.
+    watched_repos: list[str] = []
+    git_stale_branch_days: float = 14.0
 
     @property
     def data_dir(self) -> Path:

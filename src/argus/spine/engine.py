@@ -21,13 +21,21 @@ class SpineEngine:
 
     def _default_sensors(self) -> list[Sensor]:
         from argus.spine.sensors.argus_health import ArgusHealthSensor
+        from argus.spine.sensors.calendar import CalendarSensor
+        from argus.spine.sensors.git_activity import GitActivitySensor
         from argus.spine.sensors.mail import MailSensor
+        from argus.spine.sensors.reminder import ReminderSensor
+        from argus.spine.sensors.routine import RoutineSensor
         from argus.spine.sensors.window_focus import WindowFocusSensor
 
         return [
             WindowFocusSensor(),
             MailSensor(),
             ArgusHealthSensor(),
+            CalendarSensor(),
+            ReminderSensor(),
+            RoutineSensor(),
+            GitActivitySensor(),
         ]
 
     def start(self) -> None:
