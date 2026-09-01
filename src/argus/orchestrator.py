@@ -137,7 +137,12 @@ class Orchestrator:
         )
         return CONVERSATION_PROMPT.rstrip() + ("\n\n" + context if context else "")
 
-    def _on_tool_call(self, name: str, tool_input: dict, result) -> None:
+    def _on_tool_call(self, name: str, tool_input: dict, result, tokens_used: int = 0) -> None:
+        # tokens_used (cumulative input+output tokens through this call) is
+        # unused here -- normal chat has no token budget to enforce, only
+        # agent/runner.py's autonomous runs do. Accepted so this callback
+        # doesn't break now that AnthropicClient passes it to every
+        # on_tool_call, agent mode or not.
         tool = self.tools._tools.get(name)
         event = {
             "type": "tool_call",

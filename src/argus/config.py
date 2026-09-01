@@ -326,6 +326,15 @@ class Settings(BaseSettings):
     # without polling wastefully.
     escalation_poll_seconds: float = 15.0
 
+    # Phase I autonomous tasks (PRD §6). max_concurrent_tasks is given a
+    # default (2) in §9; default_task_budget_tokens/seconds are listed
+    # there with no default value specified -- 100k tokens / 30 minutes is
+    # a reasonable ceiling for an unattended run, chosen here since the
+    # column is NOT NULL and every task needs one.
+    max_concurrent_tasks: int = 2
+    default_task_budget_tokens: int = 100_000
+    default_task_budget_seconds: float = 1800.0
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir

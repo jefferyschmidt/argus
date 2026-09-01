@@ -58,7 +58,7 @@ def test_on_tool_call_invoked_for_each_tool_execution():
     seen = []
     result = client.complete_with_tools(
         "do something", system="sys", tool_registry=registry,
-        tier=Tier.FAST, on_tool_call=lambda name, inp, res: seen.append((name, res)),
+        tier=Tier.FAST, on_tool_call=lambda name, inp, res, **_: seen.append((name, res)),
     )
 
     assert result.text == "done"
@@ -95,7 +95,7 @@ def test_on_tool_call_exception_propagates_and_aborts_the_loop():
     fake_messages.create.return_value = resp
     client._client = MagicMock(messages=fake_messages)
 
-    def blow_up(name, inp, res):
+    def blow_up(name, inp, res, **_):
         raise TimeoutError("budget exceeded")
 
     with pytest.raises(TimeoutError):

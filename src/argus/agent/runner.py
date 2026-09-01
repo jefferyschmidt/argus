@@ -47,31 +47,48 @@ class AgentRunner:
         router: ModelRouter | None = None,
         max_iterations: int = 25,
         max_wall_seconds: float = 600,
+        max_tokens_total: int | None = None,
         daily_cap_usd: float = 5.0,
     ):
         self.tools = tool_registry or build_default_registry()
         self.router = router or ModelRouter(daily_cap_usd=daily_cap_usd)
         self.max_iterations = max_iterations
         self.max_wall_seconds = max_wall_seconds
+        # None means no token cap beyond max_iterations/max_wall_seconds --
+        # existing callers (the `argus agent` CLI) don't set this. Phase I
+        # tasks (argus/tasks/) always do, mapped from budget_tokens.
+        self.max_tokens_total = max_tokens_total
         self.audit = AuditLog(settings.data_dir / "agent_audit.jsonl")
 
-    def run(self, goal: str) -> str:
+    def run(self, goal: str, on_progress=None) -> str:
+        """on_progress(note: str), if given, fires after every tool call --
+        Phase I's TaskWorker uses it to update tasks.progress_note as the
+        run proceeds, so "how's that coming?" is answerable without
+        interrupting the run (PRD §6)."""
         start = time.monotonic()
         self.audit.record(
             "goal_started", goal=goal,
             max_iterations=self.max_iterations, max_wall_seconds=self.max_wall_seconds,
+            max_tokens_total=self.max_tokens_total,
         )
 
-        def on_tool_call(name, tool_input, result):
+        def on_tool_call(name, tool_input, result, tokens_used=0):
             elapsed = time.monotonic() - start
             self.audit.record(
                 "tool_call", name=name, input=tool_input,
-                result=str(result)[:2000], elapsed_s=round(elapsed, 1),
+                result=str(result)[:2000], elapsed_s=round(elapsed, 1), tokens_used=tokens_used,
             )
+            if on_progress is not None:
+                on_progress(f"called {name}")
             if elapsed > self.max_wall_seconds:
                 raise AgentBudgetExceeded(
                     f"exceeded max_wall_seconds={self.max_wall_seconds} "
                     f"(elapsed {elapsed:.0f}s) after tool call to '{name}'"
+                )
+            if self.max_tokens_total is not None and tokens_used > self.max_tokens_total:
+                raise AgentBudgetExceeded(
+                    f"exceeded max_tokens_total={self.max_tokens_total} "
+                    f"(used {tokens_used}) after tool call to '{name}'"
                 )
 
         try:
