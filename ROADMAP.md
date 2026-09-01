@@ -500,3 +500,149 @@ a reasoning change.
 different exposure than a user-launched CLI. Raised and explicitly decided on 2026-09-01:
 the user confirmed this is the right call and the intended direction. Not an open question;
 build D and E accordingly.
+
+---
+
+# Part III — The Enterprise computer reframe, and the status surface
+
+Added 2026-09-01. Two requests that turned out to be one: a richer vocabulary of
+voice-controlled standing rules, modeled on the Starship Enterprise computer rather than
+Jarvis or Alexa; and an adaptive dashboard showing live status for everything Argus tracks.
+They are the same system viewed two ways, and the reframe changes what Phases C and G must
+support.
+
+## Why the reframe is substantive, not cosmetic
+
+- **Jarvis** is a personality — a butler with taste, anticipating because he knows you.
+- **Alexa** is a command parser — utterance to intent to action, no state, no continuity.
+- **The Enterprise computer** is an **instrument**: an always-on, impersonal, absolutely
+  reliable query layer over a continuously instrumented world, which holds standing orders,
+  reports its own confidence honestly, and always has a visible status surface beside it.
+
+That third thing is what Argus is actually trying to be, and it maps onto the Part II
+architecture almost exactly: the instrumented world is the event spine, "it always knows" is
+the world model, standing orders are Phase G, and the visible status surface is Phase H
+below. The characteristic Trek interactions are not "do this task" — they are *query against
+continuous monitoring*, *standing order with a condition*, *analysis over accumulated data*,
+and *honest refusal when data is insufficient*.
+
+## Design principles this adds
+
+**P1 — Honest uncertainty.** "Insufficient data" is a first-class, correct answer. The
+computer never bluffs. This is not a personality note; it is a mechanism: confidence must be
+carried on world-model facts and surfaced when low. Directly addresses the live failure
+already observed on 2026-08-31, where Argus reported a `delete_email` as successful when it
+had not happened.
+
+**P2 — Query over history is a primary mode, not a side effect.** "When did I last hear from
+the Cosm people?" / "How many hours went into GridPick this month?" / "What's still open from
+last week?" The event spine makes these answerable and nothing currently exposes them. Cheap
+once Phase A exists, and one of the highest value-per-effort items on the whole roadmap.
+
+**P3 — Level-of-detail is user-controlled.** "More detail." / "Just the headline." A live
+conversational modifier as well as a stored preference (G2).
+
+**P4 — The computer monitors itself.** Trek reports on its own systems constantly. Argus
+should hold open threads on its own integrations: an expired credential, a dead MCP server,
+API spend. The Yahoo `AUTHENTICATIONFAILED` observed on 2026-08-31 is exactly this case — it
+should have opened one tracked thread, not re-thrown hourly into the log forever.
+
+## Mechanism deltas — what Phases C and G must now support
+
+These came out of the rule brainstorm and are not optional additions; several rule patterns
+people actually want are impossible without them.
+
+**C-delta 1 — Escalation ladders, not just channel routing.** Phase C as written routes an
+item to one channel. Real rules want escalation over time: *"if I don't acknowledge a
+reminder in 10 minutes, say it again; after 30, text me."* The salience engine needs a
+per-item escalation policy with timed steps, not a single routing decision.
+
+**C-delta 2 — The deferral queue must be visible.** Phase C introduces "hold for later,"
+which is invisible without a surface to hold it on. See Phase H: the dashboard is where held
+items live, and that is what makes aggressive deferral safe rather than lossy.
+
+**G-delta 1 — Named modes (composite rules).** *"Focus mode."* / *"I'm heading out."* /
+*"Wind down."* One phrase activating a bundle of rules at once — the direct analogue of "red
+alert" reconfiguring many subsystems with one word. Highest value-per-utterance item in the
+rule system. Requires rules to be groupable and collectively armable/disarmable.
+
+**G-delta 2 — Self-monitoring rules.** Rules whose triggers are Argus's own health, per P4.
+Needs Argus's internals emitting Observations onto the same spine as everything else, which
+is a small Phase A addition with large payoff.
+
+**G-delta 3 — Scoped delegated authority as a rule.** *"You can archive newsletters without
+asking. Never delete anything from a person."* A standing authorization is itself a rule with
+a positive and a negative clause, inspectable and revocable like any other. Unifies Phase E's
+authorization grants with the Phase G rule store rather than keeping two parallel systems.
+
+## Rule patterns worth designing against
+
+Not an exhaustive wishlist — these are the distinct *shapes*, each of which implies a
+mechanism. The full example catalog lives in the architecture artifact.
+
+| Pattern | Example | Requires |
+|---|---|---|
+| Standing notification | "Tell me if anything comes from a .gov address" | A, G |
+| Suppression | "Stop commenting on what window I have open" | A, G1 |
+| Conditional environment | "Bulb blue until I acknowledge the email" | B, E, G3 |
+| Escalation ladder | "Remind me again in 10, text me after 30" | C-delta 1 |
+| Named mode | "Focus mode" | G-delta 1 |
+| Digest & rhythm | "Friday, tell me what I said I'd do and didn't" | B (threads) |
+| Query over history | "When did I last email them?" | A, P2 |
+| Delegated authority | "Archive newsletters, never delete from a person" | E, G-delta 3 |
+| Self-monitoring | "Tell me if any integration breaks" | P4, G-delta 2 |
+
+The Friday one is worth calling out: *"tell me what I said I'd do this week and didn't"* is
+impossible today and nearly free once threads exist, because a spoken commitment is just a
+thread that never closed.
+
+## Phase H — The status surface (adaptive dashboard)
+
+**Depends on:** B primarily, C for prominence and the deferral queue.
+
+**The core problem with today's UI:** `argus/ui/` is a pure **event stream** — `events.py`
+publishes transient events and `index.html` reacts to them. There is no state endpoint at
+all. Events tell you what just *happened*; a dashboard must show what *is*. That is the exact
+same past-versus-present error diagnosed at the memory layer in Part II, repeated one layer
+up. The fix is symmetrical: add a state projection, don't bolt widgets onto the firehose.
+
+**Not hand-built widgets — a rendering of the world model.** This is what makes it adaptive
+rather than merely configurable:
+
+1. **Composition** — widgets exist because something is being tracked. Add a sensor, a widget
+   becomes available; no thermostat, no thermostat widget. New capabilities surface
+   automatically instead of needing UI work each time.
+2. **Prominence** — the salience engine already ranks. Layout follows that ranking, so a
+   quiet Tuesday genuinely looks different from a day with three escalating items. This is
+   the adaptive part with teeth.
+3. **Mode-aware** — "focus mode" collapses it to one thing; "heading out" surfaces a
+   different set entirely. Falls out of G-delta 1 for free.
+
+**Widget set to start:**
+
+- **Open threads** — the core widget. Count plus top items, each acknowledgeable.
+- **Important email** — count and senders, feeding the same thread list.
+- **Next obligations** — the calendar horizon from the world model.
+- **Home & devices** — thermostat setpoint, lights, locks; current vs. rule-driven state.
+- **Active rules** — which standing orders exist, and which are *currently firing*. Serves
+  G-h introspection ("why did you do that?") visually.
+- **System health** — integrations, credentials, API spend (P4).
+- **Held items** — the Phase C deferral queue, made visible per C-delta 2.
+- **Current focus** — what you're on and for how long, from the world model.
+
+**Two properties that make it a system rather than a readout:**
+
+- **Every widget is voice-addressable, and voice is the query layer over it.** "More on that
+  email" refers to the same object the widget shows. The dashboard and the voice interface
+  are two projections of one world model, never two separate stores — that is precisely the
+  LCARS relationship, and getting it wrong (a dashboard with its own state) would recreate
+  the split-registry class of bug already fixed once in Part I.
+- **Acknowledgment is an interaction.** Clicking "got it" on an email widget closes the
+  thread, which resolves the bulb rule instance watching it, which restores the light. The
+  full loop closes visually, and that single path exercises B, C, G3 and H together — making
+  it the natural end-to-end integration test for the whole architecture.
+
+**Build note:** this extends the existing console rather than replacing it. The realistic
+first step is a `GET /api/state` returning a world-model snapshot plus incremental updates
+over the existing event bus — the transport and the page already exist; what is missing is
+something with actual state to render.
