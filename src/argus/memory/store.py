@@ -96,6 +96,19 @@ CREATE TABLE IF NOT EXISTS threads (
     metadata          TEXT    NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_threads_open ON threads(closed_ts, last_activity_ts);
+
+-- PRD.md Appendix A.4 -- derived behavioral baselines, recomputed once
+-- daily from the spine, never on a hot path. One row per named baseline;
+-- `name` is one of 'active_hours' | 'app_class' | 'sender_importance' |
+-- 'session_length'.
+CREATE TABLE IF NOT EXISTS rhythms (
+    name          TEXT PRIMARY KEY,
+    value         TEXT NOT NULL,
+    days_observed INTEGER NOT NULL,
+    samples       INTEGER NOT NULL,
+    confidence    REAL NOT NULL,
+    computed_ts   REAL NOT NULL
+);
 """
 
 

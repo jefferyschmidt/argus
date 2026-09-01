@@ -284,6 +284,16 @@ class Settings(BaseSettings):
     watched_repos: list[str] = []
     git_stale_branch_days: float = 14.0
 
+    # Phase B world model -- rhythms (PRD Appendix A.4). Below
+    # rhythm_min_days of history, every baseline reports confidence=0.0
+    # and must never be asserted as fact (ROADMAP.md P1).
+    rhythm_window_days: int = 30
+    rhythm_min_days: int = 14
+    rhythm_min_confidence: float = 0.5
+    # app_class baseline: an app whose mean contiguous session is at
+    # least this many minutes is classified "focus", else "browse".
+    focus_session_minutes: float = 12.0
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir
