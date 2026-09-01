@@ -1,3 +1,4 @@
+import pathlib
 import threading
 import time
 
@@ -137,3 +138,28 @@ def test_record_returns_none_rather_than_raising_when_db_unwritable(tmp_path):
     store._conn = _BoomConnection()
 
     assert store.record(_obs(dedupe_key="whatever")) is None
+
+
+def test_record_never_raises_on_an_unserializable_payload(tmp_path):
+    """Found at the Phase A gate review: record() promised it never raises
+    to its caller, but json.dumps on a payload holding a datetime/Path/set
+    raised TypeError straight through -- past the `except sqlite3.Error`,
+    which doesn't cover it. Sensor.run() would have caught it, but the rest
+    of that poll's observations were lost and the traceback pointed at the
+    sensor rather than the payload; and every non-sensor caller added from
+    Phase B onward has no such catch at all. Encodes the mechanism (a
+    non-JSON type in the payload), not just the symptom."""
+    import datetime
+
+    store = SpineStore(tmp_path / "spine.db")
+    obs = Observation(
+        source="probe", kind="focus.changed", ts=1.0,
+        payload={"when": datetime.datetime(2026, 9, 1), "where": pathlib.Path("C:/x"), "tags": {"a"}},
+    )
+
+    row_id = store.record(obs)
+
+    assert row_id is not None, "the observation must still be recorded, not dropped"
+    stored = store.query(kinds=["focus.changed"])[0]
+    # Lossy-but-present beats absent: the values survive as strings.
+    assert "2026-09-01" in stored.payload["when"]

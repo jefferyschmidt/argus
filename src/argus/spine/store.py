@@ -66,14 +66,32 @@ class SpineStore:
         """Returns the new row id, or None if `dedupe_key` already existed
         (a no-op re-report -- see PRD §3.2, this replaces every in-process
         "already handled" set, P7) or the write failed. Never raises to
-        its caller: a sensor failing to write must not kill the sensor."""
+        its caller: a sensor failing to write must not kill the sensor.
+
+        `default=str` on the payload dump is load-bearing, not cosmetic:
+        without it a payload holding a datetime/Path/set (an easy mistake
+        for a sensor author, and one that only shows up at runtime on the
+        specific branch that builds it) raised TypeError out of this
+        method, contradicting the guarantee above. Sensor.run() would have
+        caught it, but the whole poll's remaining observations were lost
+        and the traceback blamed the sensor rather than the payload -- and
+        every non-sensor caller added from Phase B onward (thread openers,
+        task completion, salience) has no such safety net at all.
+        Serializing lossily beats dropping the observation, and matches
+        what ui/events.py already does for the same reason. The broadened
+        except is belt-and-braces for anything else non-serializable."""
+        try:
+            payload = json.dumps(obs.payload, default=str)
+        except (TypeError, ValueError):
+            log.exception("Unserializable payload on %s from %s -- recording it empty", obs.kind, obs.source)
+            payload = "{}"
         try:
             with self._lock:
                 cur = self._conn.execute(
                     "INSERT OR IGNORE INTO observations "
                     "(ts, source, kind, subject, payload, confidence, dedupe_key) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (obs.ts, obs.source, obs.kind, obs.subject, json.dumps(obs.payload), obs.confidence, obs.dedupe_key),
+                    (obs.ts, obs.source, obs.kind, obs.subject, payload, obs.confidence, obs.dedupe_key),
                 )
                 self._conn.commit()
                 if cur.rowcount == 0:
