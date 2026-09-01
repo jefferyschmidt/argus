@@ -294,6 +294,13 @@ class Settings(BaseSettings):
     # least this many minutes is classified "focus", else "browse".
     focus_session_minutes: float = 12.0
 
+    # Phase B world model -- the snapshot (PRD §4.3). horizon_hours bounds
+    # how far ahead the calendar horizon looks; world_snapshot_ttl_seconds
+    # is how long a snapshot is reused before recomputing (invalidated
+    # early on thread open/close).
+    horizon_hours: float = 12.0
+    world_snapshot_ttl_seconds: float = 5.0
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir
