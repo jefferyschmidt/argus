@@ -270,6 +270,14 @@ class Settings(BaseSettings):
     memory_consolidation_enabled: bool = True
     memory_consolidation_poll_seconds: float = 600.0  # 10 minutes
 
+    # Phase A event spine (PRD.md §3): one durable, queryable timeline of
+    # everything Argus observes. A SEPARATE sqlite file from argus.db --
+    # see PRD §3.2/P1, sensors have no interaction-lock equivalent to make
+    # sharing memory/store.py's connection safe. Empty = default location
+    # (data_dir / "spine.db").
+    spine_db_path: str = ""
+    spine_retention_days: int = 400
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir
