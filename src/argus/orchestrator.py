@@ -87,7 +87,27 @@ class Orchestrator:
     ):
         self.memory = MemoryManager(session_id=session_id)
         self.router = ModelRouter(daily_cap_usd=daily_cap_usd)
-        self.tools = tool_registry or build_default_registry(router=self.router)
+
+        # Phase I autonomous tasks (PRD §6), off by default
+        # (enable_task_runner). Exposed as self.task_runner (not just
+        # closed over inside the tool registry) so ProactiveEngine --
+        # constructed from this orchestrator, after it -- can reach the
+        # same instance for startup reconciliation rather than building a
+        # second one (P4). Its own SpineStore: ProactiveEngine's doesn't
+        # exist yet at this point in construction, and two independent
+        # SpineStore instances to the same file are safe under WAL (each
+        # guards its own connection with its own lock, PRD §5.2's
+        # generalized P1 rule) -- a minor, documented exception to P4
+        # forced by that ordering, not a duplicated-and-unsynchronized
+        # connection.
+        self.task_runner = None
+        if settings.enable_task_runner:
+            from argus.spine.store import SpineStore
+            from argus.tasks.store import TaskStore
+            from argus.tasks.worker import TaskRunner
+            self.task_runner = TaskRunner(TaskStore(), SpineStore(), self.router)
+
+        self.tools = tool_registry or build_default_registry(router=self.router, task_runner=self.task_runner)
         self.last_tier: Tier | None = None
         self.last_model: str | None = None
         self.last_expression: str | None = None

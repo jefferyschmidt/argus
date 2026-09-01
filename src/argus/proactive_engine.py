@@ -106,10 +106,19 @@ class ProactiveEngine:
         all -- turning "proactive features are degraded" into "the
         assistant does not run", which is the opposite of this repo's
         fail-soft convention for optional subsystems."""
-        for name, starter in (
+        starters = [
             ("spine sensors", self.spine_engine.start),
             ("escalation scheduler", self.escalation_scheduler.start),
-        ):
+        ]
+        # Phase I autonomous tasks (PRD §6): off by default, and only
+        # present at all when Orchestrator constructed one (enable_task_runner).
+        # reconcile_on_startup() -- not a poll loop of its own, unlike the
+        # other two -- is what "starting" this subsystem means: any task
+        # left `running` from before a restart becomes `failed`, never
+        # auto-resumed.
+        if self.orchestrator.task_runner is not None:
+            starters.append(("task runner reconciliation", self.orchestrator.task_runner.reconcile_on_startup))
+        for name, starter in starters:
             try:
                 starter()
             except Exception:

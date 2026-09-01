@@ -12,6 +12,7 @@ def _orchestrator():
     orch = MagicMock()
     orch.router = MagicMock()
     orch.memory = MagicMock()
+    orch.task_runner = None  # matches the real default (enable_task_runner=False)
     return orch
 
 
@@ -106,3 +107,68 @@ def test_routine_worker_still_receives_speak_fn_and_lock_directly():
 def test_email_watcher_can_open_threads():
     engine = ProactiveEngine(_orchestrator(), speak_fn=MagicMock(), interaction_lock=MagicMock())
     assert engine.email_watcher._threads is engine.threads
+
+
+# -- task runner reconciliation (Phase I, PRD §6) ----------------------
+
+def test_start_does_not_touch_task_runner_when_absent():
+    orch = _orchestrator()
+    engine = ProactiveEngine(orch, speak_fn=MagicMock(), interaction_lock=MagicMock())
+    for worker in (
+        engine.context_awareness, engine.email_watcher, engine.routine_worker,
+        engine.knowledge_watcher, engine.research_digest, engine.stuck_detection,
+        engine.consolidation_worker,
+    ):
+        worker.run = MagicMock()
+    engine.spine_engine.start = MagicMock()
+    engine.escalation_scheduler.start = MagicMock()
+
+    engine.start()  # must not raise just because orch.task_runner is None
+    time.sleep(0.1)
+
+
+def test_start_reconciles_the_task_runner_when_present():
+    orch = _orchestrator()
+    orch.task_runner = MagicMock()
+    engine = ProactiveEngine(orch, speak_fn=MagicMock(), interaction_lock=MagicMock())
+    for worker in (
+        engine.context_awareness, engine.email_watcher, engine.routine_worker,
+        engine.knowledge_watcher, engine.research_digest, engine.stuck_detection,
+        engine.consolidation_worker,
+    ):
+        worker.run = MagicMock()
+    engine.spine_engine.start = MagicMock()
+    engine.escalation_scheduler.start = MagicMock()
+
+    engine.start()
+    time.sleep(0.1)
+
+    orch.task_runner.reconcile_on_startup.assert_called_once()
+
+
+def test_task_runner_reconciliation_failure_does_not_stop_other_subsystems():
+    """PRD §5.2's isolation rule: 'a failure there must degrade
+    proactivity, never prevent Argus from starting.' A crashing
+    reconcile_on_startup() must not take spine sensors, the escalation
+    scheduler, or any worker down with it."""
+    orch = _orchestrator()
+    orch.task_runner = MagicMock()
+    orch.task_runner.reconcile_on_startup.side_effect = RuntimeError("db exploded")
+    engine = ProactiveEngine(orch, speak_fn=MagicMock(), interaction_lock=MagicMock())
+    workers = (
+        engine.context_awareness, engine.email_watcher, engine.routine_worker,
+        engine.knowledge_watcher, engine.research_digest, engine.stuck_detection,
+        engine.consolidation_worker,
+    )
+    for worker in workers:
+        worker.run = MagicMock()
+    engine.spine_engine.start = MagicMock()
+    engine.escalation_scheduler.start = MagicMock()
+
+    engine.start()  # must not raise
+    time.sleep(0.2)
+
+    engine.spine_engine.start.assert_called_once()
+    engine.escalation_scheduler.start.assert_called_once()
+    for worker in workers:
+        worker.run.assert_called_once()

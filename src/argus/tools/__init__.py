@@ -57,13 +57,14 @@ from argus.tools.self_improve import (
     run_own_tests_tool,
     write_own_source_tool,
 )
+from argus.tools.tasks import _build_cancel_task, _build_start_task, _build_task_status
 from argus.tools.undo import list_recent_writes_tool, undo_last_write_tool
 from argus.tools.web_content import close_show_window_tool, fetch_image_tool, show_website_tool
 
 log = logging.getLogger(__name__)
 
 
-def build_default_registry(router=None) -> ToolRegistry:
+def build_default_registry(router=None, task_runner=None) -> ToolRegistry:
     registry = ToolRegistry()
     for tool in (
         read_file_tool,
@@ -126,6 +127,18 @@ def build_default_registry(router=None) -> ToolRegistry:
     if router is not None:
         registry.register(_build_second_opinion(router))
         registry.register(_build_scan_document(router))
+
+    # Phase I autonomous tasks (PRD §6): off by default (enable_task_runner,
+    # §9) -- only registered when both the flag is on and a live TaskRunner
+    # was actually supplied, same "only if the collaborator exists" pattern
+    # as second_opinion/scan_document above. A fresh TaskRunner per call
+    # would lose the worker pool's concurrency bookkeeping, so this never
+    # builds one itself -- see Orchestrator.__init__ for where the one
+    # shared instance is constructed.
+    if settings.enable_task_runner and task_runner is not None:
+        registry.register(_build_start_task(task_runner))
+        registry.register(_build_task_status(task_runner))
+        registry.register(_build_cancel_task(task_runner))
 
     # Plugin tools (README item 13): auto-discovered from argus/plugins/,
     # no core-code changes needed to add a new one. A plugin can't

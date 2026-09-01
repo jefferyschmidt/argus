@@ -334,6 +334,10 @@ class Settings(BaseSettings):
     max_concurrent_tasks: int = 2
     default_task_budget_tokens: int = 100_000
     default_task_budget_seconds: float = 1800.0
+    # PRD §9: new subsystems ship disabled by default where they change
+    # behavior. Gates whether start_task/task_status/cancel_task are even
+    # registered, and whether Orchestrator constructs a TaskRunner at all.
+    enable_task_runner: bool = False
 
     @property
     def data_dir(self) -> Path:
