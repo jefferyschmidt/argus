@@ -1,7 +1,6 @@
 import time
 from unittest.mock import patch
 
-from argus.memory.store import get_connection
 from argus.spine.observation import Observation
 from argus.spine.store import SpineStore
 from argus.world.model import WorldModel
@@ -10,9 +9,8 @@ from argus.world.threads import ThreadStore
 
 
 def _model(tmp_path) -> WorldModel:
-    conn = get_connection(tmp_path / "argus.db")
     spine = SpineStore(tmp_path / "spine.db")
-    return WorldModel(spine=spine, threads=ThreadStore(spine, tmp_path / "argus.db"), rhythms=RhythmStore(conn))
+    return WorldModel(spine=spine, threads=ThreadStore(spine, tmp_path / "argus.db"), rhythms=RhythmStore(tmp_path / "argus.db"))
 
 
 # -- focus ------------------------------------------------------------------

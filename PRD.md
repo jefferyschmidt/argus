@@ -414,6 +414,18 @@ A decision may carry timed steps ("repeat in 10 min, push after 30"). One schedu
 owns all pending escalations; each step re-checks whether the thread has since closed and
 aborts if so. Escalations are persisted and reconciled on startup.
 
+**P1 applies to EVERY store reachable from a worker thread, not just the spine.** This has now
+been found three times — `ThreadStore` (Phase B gate), `RhythmStore` (U-C4 gate), and avoided
+proactively for `RuleStore`. After U-C4, five worker threads submit candidates concurrently and
+`SalienceEngine.decide()` reads rhythms on every one, while the orchestrator uses `argus.db`
+from its own thread. Any store constructed with `memory.store.get_connection()` and touched off
+the interaction-locked path is unsafe. **New rule: a store reachable from salience, a sensor, a
+reap timer, or the UI gets its own connection + lock + WAL, mirroring `RuleStore`.**
+
+**`ProactiveEngine` construction is now on the startup path of both voice loops.** It opens four
+databases and starts two subsystems. Every start is individually isolated: a failure there must
+degrade proactivity, never prevent Argus from starting.
+
 ### U-C4 — Retire the workers' own judgment (do this last in Phase C)
 
 Only after every criterion below passes: route each proactive worker's output through

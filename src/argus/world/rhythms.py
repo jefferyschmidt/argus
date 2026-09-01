@@ -10,9 +10,11 @@ import json
 import logging
 import sqlite3
 import statistics
+import threading
 import time
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 
 from argus.config import settings
 from argus.spine.store import SpineStore
@@ -86,12 +88,42 @@ def _focus_sessions(spine: SpineStore, since: float, until: float) -> list[tuple
     return sessions
 
 
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS rhythms (
+    name          TEXT PRIMARY KEY,
+    value         TEXT NOT NULL,
+    days_observed INTEGER NOT NULL,
+    samples       INTEGER NOT NULL,
+    confidence    REAL NOT NULL,
+    computed_ts   REAL NOT NULL
+);
+"""
+
+
 class RhythmStore:
-    def __init__(self, conn: sqlite3.Connection):
-        self.conn = conn
+    """Own connection + lock + WAL, mirroring RuleStore and SpineStore
+    (P1). Took a shared connection until the U-C4 gate review, which is
+    when it became live and unsafe: SalienceEngine.decide() reads rhythms
+    on every candidate, and after U-C4 five different worker threads
+    submit candidates concurrently -- while the orchestrator uses that
+    same argus.db connection for memory from its own thread. That shared
+    connection is only safe under _interaction_lock, which covers none of
+    those readers. Same finding as the one fixed for ThreadStore at the
+    Phase B gate; it just reappeared here."""
+
+    def __init__(self, db_path: Path | None = None) -> None:
+        self._path = db_path or (settings.data_dir / "argus.db")
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(self._path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        with self._lock:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.executescript(SCHEMA)
+            self._conn.commit()
 
     def get(self, name: str) -> dict | None:
-        row = self.conn.execute("SELECT * FROM rhythms WHERE name = ?", (name,)).fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM rhythms WHERE name = ?", (name,)).fetchone()
         if row is None:
             return None
         return {
@@ -101,14 +133,15 @@ class RhythmStore:
         }
 
     def _save(self, name: str, value: dict, days_observed: int, samples: int, confidence: float) -> None:
-        self.conn.execute(
-            "INSERT INTO rhythms (name, value, days_observed, samples, confidence, computed_ts) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(name) DO UPDATE SET value = excluded.value, days_observed = excluded.days_observed, "
-            "samples = excluded.samples, confidence = excluded.confidence, computed_ts = excluded.computed_ts",
-            (name, json.dumps(value), days_observed, samples, confidence, time.time()),
-        )
-        self.conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO rhythms (name, value, days_observed, samples, confidence, computed_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET value = excluded.value, days_observed = excluded.days_observed, "
+                "samples = excluded.samples, confidence = excluded.confidence, computed_ts = excluded.computed_ts",
+                (name, json.dumps(value), days_observed, samples, confidence, time.time()),
+            )
+            self._conn.commit()
 
     def recompute(self, spine: SpineStore) -> None:
         """Never called on a hot path -- once daily, over the trailing

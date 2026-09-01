@@ -1,7 +1,6 @@
 import threading
 from dataclasses import dataclass
 
-from argus.memory.store import get_connection
 from argus.rules.matcher import RuleMatcher
 from argus.rules.store import RuleStore
 from argus.salience.budget import InterruptionBudget
@@ -29,10 +28,9 @@ class _FakeObs:
 
 
 def _dispatcher(tmp_path, speak_fn=None, cap=3):
-    conn = get_connection(tmp_path / "argus.db")
     spine = SpineStore(tmp_path / "spine.db")
     threads = ThreadStore(spine, tmp_path / "argus.db")
-    rhythms = RhythmStore(conn)
+    rhythms = RhythmStore(tmp_path / "argus.db")
     world_model = WorldModel(spine=spine, threads=threads, rhythms=rhythms)
     matcher = RuleMatcher(RuleStore(tmp_path / "argus.db"))
     budget = InterruptionBudget(tmp_path / "argus.db")

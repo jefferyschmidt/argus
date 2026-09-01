@@ -1,6 +1,9 @@
+import logging
 import threading
 
 from argus.orchestrator import Orchestrator
+
+log = logging.getLogger(__name__)
 
 
 class ProactiveEngine:
@@ -36,7 +39,6 @@ class ProactiveEngine:
     def __init__(self, orchestrator: Orchestrator, speak_fn, interaction_lock: threading.Lock):
         self.orchestrator = orchestrator
 
-        from argus.memory.store import get_connection
         from argus.rules.matcher import RuleMatcher
         from argus.rules.store import RuleStore
         from argus.salience.budget import InterruptionBudget
@@ -53,7 +55,7 @@ class ProactiveEngine:
         self.spine = SpineStore()
         self.spine_engine = SpineEngine(store=self.spine)
         self.threads = ThreadStore(self.spine)
-        self.rhythms = RhythmStore(get_connection())
+        self.rhythms = RhythmStore()
         self.world_model = WorldModel(spine=self.spine, threads=self.threads, rhythms=self.rhythms)
 
         self.rule_matcher = RuleMatcher(RuleStore())
@@ -94,9 +96,24 @@ class ProactiveEngine:
         the spine sensors and the escalation scheduler. Split from
         __init__ so a caller can construct the engine (and reach
         individual workers, e.g. for suppress_current()/check_now()-style
-        on-demand triggers) before committing to actually running them."""
-        self.spine_engine.start()
-        self.escalation_scheduler.start()
+        on-demand triggers) before committing to actually running them.
+
+        Each start is isolated. Before U-C4 this method started seven
+        cheap in-process workers; it now also starts the spine sensors and
+        the escalation scheduler, and both VoiceLoop and RealtimeVoiceLoop
+        construct a ProactiveEngine during their own __init__. An
+        unhandled failure here would therefore stop Argus from starting at
+        all -- turning "proactive features are degraded" into "the
+        assistant does not run", which is the opposite of this repo's
+        fail-soft convention for optional subsystems."""
+        for name, starter in (
+            ("spine sensors", self.spine_engine.start),
+            ("escalation scheduler", self.escalation_scheduler.start),
+        ):
+            try:
+                starter()
+            except Exception:
+                log.exception("Could not start %s -- continuing without it", name)
         for worker in (
             self.context_awareness,
             self.email_watcher,
@@ -106,4 +123,7 @@ class ProactiveEngine:
             self.stuck_detection,
             self.consolidation_worker,
         ):
-            threading.Thread(target=worker.run, daemon=True).start()
+            try:
+                threading.Thread(target=worker.run, daemon=True).start()
+            except Exception:
+                log.exception("Could not start %s -- continuing without it", type(worker).__name__)

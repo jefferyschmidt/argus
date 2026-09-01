@@ -1,13 +1,12 @@
 import time
 
-from argus.memory.store import get_connection
 from argus.spine.observation import Observation
 from argus.spine.store import SpineStore
 from argus.world.rhythms import RhythmStore
 
 
 def _rhythm_store(tmp_path) -> RhythmStore:
-    return RhythmStore(get_connection(tmp_path / "argus.db"))
+    return RhythmStore(tmp_path / "argus.db")
 
 
 def _spine(tmp_path) -> SpineStore:
@@ -191,9 +190,9 @@ def test_recompute_persists_and_get_reads_back_across_restart(tmp_path):
     spine = _spine(tmp_path)
     _record(spine, "mail.received", time.time(), subject="a@x.com", key="a")
 
-    RhythmStore(get_connection(db_path)).recompute(spine)
+    RhythmStore(db_path).recompute(spine)
 
-    reopened = RhythmStore(get_connection(db_path))
+    reopened = RhythmStore(db_path)
     row = reopened.get("active_hours")
     assert row is not None
     assert row["samples"] >= 1
@@ -202,7 +201,7 @@ def test_recompute_persists_and_get_reads_back_across_restart(tmp_path):
 def test_recompute_overwrites_previous_value(tmp_path):
     db_path = tmp_path / "argus.db"
     spine = _spine(tmp_path)
-    store = RhythmStore(get_connection(db_path))
+    store = RhythmStore(db_path)
 
     _record(spine, "mail.received", time.time(), subject="a@x.com", key="a")
     store.recompute(spine)
@@ -242,3 +241,35 @@ def test_recompute_over_100k_observations_is_fast_and_makes_no_llm_calls(tmp_pat
     elapsed = time.monotonic() - start
 
     assert elapsed < 5.0
+
+
+def test_rhythm_store_survives_concurrent_reads_from_many_threads(tmp_path):
+    """Found at the U-C4 gate. RhythmStore took a shared argus.db
+    connection with no lock, and after U-C4 SalienceEngine.decide() reads
+    it on every candidate -- from five worker threads at once, while the
+    orchestrator uses that same connection for memory from its own thread.
+    That connection is only safe under _interaction_lock, which covers
+    none of those readers. Same P1 finding fixed for ThreadStore at the
+    Phase B gate, reappearing here. Encodes the mechanism (concurrent
+    access from independent threads), not a symptom."""
+    import threading as _threading
+
+    store = RhythmStore(tmp_path / "argus.db")
+    store._save("active_hours", {"buckets": [0.5] * 24}, days_observed=30, samples=999, confidence=1.0)
+
+    errors: list[Exception] = []
+
+    def hammer():
+        try:
+            for _ in range(40):
+                assert store.get("active_hours")["confidence"] == 1.0
+        except Exception as exc:  # pragma: no cover - only on regression
+            errors.append(exc)
+
+    threads = [_threading.Thread(target=hammer) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+
+    assert not errors, f"concurrent reads failed: {errors[0]!r}"
