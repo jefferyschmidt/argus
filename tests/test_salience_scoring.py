@@ -371,3 +371,47 @@ def test_interruption_cost_active_recently_not_focused(tmp_path):
     spine.record(Observation(source="window_focus", kind="focus.changed", ts=now - 60, subject="x", dedupe_key="a"))
 
     assert interruption_cost(_empty_snapshot(), spine, now=now, rhythms=None) == 0.2
+
+
+def _snapshot_focused_for_minutes(minutes):
+    from argus.world.model import FocusState
+
+    snap = _empty_snapshot()
+    snap.focus = FocusState(title="Code - argus", minutes=minutes, confidence=1.0)
+    return snap
+
+
+def _focus_rhythms():
+    return {"app_class": {"value": {"code": {"class": "focus", "mean_minutes": 40.0, "n": 99}}}}
+
+
+def test_listening_paused_and_quiet_mode_drive_interruption_cost(monkeypatch):
+    """Found at the Phase C gate. Both signals exist in ui.commands but
+    weren't consulted, so a muted mic scored the same as an idle desk
+    (0.3) instead of 1.0 -- a 0.245 swing against a 0.62 speak threshold.
+    Also pins the ordering correction: listening-paused must beat the
+    focused row, which A.2's own table listed above it despite "first
+    match wins"."""
+    from argus.salience import scoring
+
+    snapshot = _snapshot_focused_for_minutes(40)   # would otherwise score 0.7
+
+    monkeypatch.setattr("argus.ui.commands.is_listening_paused", lambda: True)
+    monkeypatch.setattr("argus.ui.commands.is_quiet_mode", lambda: False)
+    assert scoring.interruption_cost(snapshot, None, _focus_rhythms(), now=0.0) == 1.0
+
+    monkeypatch.setattr("argus.ui.commands.is_listening_paused", lambda: False)
+    monkeypatch.setattr("argus.ui.commands.is_quiet_mode", lambda: True)
+    assert scoring.interruption_cost(snapshot, None, _focus_rhythms(), now=0.0) == 0.6
+
+
+def test_interruption_cost_survives_ui_state_being_unreadable(monkeypatch):
+    """Scoring must never fail because the UI layer did."""
+    from argus.salience import scoring
+
+    def boom():
+        raise RuntimeError("ui gone")
+
+    monkeypatch.setattr("argus.ui.commands.is_listening_paused", boom)
+    cost = scoring.interruption_cost(_snapshot_focused_for_minutes(40), None, _focus_rhythms(), now=0.0)
+    assert cost == 0.7

@@ -835,6 +835,18 @@ the fraction of this kind historically handled in the current hour bucket, norma
 
 **`rule_bias`** — sum of matching `boost` rule amounts, clamped to `-1..+1`.
 
+**`interruption_cost`** — first match wins. **Order corrected 2026-09-01:** every `1.0` row
+must precede the weaker ones, or "first match wins" is meaningless — as originally written,
+`listening paused` (1.0) sat below `focused` (0.7) and never won.
+
+**Binding requirement before U-C4 (unit 18).** Two rows below have no signal source yet. Until
+they do, both fall through to `otherwise` (0.3): the meeting row loses 0.245 of score
+(`W_COST × 0.7`) against a 0.62 threshold, which means Argus interrupting *during meetings*.
+`CalendarSensor` must carry an end time on `calendar.event_upcoming` (or emit
+`calendar.event_started` / `calendar.event_ended`) so the meeting row becomes reachable.
+The call row stays unreachable until Phase F's call sensor and is accepted as such.
+Quiet mode and listening-paused are wired as of the Phase C gate.
+
 **`interruption_cost`** — first match wins:
 
 | state | cost |

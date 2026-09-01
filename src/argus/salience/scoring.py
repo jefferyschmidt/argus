@@ -104,16 +104,41 @@ def staleness(candidate: Candidate, snapshot: WorldSnapshot, now: float) -> floa
 
 
 # -- interruption_cost ---------------------------------------------------
-# Appendix A.2's table, first match wins. Some rows (in a meeting, on a
-# call, quiet mode, listening paused) have no signal source yet in this
-# build -- calendar.event_upcoming carries no end time, there's no call
-# sensor, and quiet-mode/listening-paused live in voice/ui state this
-# scoring module has no reason to import. Those rows are structurally
-# present (so the shape matches A.2 exactly and a future signal just
-# slots in) but currently unreachable; only the rows derivable from the
-# spine/rhythms/snapshot this module already receives are live.
+# Appendix A.2's table, first match wins. Two rows still have no signal
+# source in this build and are structurally present but unreachable:
+# "in a meeting" (calendar.event_upcoming carries no end time -- see the
+# pre-U-C4 requirement in PRD Sec 5.2) and "on a call" (no call sensor
+# until Phase F). A future signal slots straight in.
+#
+# Quiet mode and listening-paused ARE wired, below. They were initially
+# left out on the reasoning that they live in voice/UI state this module
+# has no reason to import -- a fair instinct, but wrong on the merits: a
+# module deciding whether to speak has every reason to know whether the
+# mic is off. Unwired, both fell through to "otherwise" (0.3) instead of
+# 1.0/0.6, a 0.245 score swing against a 0.62 threshold, i.e. Argus
+# interrupting while explicitly muted.
 
 def interruption_cost(snapshot: WorldSnapshot, spine, rhythms, now: float) -> float:
+    # Checked before the focus row, correcting A.2's own table order: the
+    # table says "first match wins" but lists listening-paused (1.0) below
+    # focused (0.7), so a focused user with the mic off scored 0.7 instead
+    # of 1.0. Every 1.0 row has to precede the weaker ones for "first
+    # match wins" to mean anything.
+    #
+    # Imported inside the function, not at module scope, so tests can
+    # patch it without process-global UI state leaking between them; and
+    # wrapped, because scoring must never fail on account of the UI (repo
+    # convention: optional things fail soft).
+    try:
+        from argus.ui import commands as ui_commands
+
+        if ui_commands.is_listening_paused():
+            return 1.0
+        if ui_commands.is_quiet_mode():
+            return 0.6
+    except Exception:
+        log.exception("Could not read UI state for interruption_cost -- treating as neither")
+
     if snapshot.focus is not None and snapshot.focus.minutes >= 25:
         app_row = (rhythms.get("app_class") or {}).get("value", {}).get(_app_key(snapshot.focus.title)) if rhythms else None
         if app_row and app_row.get("class") == "focus":
