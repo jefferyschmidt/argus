@@ -4,7 +4,7 @@ from pathlib import Path
 
 from argus.config import settings
 from argus.ingest import SUPPORTED_EXTENSIONS, ingest_file
-from argus.ui import events as ui_events
+from argus.salience.scoring import Candidate, base_urgency_for
 
 log = logging.getLogger(__name__)
 
@@ -28,9 +28,8 @@ class KnowledgeWatcher:
     restarts -- acceptable for a first pass, same tradeoff EmailWatcher
     makes with its in-memory announced-set."""
 
-    def __init__(self, speak_fn=None, interaction_lock=None):
-        self._speak_fn = speak_fn
-        self._interaction_lock = interaction_lock
+    def __init__(self, dispatcher):
+        self._dispatcher = dispatcher
         self._seen_mtimes: dict[str, float] = {}
         self._first_check = True
 
@@ -67,22 +66,17 @@ class KnowledgeWatcher:
                 newly_ingested.append(path.name)
 
         if newly_ingested and not self._first_check:
-            self._announce(newly_ingested)
+            self._submit(newly_ingested)
         self._first_check = False
 
-    def _announce(self, filenames: list[str]) -> None:
+    def _submit(self, filenames: list[str]) -> None:
         if len(filenames) == 1:
             text = f"I just read through {filenames[0]} and added it to memory."
         else:
             text = f"I just read through {len(filenames)} new files and added them to memory."
 
-        if self._interaction_lock is not None and not self._interaction_lock.acquire(blocking=False):
-            return
-        try:
-            ui_events.publish({"type": "transcript", "role": "argus", "text": text})
-            ui_events.publish({"type": "caption", "text": text})
-            if self._speak_fn:
-                self._speak_fn(text)
-        finally:
-            if self._interaction_lock is not None:
-                self._interaction_lock.release()
+        candidate = Candidate(
+            observation_id=None, kind="knowledge.ingested", subject=None, text=text,
+            base_urgency=base_urgency_for("knowledge.ingested"),
+        )
+        self._dispatcher.submit(candidate)

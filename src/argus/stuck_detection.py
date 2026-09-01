@@ -6,7 +6,7 @@ from collections import deque
 from argus.config import settings
 from argus.llm.base import Tier
 from argus.proactive_none import is_none_reply
-from argus.ui import events as ui_events
+from argus.salience.scoring import Candidate, base_urgency_for
 
 log = logging.getLogger(__name__)
 
@@ -65,10 +65,9 @@ class StuckDetectionWorker:
     most once per continuous stretch in the same window -- switching away
     and back resets it, same as a fresh start."""
 
-    def __init__(self, router, speak_fn, interaction_lock):
+    def __init__(self, router, dispatcher):
         self.router = router
-        self._speak_fn = speak_fn
-        self._interaction_lock = interaction_lock
+        self._dispatcher = dispatcher
         self._current_title: str | None = None
         self._current_since = time.monotonic()
         self._offered_for_current_window = False
@@ -120,15 +119,11 @@ class StuckDetectionWorker:
         text = result.text.strip()
         if is_none_reply(text) or len(text) > 240:
             return
-        self._deliver(text)
+        self._submit(title, text)
 
-    def _deliver(self, text: str) -> None:
-        if not self._interaction_lock.acquire(blocking=False):
-            return
-        try:
-            ui_events.publish({"type": "transcript", "role": "argus", "text": text})
-            ui_events.publish({"type": "caption", "text": text})
-            ui_events.publish({"type": "expression", "value": "curious"})
-            self._speak_fn(text)
-        finally:
-            self._interaction_lock.release()
+    def _submit(self, title: str, text: str) -> None:
+        candidate = Candidate(
+            observation_id=None, kind="stuck_detection.offer", subject=title, text=text,
+            base_urgency=base_urgency_for("stuck_detection.offer"),
+        )
+        self._dispatcher.submit(candidate)

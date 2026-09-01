@@ -3,26 +3,11 @@ import time
 from collections import deque
 
 from argus.config import settings
-from argus.proactive_none import is_none_reply
+from argus.salience.scoring import Candidate, base_urgency_for
 from argus.ui import commands as ui_commands
 from argus.ui import events as ui_events
 
 log = logging.getLogger(__name__)
-
-_GENERATION_PROMPT = """You're Argus, glancing at what the user's active window is to decide
-whether a brief, genuinely welcome check-in is worth saying out loud right
-now -- not running commentary, occasional real attention, the way a friend
-working nearby might notice something and say one thing about it. Most of
-the time there is nothing worth saying, and staying quiet is the right call.
-
-Recent window history (oldest first): {recent}
-Current situation: {situation}
-
-If there's a natural, low-key, non-presumptuous thing to say -- a light
-question or observation, ONE sentence, spoken conversational tone, no
-assumptions about what they're actually doing beyond the window title
-itself -- reply with ONLY that sentence. If there's nothing genuinely worth
-interrupting for, reply with exactly: NONE"""
 
 
 def _active_window_title() -> str | None:
@@ -39,20 +24,25 @@ def _active_window_title() -> str | None:
 class ContextAwarenessWorker:
     """Periodically checks the focused window and, when the context has
     meaningfully changed or the user's been in the same one a long time,
-    asks the fast/cheap model whether there's something genuinely worth
-    saying about it -- README roadmap-adjacent (proactive attention), not
-    a listed item, added on direct request.
+    submits it to salience as a candidate -- README roadmap-adjacent
+    (proactive attention), not a listed item, added on direct request.
 
-    Deliberately conservative by design, not just by prompt wording: a
-    cooldown floor, a real judgment call handed to the model each time
-    (with an explicit NONE escape hatch), and a per-title suppression list
-    ("don't ask me about this") all bias toward silence. The goal is
-    attention that reads as genuine, not surveillance."""
+    U-C4 (PRD §5/§7 build order): this used to also ask the local model
+    "is this worth saying?" (with a NONE escape hatch) and speak the
+    result directly -- its own independent judgment, one of the seven
+    §5 was written to replace. That call is gone. Detection stays here
+    (this is still the thing that notices a window change or a long
+    stretch in one window); SalienceEngine now makes the interrupt/hold/
+    ambient call, and base_urgency_for("focus.changed") is deliberately
+    low (0.05, Appendix A.2) -- window focus is one input among many,
+    not its own reason to talk, so a bare focus change speaks only when
+    a rule boosts it or an LLM tie-break says so, not by default.
 
-    def __init__(self, orchestrator, speak_fn, interaction_lock):
-        self.orchestrator = orchestrator
-        self._speak_fn = speak_fn
-        self._interaction_lock = interaction_lock
+    A cooldown floor and a per-title suppression list ("don't ask me
+    about this") still bias toward silence upstream of salience."""
+
+    def __init__(self, dispatcher):
+        self._dispatcher = dispatcher
         self._history: deque = deque(maxlen=5)
         self._current_title: str | None = None
         self._current_since = time.monotonic()
@@ -102,46 +92,17 @@ class ContextAwarenessWorker:
         if not worth_considering:
             return
 
-        prompt_text = self._generate_prompt(title, duration_minutes, changed)
-        if not prompt_text:
-            return
-
         self._last_prompt_at = now
-        self._deliver(prompt_text)
+        self._submit(title, duration_minutes, changed)
 
-    def _generate_prompt(self, title: str, duration_minutes: float, changed: bool) -> str | None:
-        from argus.llm.base import Message
-
-        situation = (
-            f'Just switched to "{title}".'
-            if changed
+    def _submit(self, title: str, duration_minutes: float, changed: bool) -> None:
+        text = (
+            f'Just switched to "{title}".' if changed
             else f'Been on "{title}" for about {duration_minutes:.0f} minutes.'
         )
-        instruction = _GENERATION_PROMPT.format(
-            recent=", ".join(self._history) or "(none yet)", situation=situation
+        candidate = Candidate(
+            observation_id=None, kind="focus.changed", subject=title, text=text,
+            base_urgency=base_urgency_for("focus.changed"),
         )
-        try:
-            result = self.orchestrator.router.local.complete([Message(role="user", content=instruction)])
-        except Exception:
-            log.exception("Proactive prompt generation failed")
-            return None
-
-        text = result.text.strip()
-        if is_none_reply(text) or len(text) > 240:
-            return None
-        return text
-
-    def _deliver(self, text: str) -> None:
-        # Non-blocking: never stalls or barges into an in-progress
-        # conversation. If Argus is mid-turn, this cycle's prompt is just
-        # dropped rather than queued -- staying silent is always the safe
-        # default here, and there'll be another scan in a minute.
-        if not self._interaction_lock.acquire(blocking=False):
-            return
-        try:
-            ui_events.publish({"type": "transcript", "role": "argus", "text": text})
-            ui_events.publish({"type": "caption", "text": text})
-            ui_events.publish({"type": "expression", "value": "curious"})
-            self._speak_fn(text)
-        finally:
-            self._interaction_lock.release()
+        ui_events.publish({"type": "expression", "value": "curious"})
+        self._dispatcher.submit(candidate)

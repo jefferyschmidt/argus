@@ -32,3 +32,18 @@ def _isolated_event_log(tmp_path):
     this one for its own scope."""
     with patch("argus.ui.events._event_log_path", return_value=tmp_path / "events-test.jsonl"):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _isolated_data_dir(tmp_path, monkeypatch):
+    """Same rationale as _isolated_event_log above, for the same reason:
+    since U-C4, constructing a ProactiveEngine (which VoiceLoop/
+    RealtimeVoiceLoop both do in __init__) also constructs SpineStore/
+    ThreadStore/RuleStore/InterruptionBudget/HeldQueue/RhythmStore, all of
+    which default to settings.data_dir -- the real production data/
+    directory -- when no explicit path is given. Without this, any test
+    that constructs one of those for real (not fully mocked) would create
+    tables and rows in the actual argus.db/spine.db. Tests that pass an
+    explicit tmp_path-based path to a store already bypass settings.data_dir
+    entirely, so this doesn't interfere with them."""
+    monkeypatch.setattr("argus.config.settings.argus_data_dir", str(tmp_path))

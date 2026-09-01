@@ -1,4 +1,3 @@
-import threading
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -13,9 +12,8 @@ from argus.research_digest import ResearchDigestWorker
 def _worker(reply_text):
     router = MagicMock()
     router.complete_with_tools.return_value = CompletionResult(text=reply_text, tier=Tier.ADVANCED, model="test")
-    speak_fn = MagicMock()
-    lock = threading.Lock()
-    return ResearchDigestWorker(router, speak_fn, lock), router, speak_fn
+    dispatcher = MagicMock()
+    return ResearchDigestWorker(router, dispatcher), router, dispatcher
 
 
 @pytest.fixture
@@ -39,30 +37,33 @@ def _patched_get_connection(db_path):
     return patch("argus.memory.store.get_connection", side_effect=lambda: get_connection(db_path))
 
 
-def test_none_reply_does_not_speak_and_preserves_no_digest(conn, db_path):
+def test_none_reply_does_not_submit_and_preserves_no_digest(conn, db_path):
     store = ResearchTopicStore(conn)
     store.add("topic a")
-    worker, router, speak_fn = _worker("NONE")
+    worker, router, dispatcher = _worker("NONE")
 
     with _patched_get_connection(db_path):
         worker.check_now()
 
-    speak_fn.assert_not_called()
+    dispatcher.submit.assert_not_called()
     row = store.list_all()[0]
     assert row["last_digest"] is None
     assert row["last_checked_at"] is not None
 
 
-def test_real_digest_is_spoken_and_recorded(conn, db_path):
+def test_real_digest_is_submitted_and_recorded(conn, db_path):
     store = ResearchTopicStore(conn)
     store.add("topic a")
-    worker, router, speak_fn = _worker("There's a new paper out on this that's worth a look.")
+    worker, router, dispatcher = _worker("There's a new paper out on this that's worth a look.")
 
     with _patched_get_connection(db_path):
         worker.check_now()
 
-    speak_fn.assert_called_once()
-    assert "new paper" in speak_fn.call_args[0][0]
+    dispatcher.submit.assert_called_once()
+    (candidate,), _kwargs = dispatcher.submit.call_args
+    assert "new paper" in candidate.text
+    assert candidate.kind == "research.digest"
+    assert candidate.subject == "topic a"
     row = store.list_all()[0]
     assert row["last_digest"] == "There's a new paper out on this that's worth a look."
 
@@ -71,20 +72,20 @@ def test_disabled_topics_are_skipped(conn, db_path):
     store = ResearchTopicStore(conn)
     topic_id = store.add("topic a")
     store.cancel(topic_id)
-    worker, router, speak_fn = _worker("Something new.")
+    worker, router, dispatcher = _worker("Something new.")
 
     with _patched_get_connection(db_path):
         worker.check_now()
 
     router.complete_with_tools.assert_not_called()
-    speak_fn.assert_not_called()
+    dispatcher.submit.assert_not_called()
 
 
 def test_prior_digest_is_included_in_the_next_prompt(conn, db_path):
     store = ResearchTopicStore(conn)
     topic_id = store.add("topic a")
     store.record_check(topic_id, datetime(2026, 1, 1), "earlier digest text")
-    worker, router, speak_fn = _worker("NONE")
+    worker, router, dispatcher = _worker("NONE")
 
     with _patched_get_connection(db_path):
         worker.check_now()
@@ -102,58 +103,10 @@ def test_one_topic_failure_does_not_block_others(conn, db_path):
         RuntimeError("boom"),
         CompletionResult(text="NONE", tier=Tier.ADVANCED, model="test"),
     ]
-    speak_fn = MagicMock()
-    worker = ResearchDigestWorker(router, speak_fn, threading.Lock())
+    dispatcher = MagicMock()
+    worker = ResearchDigestWorker(router, dispatcher)
 
     with _patched_get_connection(db_path):
         worker.check_now()
 
     assert router.complete_with_tools.call_count == 2
-
-
-def test_delivery_is_deferred_not_dropped_when_busy(conn, db_path):
-    """Never barges into an in-progress conversation -- but the finding is
-    already recorded as the topic's last_digest by then, so the next check
-    treats it as prior context and won't re-report it. Dropping it here
-    meant losing it outright; it has to be queued and retried."""
-    store = ResearchTopicStore(conn)
-    store.add("topic a")
-    worker, router, speak_fn = _worker("Found a solid comparison writeup on this.")
-    worker._interaction_lock.acquire()  # simulate Argus mid-turn
-
-    with _patched_get_connection(db_path):
-        worker.check_now()
-
-    speak_fn.assert_not_called()
-    assert worker._pending_delivery == [("topic a", "Found a solid comparison writeup on this.")]
-
-    # Argus frees up -- the next poll announces it without re-searching.
-    worker._interaction_lock.release()
-    worker._flush_pending_delivery()
-
-    speak_fn.assert_called_once_with("Found a solid comparison writeup on this.")
-    assert worker._pending_delivery == []
-    assert router.complete_with_tools.call_count == 1
-
-
-def test_pending_finding_stays_queued_while_argus_remains_busy(conn, db_path):
-    worker, router, speak_fn = _worker("Something new.")
-    worker._interaction_lock.acquire()
-    worker._pending_delivery.append(("topic a", "Something new."))
-
-    worker._flush_pending_delivery()
-
-    speak_fn.assert_not_called()
-    assert worker._pending_delivery == [("topic a", "Something new.")]
-
-
-def test_none_reply_is_never_queued_for_delivery(conn, db_path):
-    store = ResearchTopicStore(conn)
-    store.add("topic a")
-    worker, router, speak_fn = _worker("NONE")
-
-    with _patched_get_connection(db_path):
-        worker.check_now()
-
-    speak_fn.assert_not_called()
-    assert worker._pending_delivery == []

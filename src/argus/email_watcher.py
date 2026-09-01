@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from email.header import decode_header
 
 from argus.config import settings
+from argus.salience.scoring import Candidate, base_urgency_for
+from argus.spine.observation import Observation
 from argus.ui import commands as ui_commands
-from argus.ui import events as ui_events
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +25,6 @@ _ACCOUNTS = [
 
 _SNIPPET_CHARS = 400
 _FULL_BODY_CHARS = 4000
-_MAX_PENDING_DELIVERY = 20  # see _check_account -- keeps the retry queue bounded
 
 _TRIAGE_PROMPT = """You're triaging one email to decide if it's worth interrupting the user
 for. Most email isn't -- newsletters, receipts, automated notifications,
@@ -129,16 +129,22 @@ class _EmailSummary:
 
 
 class EmailWatcher:
-    """Polls Gmail/Yahoo over IMAP for new mail and, when something looks
-    genuinely worth interrupting for, announces it -- same non-blocking
-    delivery pattern as reminders and proactive context awareness.
+    """Polls Gmail/Yahoo over IMAP for new mail, triages it, and submits
+    it to salience -- same shape as the other detect-then-submit workers
+    since U-C4 (PRD §5/§7 build order).
 
     Privacy-conscious triage by design: the first pass to the classifier
     only ever gets sender + subject + a short snippet, not the full email.
     Only escalates to the full body (still capped, not the whole message
     verbatim) when that first pass comes back UNSURE, or already looks
     IMPORTANT and a second look would sharpen the confirmation -- most
-    email never leaves the snippet stage.
+    email never leaves the snippet stage. The triage verdict now feeds
+    Candidate.base_urgency (Appendix A.2's two mail.received rows) rather
+    than gating delivery itself -- that decision belongs to salience.
+    U-C4 also retired this worker's own _pending_delivery retry queue:
+    SalienceDispatcher/HeldQueue already guarantee nothing important is
+    silently dropped if Argus is mid-conversation, so a second, redundant
+    retry mechanism here was no longer pulling its weight.
 
     Read-state safe: uses BODY.PEEK (never IMAP-marks a message \\Seen),
     so this never disturbs what your regular mail client shows as
@@ -159,17 +165,12 @@ class EmailWatcher:
     the same message forever, but also won't remember across restarts --
     acceptable for a first pass; not a guarantee against ever repeating."""
 
-    def __init__(self, orchestrator, speak_fn, interaction_lock):
-        self.orchestrator = orchestrator
-        self._speak_fn = speak_fn
-        self._interaction_lock = interaction_lock
+    def __init__(self, router, dispatcher, threads):
+        self.router = router
+        self._dispatcher = dispatcher
+        self._threads = threads
         self._triaged_uids: set[tuple[str, bytes]] = set()
         self._baseline_uid: dict[str, int] = {}
-        # Triaged as important but not actually announced yet, because
-        # Argus was mid-conversation at the time (_deliver takes the
-        # interaction lock non-blocking and gives up rather than barging
-        # in). Retried at the top of every poll -- see check_now.
-        self._pending_delivery: list[_EmailSummary] = []
 
     def run(self) -> None:
         while True:
@@ -178,16 +179,7 @@ class EmailWatcher:
                 continue
             self.check_now()
 
-    def _flush_pending_delivery(self) -> None:
-        if not self._pending_delivery:
-            return
-        self._pending_delivery = [s for s in self._pending_delivery if not self._deliver(s)]
-
     def check_now(self) -> None:
-        # Anything important we couldn't announce last time goes first --
-        # its UID is already marked triaged and will never be looked at
-        # again, so without this it would be dropped outright.
-        self._flush_pending_delivery()
         for account in _ACCOUNTS:
             user = getattr(settings, account["user_setting"])
             password = getattr(settings, account["password_setting"])
@@ -229,20 +221,13 @@ class EmailWatcher:
                 summary = self._fetch_summary(conn, account["name"], uid)
                 if summary is None:
                     continue
-                # Marked before delivery, deliberately: triage costs one or
-                # two LLM calls, so it must never re-run for this UID. But
-                # marking it was ALSO the old bug -- _deliver silently
-                # no-ops when Argus is mid-conversation, so an important
-                # email that landed at a busy moment was marked handled and
-                # then never announced at all. Undelivered ones are queued
-                # for the next poll instead of being dropped.
+                # Marked before submission, deliberately: triage costs one
+                # or two LLM calls, so it must never re-run for this UID.
+                # Unlike before U-C4, there's no separate retry queue here
+                # if Argus is mid-conversation -- SalienceDispatcher/
+                # HeldQueue already guarantee the finding isn't lost.
                 self._triaged_uids.add(key)
-                if self._is_important(summary) and not self._deliver(summary):
-                    self._pending_delivery.append(summary)
-                    # Bounded so a long stretch of Argus being busy can't
-                    # grow this without limit; oldest goes first, since a
-                    # stale "you've got mail" is the least useful one left.
-                    del self._pending_delivery[:-_MAX_PENDING_DELIVERY]
+                self._submit(summary)
         finally:
             try:
                 conn.logout()
@@ -275,7 +260,7 @@ class EmailWatcher:
             body_label=body_label, body=body or "(empty)",
         )
         try:
-            result = self.orchestrator.router.local.complete([Message(role="user", content=prompt)])
+            result = self.router.local.complete([Message(role="user", content=prompt)])
         except Exception:
             log.exception("Email triage call failed")
             return "IGNORE"
@@ -286,17 +271,23 @@ class EmailWatcher:
             return "UNSURE"
         return "IGNORE"
 
-    def _deliver(self, summary: _EmailSummary) -> bool:
-        """Returns whether it actually got announced -- False means Argus
-        was mid-conversation and the caller should hold onto this summary
-        and try again later rather than treating it as handled."""
+    def _submit(self, summary: _EmailSummary) -> None:
+        """Triage still happens here (feeds Candidate.base_urgency,
+        Appendix A.2's two mail.received rows) -- whether to actually
+        interrupt about it is SalienceEngine's call now, not this
+        worker's (U-C4)."""
+        important = self._is_important(summary)
+        thread_id = None
+        if important:
+            thread_id = self._threads.open_email_reply(sender=summary.sender, mail_subject=summary.subject)
+
         text = f"You've got an email from {summary.sender} about \"{summary.subject}\" that looks like it needs attention."
-        if not self._interaction_lock.acquire(blocking=False):
-            return False
-        try:
-            ui_events.publish({"type": "transcript", "role": "argus", "text": text})
-            ui_events.publish({"type": "caption", "text": text})
-            self._speak_fn(text)
-        finally:
-            self._interaction_lock.release()
-        return True
+        candidate = Candidate(
+            observation_id=None, kind="mail.received", subject=summary.sender, text=text,
+            base_urgency=base_urgency_for("mail.received", important=important), thread_id=thread_id,
+        )
+        observation = Observation(
+            source="mail_watcher", kind="mail.received", ts=time.time(), subject=summary.sender,
+            payload={"account": summary.account, "subject": summary.subject},
+        )
+        self._dispatcher.submit(candidate, observation=observation)

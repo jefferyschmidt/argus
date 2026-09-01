@@ -1,7 +1,11 @@
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from argus.proactive_engine import ProactiveEngine
+
+# Data-dir isolation for the stores ProactiveEngine now constructs
+# (spine/threads/rules/budget/held/rhythms) comes from conftest.py's
+# autouse _isolated_data_dir fixture -- no per-file fixture needed here.
 
 
 def _orchestrator():
@@ -26,6 +30,24 @@ def test_constructs_all_seven_workers():
     assert engine.consolidation_worker is not None
 
 
+def test_constructs_the_salience_stack():
+    """U-C4 (PRD §5/§7): the perception/salience stack this engine now
+    also owns and wires every retrofitted worker through."""
+    engine = ProactiveEngine(_orchestrator(), speak_fn=MagicMock(), interaction_lock=MagicMock())
+
+    assert engine.spine is not None
+    assert engine.spine_engine is not None
+    assert engine.threads is not None
+    assert engine.rhythms is not None
+    assert engine.world_model is not None
+    assert engine.rule_matcher is not None
+    assert engine.budget is not None
+    assert engine.held is not None
+    assert engine.salience_engine is not None
+    assert engine.dispatcher is not None
+    assert engine.escalation_scheduler is not None
+
+
 def test_start_runs_every_worker_on_its_own_thread():
     engine = ProactiveEngine(_orchestrator(), speak_fn=MagicMock(), interaction_lock=MagicMock())
     workers = (
@@ -35,25 +57,52 @@ def test_start_runs_every_worker_on_its_own_thread():
     )
     for worker in workers:
         worker.run = MagicMock()
+    engine.spine_engine.start = MagicMock()
+    engine.escalation_scheduler.start = MagicMock()
 
     engine.start()
     time.sleep(0.2)  # let the daemon threads actually get scheduled
 
     for worker in workers:
         worker.run.assert_called_once()
+    engine.spine_engine.start.assert_called_once()
+    engine.escalation_scheduler.start.assert_called_once()
 
 
-def test_workers_receive_the_shared_speak_fn_and_lock():
-    """Construction only relocates -- each worker must still be handed the
-    exact speak_fn/interaction_lock the caller passed in, not something
-    ProactiveEngine invented, so its existing retry-when-busy behavior
-    (e.g. email_watcher's _pending_delivery) is unaffected."""
+def test_all_retrofitted_workers_share_one_dispatcher():
+    """U-C4: no worker holds speak_fn/interaction_lock directly anymore
+    (except routine_worker -- see its own docstring for why); they all
+    submit through the one SalienceDispatcher this engine constructs."""
+    engine = ProactiveEngine(_orchestrator(), speak_fn=MagicMock(), interaction_lock=MagicMock())
+
+    assert engine.context_awareness._dispatcher is engine.dispatcher
+    assert engine.email_watcher._dispatcher is engine.dispatcher
+    assert engine.knowledge_watcher._dispatcher is engine.dispatcher
+    assert engine.research_digest._dispatcher is engine.dispatcher
+    assert engine.stuck_detection._dispatcher is engine.dispatcher
+
+
+def test_dispatcher_receives_the_shared_speak_fn_and_lock():
     speak_fn = MagicMock()
     lock = MagicMock()
 
-    with patch("argus.email_watcher.EmailWatcher.__init__", return_value=None) as email_init:
-        ProactiveEngine(_orchestrator(), speak_fn=speak_fn, interaction_lock=lock)
+    engine = ProactiveEngine(_orchestrator(), speak_fn=speak_fn, interaction_lock=lock)
 
-    args, _ = email_init.call_args
-    assert speak_fn in args
-    assert lock in args
+    assert engine.dispatcher._speak_fn is speak_fn
+    assert engine.dispatcher._interaction_lock is lock
+
+
+def test_routine_worker_still_receives_speak_fn_and_lock_directly():
+    """The one documented exception -- see routine_worker.py."""
+    speak_fn = MagicMock()
+    lock = MagicMock()
+
+    engine = ProactiveEngine(_orchestrator(), speak_fn=speak_fn, interaction_lock=lock)
+
+    assert engine.routine_worker._speak_fn is speak_fn
+    assert engine.routine_worker._interaction_lock is lock
+
+
+def test_email_watcher_can_open_threads():
+    engine = ProactiveEngine(_orchestrator(), speak_fn=MagicMock(), interaction_lock=MagicMock())
+    assert engine.email_watcher._threads is engine.threads

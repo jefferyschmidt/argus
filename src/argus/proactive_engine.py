@@ -12,42 +12,91 @@ class ProactiveEngine:
     stuck detection, no research digest, no scheduled routines, no memory
     consolidation -- because there was nowhere else for them to live.
 
-    This only relocates *construction and thread-starting*. Each worker
-    still decides when to speak and retries via the exact same
-    (speak_fn, interaction_lock) contract it always has -- see
-    email_watcher.py's _pending_delivery pattern for how a worker handles
-    "Argus was busy, try again next poll." Nothing about how a worker
-    decides to speak changes here."""
+    U-C4 (PRD §5/§7 build order): this now also constructs and starts the
+    perception/salience stack -- SpineEngine (Phase A sensors), WorldModel
+    (Phase B), SalienceEngine/SalienceDispatcher (Phase C) -- and is the
+    ONE place speak_fn/interaction_lock still get handed out directly,
+    rather than to every worker. Each retrofitted worker now submits a
+    Candidate through the shared SalienceDispatcher instead of deciding
+    for itself whether to speak -- see dispatch.py's docstring. Window
+    focus, a new email, a research finding, a stuck-detection offer, a
+    freshly-ingested file: all just candidates now, arbitrated in one
+    place instead of seven independent judgments.
+
+    routine_worker is the one exception, kept on the old (speak_fn,
+    interaction_lock) contract directly -- see routine_worker.py's own
+    docstring for why: a scheduled routine's goal streams its spoken
+    answer live via handle_streaming as the model generates it, which
+    doesn't fit a single-Candidate speak/hold/ambient decision without
+    buffering the whole response first and defeating the point of
+    streaming it. It's also not an ambient "is this worth interrupting
+    for" judgment the way the other six are -- it's a user-scheduled
+    action that runs and reports on its own explicit timetable."""
 
     def __init__(self, orchestrator: Orchestrator, speak_fn, interaction_lock: threading.Lock):
         self.orchestrator = orchestrator
 
+        from argus.memory.store import get_connection
+        from argus.rules.matcher import RuleMatcher
+        from argus.rules.store import RuleStore
+        from argus.salience.budget import InterruptionBudget
+        from argus.salience.dispatch import SalienceDispatcher
+        from argus.salience.engine import SalienceEngine
+        from argus.salience.escalation import EscalationScheduler
+        from argus.salience.held import HeldQueue
+        from argus.spine.engine import SpineEngine
+        from argus.spine.store import SpineStore
+        from argus.world.model import WorldModel
+        from argus.world.rhythms import RhythmStore
+        from argus.world.threads import ThreadStore
+
+        self.spine = SpineStore()
+        self.spine_engine = SpineEngine(store=self.spine)
+        self.threads = ThreadStore(self.spine)
+        self.rhythms = RhythmStore(get_connection())
+        self.world_model = WorldModel(spine=self.spine, threads=self.threads, rhythms=self.rhythms)
+
+        self.rule_matcher = RuleMatcher(RuleStore())
+        self.budget = InterruptionBudget()
+        self.held = HeldQueue()
+        self.salience_engine = SalienceEngine(
+            self.rule_matcher, self.budget, self.held, rhythms=self.rhythms, spine=self.spine,
+        )
+        self.dispatcher = SalienceDispatcher(self.salience_engine, self.world_model, speak_fn, interaction_lock)
+        # Escalation delivery reuses the same speak_fn -- channel-specific
+        # routing (ambient/push) isn't implemented anywhere yet, so every
+        # channel currently just speaks.
+        self.escalation_scheduler = EscalationScheduler(threads=self.threads, deliver_fn=lambda channel, text: speak_fn(text))
+
         from argus.context_awareness import ContextAwarenessWorker
-        self.context_awareness = ContextAwarenessWorker(orchestrator, speak_fn, interaction_lock)
+        self.context_awareness = ContextAwarenessWorker(self.dispatcher)
 
         from argus.email_watcher import EmailWatcher
-        self.email_watcher = EmailWatcher(orchestrator, speak_fn, interaction_lock)
+        self.email_watcher = EmailWatcher(orchestrator.router, self.dispatcher, self.threads)
 
         from argus.routine_worker import RoutineWorker
         self.routine_worker = RoutineWorker(orchestrator, speak_fn, interaction_lock)
 
         from argus.knowledge_watcher import KnowledgeWatcher
-        self.knowledge_watcher = KnowledgeWatcher(speak_fn, interaction_lock)
+        self.knowledge_watcher = KnowledgeWatcher(self.dispatcher)
 
         from argus.research_digest import ResearchDigestWorker
-        self.research_digest = ResearchDigestWorker(orchestrator.router, speak_fn, interaction_lock)
+        self.research_digest = ResearchDigestWorker(orchestrator.router, self.dispatcher)
 
         from argus.stuck_detection import StuckDetectionWorker
-        self.stuck_detection = StuckDetectionWorker(orchestrator.router, speak_fn, interaction_lock)
+        self.stuck_detection = StuckDetectionWorker(orchestrator.router, self.dispatcher)
 
         from argus.memory.consolidation_worker import ConsolidationWorker
         self.consolidation_worker = ConsolidationWorker(orchestrator.router, orchestrator.memory)
 
     def start(self) -> None:
-        """Starts every worker's poll loop on its own daemon thread. Split
-        from __init__ so a caller can construct the engine (and reach
+        """Starts every worker's poll loop on its own daemon thread, plus
+        the spine sensors and the escalation scheduler. Split from
+        __init__ so a caller can construct the engine (and reach
         individual workers, e.g. for suppress_current()/check_now()-style
         on-demand triggers) before committing to actually running them."""
+        self.spine_engine.start()
+        self.escalation_scheduler.start()
         for worker in (
             self.context_awareness,
             self.email_watcher,

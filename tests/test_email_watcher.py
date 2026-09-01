@@ -1,4 +1,3 @@
-import threading
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from unittest.mock import MagicMock, patch
@@ -8,13 +7,14 @@ from argus.llm.base import CompletionResult, Tier
 
 
 def _worker(reply_texts):
-    orchestrator = MagicMock()
-    orchestrator.router.local.complete.side_effect = [
+    router = MagicMock()
+    router.local.complete.side_effect = [
         CompletionResult(text=t, tier=Tier.LOCAL, model="test") for t in reply_texts
     ]
-    speak_fn = MagicMock()
-    lock = threading.Lock()
-    return EmailWatcher(orchestrator, speak_fn, lock), speak_fn
+    dispatcher = MagicMock()
+    threads = MagicMock()
+    threads.open_email_reply.return_value = 42
+    return EmailWatcher(router, dispatcher, threads), dispatcher
 
 
 def test_decode_plain_header():
@@ -95,50 +95,63 @@ def test_plain_text_body_multipart_html_only_falls_back_stripped():
     assert "only html here" in result
 
 
-def test_ignore_verdict_never_delivers():
-    worker, speak_fn = _worker(["IGNORE"])
+def test_ignore_verdict_is_not_important():
+    worker, _dispatcher = _worker(["IGNORE"])
     summary = _EmailSummary(account="Gmail", sender="newsletter@example.com", subject="Weekly digest", body="unsubscribe here")
     assert worker._is_important(summary) is False
-    speak_fn.assert_not_called()
 
 
-def test_important_verdict_delivers_with_sender_and_subject():
-    worker, speak_fn = _worker(["IMPORTANT"])
+def test_important_verdict_is_important():
+    worker, _dispatcher = _worker(["IMPORTANT"])
     summary = _EmailSummary(account="Yahoo", sender="boss@company.com", subject="Need this today", body="Can you send the report")
     assert worker._is_important(summary) is True
-    worker._deliver(summary)
-    speak_fn.assert_called_once()
-    (spoken_text,) = speak_fn.call_args[0]
-    assert "boss@company.com" in spoken_text
-    assert "Need this today" in spoken_text
 
 
 def test_unsure_verdict_escalates_to_full_body_pass():
-    worker, speak_fn = _worker(["UNSURE", "IMPORTANT"])
+    worker, _dispatcher = _worker(["UNSURE", "IMPORTANT"])
     summary = _EmailSummary(account="Gmail", sender="a@b.com", subject="?", body="ambiguous short text")
     result = worker._is_important(summary)
     assert result is True
-    assert worker.orchestrator.router.local.complete.call_count == 2
+    assert worker.router.local.complete.call_count == 2
 
 
-def test_deliver_skips_when_interaction_lock_held():
-    orchestrator = MagicMock()
-    speak_fn = MagicMock()
-    lock = threading.Lock()
-    lock.acquire()
-    worker = EmailWatcher(orchestrator, speak_fn, lock)
-    summary = _EmailSummary(account="Gmail", sender="x@y.com", subject="s", body="b")
+# -- submission through the dispatcher (U-C4) --------------------------------
 
-    worker._deliver(summary)
+def test_important_mail_submits_a_candidate_and_opens_a_thread():
+    worker, dispatcher = _worker(["IMPORTANT"])
+    summary = _EmailSummary(account="Yahoo", sender="boss@company.com", subject="Need this today", body="please review")
 
-    speak_fn.assert_not_called()
+    worker._submit(summary)
+
+    worker._threads.open_email_reply.assert_called_once_with(sender="boss@company.com", mail_subject="Need this today")
+    dispatcher.submit.assert_called_once()
+    (candidate,), kwargs = dispatcher.submit.call_args
+    assert candidate.kind == "mail.received"
+    assert candidate.subject == "boss@company.com"
+    assert candidate.thread_id == 42
+    assert candidate.base_urgency == 0.55  # important row, Appendix A.2
+    assert "boss@company.com" in candidate.text
+    assert "Need this today" in candidate.text
+    assert kwargs["observation"].kind == "mail.received"
+
+
+def test_unimportant_mail_submits_a_candidate_without_opening_a_thread():
+    worker, dispatcher = _worker(["IGNORE"])
+    summary = _EmailSummary(account="Gmail", sender="news@example.com", subject="Weekly digest", body="unsubscribe")
+
+    worker._submit(summary)
+
+    worker._threads.open_email_reply.assert_not_called()
+    (candidate,), _kwargs = dispatcher.submit.call_args
+    assert candidate.thread_id is None
+    assert candidate.base_urgency == 0.10  # not-important row, Appendix A.2
 
 
 def test_first_check_for_an_account_only_sets_baseline_and_processes_nothing():
     """Confirmed live: on a real long-used inbox, 'unseen' can mean
     thousands of old messages, not new arrivals. The first check must
     never try to triage that backlog."""
-    worker, speak_fn = _worker([])
+    worker, dispatcher = _worker([])
 
     fake_conn = MagicMock()
     fake_conn.status.return_value = ("OK", [b"INBOX (UIDNEXT 100)"])
@@ -147,11 +160,11 @@ def test_first_check_for_an_account_only_sets_baseline_and_processes_nothing():
 
     assert worker._baseline_uid["Gmail"] == 100
     fake_conn.uid.assert_not_called()
-    speak_fn.assert_not_called()
+    dispatcher.submit.assert_not_called()
 
 
 def test_uid_below_baseline_is_skipped_even_if_unseen():
-    worker, speak_fn = _worker(["IMPORTANT"])
+    worker, dispatcher = _worker(["IMPORTANT"])
     worker._baseline_uid["Gmail"] = 100
 
     fake_conn = MagicMock()
@@ -162,11 +175,11 @@ def test_uid_below_baseline_is_skipped_even_if_unseen():
     # search was called (uid("search", ...)) but fetch (uid("fetch", ...)) never was
     fetch_calls = [c for c in fake_conn.uid.call_args_list if c.args[0] == "fetch"]
     assert fetch_calls == []
-    speak_fn.assert_not_called()
+    dispatcher.submit.assert_not_called()
 
 
 def test_already_triaged_uid_is_not_reprocessed():
-    worker, speak_fn = _worker(["IMPORTANT"])
+    worker, dispatcher = _worker(["IMPORTANT"])
     worker._baseline_uid["Gmail"] = 1
     worker._triaged_uids.add(("Gmail", b"5"))
 
@@ -177,11 +190,11 @@ def test_already_triaged_uid_is_not_reprocessed():
 
     fetch_calls = [c for c in fake_conn.uid.call_args_list if c.args[0] == "fetch"]
     assert fetch_calls == []
-    speak_fn.assert_not_called()
+    dispatcher.submit.assert_not_called()
 
 
-def test_new_uid_above_baseline_is_fetched_and_triaged():
-    worker, speak_fn = _worker(["IGNORE"])
+def test_new_uid_above_baseline_is_fetched_triaged_and_submitted():
+    worker, dispatcher = _worker(["IGNORE"])
     worker._baseline_uid["Gmail"] = 1
 
     msg = MIMEText("just a newsletter", "plain")
@@ -190,6 +203,7 @@ def test_new_uid_above_baseline_is_fetched_and_triaged():
     raw = msg.as_bytes()
 
     fake_conn = MagicMock()
+
     def uid_side_effect(command, *args):
         if command == "search":
             return ("OK", [b"9"])
@@ -203,82 +217,6 @@ def test_new_uid_above_baseline_is_fetched_and_triaged():
 
     fake_conn.logout.assert_called_once()
     assert ("Gmail", b"9") in worker._triaged_uids
-    speak_fn.assert_not_called()  # IGNORE verdict
-
-
-def test_important_mail_arriving_while_busy_is_retried_not_dropped():
-    """The UID is marked triaged before delivery (triage costs real LLM
-    calls and must never re-run for the same message) -- so an important
-    email that landed while Argus was mid-conversation used to be marked
-    handled and then never announced at all. It must be held and retried."""
-    worker, speak_fn = _worker(["IMPORTANT"])
-    worker._baseline_uid["Gmail"] = 1
-    worker._interaction_lock.acquire()  # Argus is busy talking
-
-    msg = MIMEText("please review the contract", "plain")
-    msg["From"] = "boss@company.com"
-    msg["Subject"] = "Need this today"
-    raw = msg.as_bytes()
-
-    fake_conn = MagicMock()
-    def uid_side_effect(command, *args):
-        if command == "search":
-            return ("OK", [b"9"])
-        if command == "fetch":
-            return ("OK", [(b"9 (BODY[])", raw)])
-        raise AssertionError(f"unexpected uid command: {command}")
-    fake_conn.uid.side_effect = uid_side_effect
-
-    with patch("argus.email_watcher.imaplib.IMAP4_SSL", return_value=fake_conn):
-        worker._check_account({"name": "Gmail", "host": "imap.gmail.com"}, "user@gmail.com", "app-password")
-
-    speak_fn.assert_not_called()             # couldn't announce -- Argus was busy
-    assert len(worker._pending_delivery) == 1  # but it was kept, not dropped
-
-    # Argus frees up; the next poll announces it without re-triaging.
-    worker._interaction_lock.release()
-    worker._flush_pending_delivery()
-
-    speak_fn.assert_called_once()
-    assert "boss@company.com" in speak_fn.call_args[0][0]
-    assert worker._pending_delivery == []
-    # Triage ran exactly once across both attempts.
-    assert worker.orchestrator.router.local.complete.call_count == 1
-
-
-def test_pending_delivery_stays_queued_while_argus_remains_busy():
-    worker, speak_fn = _worker([])
-    worker._interaction_lock.acquire()
-    worker._pending_delivery.append(
-        _EmailSummary(account="Gmail", sender="x@y.com", subject="s", body="b")
-    )
-
-    worker._flush_pending_delivery()
-
-    speak_fn.assert_not_called()
-    assert len(worker._pending_delivery) == 1
-
-
-def test_unimportant_mail_is_never_queued_for_delivery():
-    worker, speak_fn = _worker(["IGNORE"])
-    worker._baseline_uid["Gmail"] = 1
-
-    msg = MIMEText("just a newsletter", "plain")
-    msg["From"] = "news@example.com"
-    msg["Subject"] = "This week's digest"
-    raw = msg.as_bytes()
-
-    fake_conn = MagicMock()
-    def uid_side_effect(command, *args):
-        if command == "search":
-            return ("OK", [b"9"])
-        if command == "fetch":
-            return ("OK", [(b"9 (BODY[])", raw)])
-        raise AssertionError(f"unexpected uid command: {command}")
-    fake_conn.uid.side_effect = uid_side_effect
-
-    with patch("argus.email_watcher.imaplib.IMAP4_SSL", return_value=fake_conn):
-        worker._check_account({"name": "Gmail", "host": "imap.gmail.com"}, "user@gmail.com", "app-password")
-
-    assert worker._pending_delivery == []
-    speak_fn.assert_not_called()
+    dispatcher.submit.assert_called_once()  # submitted even though IGNORE -- salience decides now, not this worker
+    (candidate,), _kwargs = dispatcher.submit.call_args
+    assert candidate.base_urgency == 0.10

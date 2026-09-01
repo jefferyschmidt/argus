@@ -16,7 +16,19 @@ class RoutineWorker:
     awareness, email), a routine's goal runs through the FULL tool-using
     conversational pipeline (orchestrator.handle_streaming), not the
     cheap local/Groq tier -- a morning briefing needs web search, reminder
-    lookups, email checks, real tool calls, not a single classification."""
+    lookups, email checks, real tool calls, not a single classification.
+
+    Deliberately NOT retrofitted onto SalienceDispatcher at U-C4, unlike
+    every other worker in ProactiveEngine. Two reasons: (1) on_sentence
+    below speaks live as the model generates the response -- routing that
+    through a single Candidate's speak/hold/ambient decision would mean
+    buffering the entire reply first, defeating the reason it streams at
+    all; (2) a routine isn't an ambient "is this worth interrupting for"
+    judgment the other six make -- it's a user-scheduled action ("every
+    morning at 7, tell me X") that runs and reports on its own explicit
+    timetable, not something salience should be able to hold or suppress
+    the way it can an unprompted observation. It keeps speak_fn/
+    interaction_lock directly, same as before U-C4."""
 
     def __init__(self, orchestrator, speak_fn, interaction_lock):
         self.orchestrator = orchestrator
