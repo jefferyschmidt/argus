@@ -165,6 +165,15 @@ class SpineStore:
             row = self._conn.execute(sql, params).fetchone()
         return _row_to_observation(row) if row else None
 
+    def earliest_ts(self) -> float | None:
+        """PRD.md §13 unit 26: lets a caller (query_timeline) tell "nothing
+        happened in that window" apart from "the record doesn't go back
+        that far" -- ROADMAP.md P1, honest uncertainty over a confident-
+        sounding empty result. None if the spine has no observations yet."""
+        with self._lock:
+            row = self._conn.execute("SELECT MIN(ts) FROM observations").fetchone()
+        return row[0]
+
     def count(self, *, kind: str | None = None, since: float | None = None) -> int:
         clauses, params = [], []
         if kind is not None:

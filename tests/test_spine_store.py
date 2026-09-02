@@ -125,6 +125,20 @@ def test_latest_returns_most_recent_of_a_kind(tmp_path):
     assert store.latest("git.commit") is None
 
 
+def test_earliest_ts_returns_none_when_empty(tmp_path):
+    store = SpineStore(tmp_path / "spine.db")
+    assert store.earliest_ts() is None
+
+
+def test_earliest_ts_returns_the_oldest_observation_regardless_of_insertion_order(tmp_path):
+    store = SpineStore(tmp_path / "spine.db")
+    store.record(_obs(ts=200.0, dedupe_key="b"))
+    store.record(_obs(ts=100.0, dedupe_key="a"))
+    store.record(_obs(ts=300.0, dedupe_key="c"))
+
+    assert store.earliest_ts() == 100.0
+
+
 def test_prune_removes_only_older_than_cutoff(tmp_path):
     store = SpineStore(tmp_path / "spine.db")
     now = time.time()

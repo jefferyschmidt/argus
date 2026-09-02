@@ -36,6 +36,7 @@ from argus.tools.memory_review import (
     list_pending_core_memories_tool,
     reject_core_memory_tool,
 )
+from argus.tools.query_timeline import _build_query_timeline
 from argus.tools.registry import ToolRegistry, console_confirmer
 from argus.tools.reminders import cancel_reminder_tool, list_reminders_tool, set_reminder_tool
 from argus.tools.research_topics import (
@@ -171,6 +172,10 @@ def build_default_registry(router=None, task_runner=None, rule_store=None, decis
     # SpineStore to emit document.composed onto.
     if spine is not None:
         registry.register(_build_compose_document(spine))
+        # PRD §13 unit 26: query-over-history (ROADMAP.md Part III, P2) --
+        # a pure read over the same SpineStore, no reason to gate it any
+        # differently than compose_document above.
+        registry.register(_build_query_timeline(spine))
 
     # Plugin tools (README item 13): auto-discovered from argus/plugins/,
     # no core-code changes needed to add a new one. A plugin can't
