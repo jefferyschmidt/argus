@@ -26,6 +26,65 @@ from argus.config import settings
 log = logging.getLogger(__name__)
 
 _READ_FAILED = object()  # sentinel: distinguishes "read_tool failed" from a legitimate None/empty prior_state
+_MISSING = object()
+
+
+def _lookup_prior(prior_state: dict, path: str):
+    """Resolves a "$prior.attributes.rgb_color" placeholder against what
+    read_tool returned. Returns _MISSING if any segment is absent, which
+    the caller treats as "this restore cannot be built"."""
+    value = prior_state
+    for segment in path.removeprefix("$prior.").split("."):
+        if not isinstance(value, dict) or segment not in value:
+            return _MISSING
+        value = value[segment]
+    return value
+
+
+def build_restore_arguments(action: dict, prior_state) -> dict | None:
+    """Reconstructs the arguments that undo a fired `tool_call`, or None
+    if no correct restore call can be built (see fire(), which refuses to
+    fire in that case).
+
+    Confirmed by direct reproduction at the Phase G gate: the original
+    `{**arguments, **prior_state}` merge silently failed on the exact
+    example this mechanism exists for. A real home_assistant_get_state
+    returns {"state": ..., "attributes": {"rgb_color": [255,255,255]}},
+    which shares no key with {"entity_id": ..., "rgb_color": [0,0,255]}
+    -- so the merge left the blue rgb_color untouched, added two junk
+    kwargs, raised nothing, and marked the instance resolved. The bulb
+    stayed blue forever while Argus believed it had cleaned up.
+
+    The correct mechanism is an explicit template on the action:
+
+        "restore_arguments": {"entity_id": "light.office",
+                              "rgb_color": "$prior.attributes.rgb_color"}
+
+    The flat merge is kept only for the case where it is actually
+    meaningful -- prior_state sharing at least one key with the write
+    arguments, i.e. read and write shapes genuinely line up. Anything
+    else returns None rather than guessing."""
+    original_arguments = action.get("arguments") or {}
+    template = action.get("restore_arguments")
+
+    if isinstance(template, dict):
+        if not isinstance(prior_state, dict):
+            return None
+        resolved = {}
+        for key, value in template.items():
+            if isinstance(value, str) and value.startswith("$prior."):
+                looked_up = _lookup_prior(prior_state, value)
+                if looked_up is _MISSING:
+                    log.warning("restore_arguments placeholder %r not found in read_tool output", value)
+                    return None
+                resolved[key] = looked_up
+            else:
+                resolved[key] = value
+        return resolved
+
+    if isinstance(prior_state, dict) and set(prior_state) & set(original_arguments):
+        return {**original_arguments, **prior_state}
+    return None
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS rule_instances (
@@ -109,6 +168,20 @@ class RuleInstanceStore:
 
     # -- firing / resolution (Appendix A.3 "Effect reversal") -----------
 
+    @staticmethod
+    def _restore_is_constructible(rule, action: dict, prior_state) -> bool:
+        if build_restore_arguments(action, prior_state) is not None:
+            return True
+        log.warning(
+            "Rule %s is reversible but no restore call can be built from what read_tool "
+            "returned -- refusing to fire. Give the action an explicit restore_arguments "
+            "using $prior.<path> placeholders. (read_tool output keys: %s; write arguments: %s)",
+            rule.id,
+            sorted(prior_state) if isinstance(prior_state, dict) else type(prior_state).__name__,
+            sorted(action.get("arguments") or {}),
+        )
+        return False
+
     def fire(
         self, *, rule, registry, watched_thread_id: int | None = None,
         expires_seconds: float = 604_800, now: float | None = None,
@@ -133,6 +206,12 @@ class RuleInstanceStore:
             prior_state = self._capture_prior_state(rule, action, registry)
             if prior_state is _READ_FAILED:
                 return None  # already logged inside _capture_prior_state
+            # Checked BEFORE firing, for the same reason read_tool is: an
+            # effect we cannot reverse must never be applied in the first
+            # place. Discovering at resolve() time that the restore can't
+            # be built is too late -- the light is already blue.
+            if not self._restore_is_constructible(rule, action, prior_state):
+                return None
 
         tool_name = action.get("tool")
         arguments = action.get("arguments", {})
@@ -191,10 +270,18 @@ class RuleInstanceStore:
 
         action = rule.action
         tool_name = action.get("tool")
-        original_arguments = action.get("arguments") or {}
-        restore_arguments = (
-            {**original_arguments, **instance.prior_state} if isinstance(instance.prior_state, dict) else original_arguments
-        )
+        restore_arguments = build_restore_arguments(action, instance.prior_state)
+        if restore_arguments is None:
+            # Should be unreachable: fire() refuses to fire when a restore
+            # can't be built. Kept as a guard because reaching it means a
+            # real-world effect is stuck on with no way to reverse it --
+            # that must be loud and must not be marked resolved.
+            log.error(
+                "Cannot reconstruct a restore call for instance %s (rule %s, tool %s) -- "
+                "leaving it active rather than marking it resolved with the effect still applied",
+                instance_id, instance.rule_id, tool_name,
+            )
+            return False
         try:
             registry.execute(tool_name, restore_arguments)
         except Exception:

@@ -1,6 +1,8 @@
 import json
 import threading
 import time
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from argus.rules.instances import RuleInstanceStore
 from argus.rules.store import RuleStore
@@ -422,3 +424,83 @@ def test_concurrent_fire_and_resolve_do_not_raise_database_is_locked(tmp_path):
         t.join()
 
     assert not errors
+
+
+def _ha_shaped_rule(*, restore_arguments=None):
+    """The bulb rule with a REALISTIC home_assistant_get_state response
+    shape -- nested under "attributes", sharing no key with the write
+    call's arguments."""
+    action = {
+        "type": "tool_call",
+        "tool": "set_light",
+        "arguments": {"entity_id": "light.office", "rgb_color": [0, 0, 255]},
+        "reversible": True,
+        "read_tool": "get_state",
+        "read_arguments": {"entity_id": "light.office"},
+    }
+    if restore_arguments is not None:
+        action["restore_arguments"] = restore_arguments
+    return SimpleNamespace(id=1, action=action)
+
+
+def _ha_registry(calls):
+    registry = MagicMock()
+
+    def execute(tool, arguments):
+        calls.append((tool, arguments))
+        if tool == "get_state":
+            return {"state": "on", "attributes": {"rgb_color": [255, 255, 255], "brightness": 200}}
+        return "ok"
+
+    registry.execute.side_effect = execute
+    return registry
+
+
+def test_unreconstructable_restore_refuses_to_fire(tmp_path):
+    """Found by direct reproduction at the Phase G gate. With a realistic
+    nested read_tool response, {**arguments, **prior_state} shares no key
+    with the write arguments -- so the restore re-sent the ORIGINAL blue
+    rgb_color, added junk kwargs, raised nothing, and marked the instance
+    resolved. The bulb stayed blue forever while Argus believed it had
+    cleaned up. An effect that cannot be reversed must not be applied at
+    all, exactly as with a failing read_tool."""
+    store = RuleInstanceStore(tmp_path / "rules.db")
+    calls: list = []
+
+    instance_id = store.fire(rule=_ha_shaped_rule(), registry=_ha_registry(calls))
+
+    assert instance_id is None, "fired an effect it had no way to reverse"
+    assert [tool for tool, _ in calls] == ["get_state"], "the write tool must never be attempted"
+
+
+def test_explicit_restore_arguments_round_trip_the_real_prior_value(tmp_path):
+    """The correct mechanism: a $prior.<path> template that reaches into
+    the read_tool's own response shape."""
+    store = RuleInstanceStore(tmp_path / "rules.db")
+    calls: list = []
+    registry = _ha_registry(calls)
+    rule = _ha_shaped_rule(restore_arguments={
+        "entity_id": "light.office", "rgb_color": "$prior.attributes.rgb_color",
+    })
+
+    instance_id = store.fire(rule=rule, registry=registry)
+    assert instance_id is not None
+    assert calls[-1] == ("set_light", {"entity_id": "light.office", "rgb_color": [0, 0, 255]})
+
+    rule_store = MagicMock()
+    rule_store.get.return_value = rule
+    assert store.resolve(instance_id, registry=registry, rule_store=rule_store) is True
+
+    assert calls[-1] == ("set_light", {"entity_id": "light.office", "rgb_color": [255, 255, 255]}), \
+        "the light must go back to its real prior colour, not the colour the rule set"
+
+
+def test_missing_placeholder_path_refuses_to_fire(tmp_path):
+    """A template referencing a path the read_tool didn't return can't
+    build a correct restore either -- same fail-closed treatment."""
+    store = RuleInstanceStore(tmp_path / "rules.db")
+    calls: list = []
+    rule = _ha_shaped_rule(restore_arguments={"rgb_color": "$prior.attributes.nonexistent"})
+
+    assert store.fire(rule=rule, registry=_ha_registry(calls)) is None
+    assert [tool for tool, _ in calls] == ["get_state"]

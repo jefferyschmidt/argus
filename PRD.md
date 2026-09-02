@@ -999,6 +999,27 @@ issuing a fresh call, so a backlog replay cannot trigger a burst of LLM calls.
 
 ### Effect reversal — the concrete mechanism
 
+**`restore_arguments` (added at the Phase G gate, 2026-09-01).** A reversible action should
+carry an explicit restore template, whose string values may use `$prior.<dotted.path>`
+placeholders resolved against what `read_tool` returned:
+
+```jsonc
+"restore_arguments": {"entity_id": "light.office", "rgb_color": "$prior.attributes.rgb_color"}
+```
+
+This exists because reconstructing the restore by merging `prior_state` over the original
+arguments **silently fails on the very example this mechanism is for.** A real
+`home_assistant_get_state` returns `{"state": ..., "attributes": {"rgb_color": [...]}}`, which
+shares no key with `{"entity_id": ..., "rgb_color": [0,0,255]}` — so the merge re-sent the
+*original blue*, added junk kwargs, raised nothing, and marked the instance resolved. The bulb
+stayed blue forever while Argus believed it had cleaned up. Reproduced directly, not theorized.
+
+The flat merge survives only where it is genuinely meaningful — `prior_state` sharing at least
+one key with the write arguments. **Anything else is a refusal to fire**, on the same principle
+as a failing `read_tool`: an effect that cannot be reversed must never be applied. That check
+happens at *fire* time, because discovering it at resolve time is too late — the light is
+already blue.
+
 `reversible: true` **requires** `read_tool` and `read_arguments`. The instance lifecycle is:
 
 1. Before firing, call `read_tool(read_arguments)`; store the raw result in
