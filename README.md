@@ -1005,7 +1005,15 @@ argus memory review   # confirm/reject agent-proposed core memories
 
 `chat` and `voice` both auto-launch **Argus Console** (needs `pip install -e ".[ui]"`)
 at http://127.0.0.1:8765 -- a live view of voice state, transcript, tool
-calls (with real generated images), memory, and routing/spend.
+calls (with real generated images), memory, and routing/spend. It also
+surfaces the same world model the voice loop reasons from -- open threads,
+important mail, upcoming obligations, active rules (and which are
+currently firing), system health, and anything salience held back rather
+than interrupted for -- with a "got it" on any thread and a dismiss on any
+held item, both reaching the exact same code path a spoken acknowledgment
+would (PRD.md §15/Appendix A.1). `argus timeline` and `argus held` still
+work and are genuinely useful headless or over SSH, but the console is now
+the primary way to see what Argus is doing.
 
 ### Native conversation voice mode
 
