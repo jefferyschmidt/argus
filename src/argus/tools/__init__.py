@@ -3,6 +3,7 @@ import logging
 from argus.config import settings
 from argus.tools.base import PermissionTier, Tool
 from argus.tools.calendar import create_calendar_event_tool, list_calendar_events_tool
+from argus.tools.compose import _build_compose_document
 from argus.tools.desktop import (
     capture_camera_tool,
     click_tool,
@@ -71,7 +72,7 @@ from argus.tools.web_content import close_show_window_tool, fetch_image_tool, sh
 log = logging.getLogger(__name__)
 
 
-def build_default_registry(router=None, task_runner=None, rule_store=None, decision_log=None) -> ToolRegistry:
+def build_default_registry(router=None, task_runner=None, rule_store=None, decision_log=None, spine=None) -> ToolRegistry:
     registry = ToolRegistry()
     for tool in (
         read_file_tool,
@@ -158,6 +159,11 @@ def build_default_registry(router=None, task_runner=None, rule_store=None, decis
         registry.register(_build_deactivate_mode(rule_store))
     if decision_log is not None:
         registry.register(_build_explain_last_action(decision_log))
+
+    # Phase E-compose (PRD §8) -- also not gated by a flag; needs only a
+    # SpineStore to emit document.composed onto.
+    if spine is not None:
+        registry.register(_build_compose_document(spine))
 
     # Plugin tools (README item 13): auto-discovered from argus/plugins/,
     # no core-code changes needed to add a new one. A plugin can't

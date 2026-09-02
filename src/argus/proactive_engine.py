@@ -46,12 +46,16 @@ class ProactiveEngine:
         from argus.salience.escalation import EscalationScheduler
         from argus.salience.held import HeldQueue
         from argus.spine.engine import SpineEngine
-        from argus.spine.store import SpineStore
         from argus.world.model import WorldModel
         from argus.world.rhythms import RhythmStore
         from argus.world.threads import ThreadStore
 
-        self.spine = SpineStore()
+        # Reuses orchestrator.spine rather than building its own (P4) --
+        # constructed unconditionally in Orchestrator.__init__ (also used
+        # there by task_runner/compose_document), so a document.composed
+        # or task.finished observation is immediately visible here too,
+        # not just eventually-consistent across two WAL connections.
+        self.spine = self.orchestrator.spine
         self.spine_engine = SpineEngine(store=self.spine)
         self.threads = ThreadStore(self.spine)
         self.rhythms = RhythmStore()

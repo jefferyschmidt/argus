@@ -88,24 +88,28 @@ class Orchestrator:
         self.memory = MemoryManager(session_id=session_id)
         self.router = ModelRouter(daily_cap_usd=daily_cap_usd)
 
+        # Own SpineStore: ProactiveEngine's doesn't exist yet at this
+        # point in construction (it's built from this orchestrator,
+        # after it), and two independent SpineStore instances to the
+        # same file are safe under WAL (each guards its own connection
+        # with its own lock, PRD §5.2's generalized P1 rule) -- a minor,
+        # documented exception to P4 forced by that ordering, not a
+        # duplicated-and-unsynchronized connection. Used by task_runner
+        # below (when enabled) and by compose_document (always) to emit
+        # task.finished/failed and document.composed respectively.
+        from argus.spine.store import SpineStore
+        self.spine = SpineStore()
+
         # Phase I autonomous tasks (PRD §6), off by default
         # (enable_task_runner). Exposed as self.task_runner (not just
-        # closed over inside the tool registry) so ProactiveEngine --
-        # constructed from this orchestrator, after it -- can reach the
-        # same instance for startup reconciliation rather than building a
-        # second one (P4). Its own SpineStore: ProactiveEngine's doesn't
-        # exist yet at this point in construction, and two independent
-        # SpineStore instances to the same file are safe under WAL (each
-        # guards its own connection with its own lock, PRD §5.2's
-        # generalized P1 rule) -- a minor, documented exception to P4
-        # forced by that ordering, not a duplicated-and-unsynchronized
-        # connection.
+        # closed over inside the tool registry) so ProactiveEngine can
+        # reach the same instance for startup reconciliation rather than
+        # building a second one (P4).
         self.task_runner = None
         if settings.enable_task_runner:
-            from argus.spine.store import SpineStore
             from argus.tasks.store import TaskStore
             from argus.tasks.worker import TaskRunner
-            self.task_runner = TaskRunner(TaskStore(), SpineStore(), self.router)
+            self.task_runner = TaskRunner(TaskStore(), self.spine, self.router)
 
         # Phase G (PRD §7): always constructed, unlike task_runner --
         # Phase G has no enable_ flag. Exposed the same way task_runner
@@ -122,7 +126,7 @@ class Orchestrator:
 
         self.tools = tool_registry or build_default_registry(
             router=self.router, task_runner=self.task_runner,
-            rule_store=self.rule_store, decision_log=self.decision_log,
+            rule_store=self.rule_store, decision_log=self.decision_log, spine=self.spine,
         )
         self.last_tier: Tier | None = None
         self.last_model: str | None = None
