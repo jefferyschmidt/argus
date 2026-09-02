@@ -276,6 +276,7 @@ class ModelRouter:
         on_tool_call=None,
         cacheable_system: str = "",
         prior_messages: list[Message] | None = None,
+        check_budget=None,
     ) -> CompletionResult:
         """Tool use always runs on the frontier tier -- the local 3B model
         isn't reliable at structured tool calling, and if it's escalating
@@ -294,6 +295,8 @@ class ModelRouter:
             kwargs["max_iterations"] = max_iterations
         if on_tool_call is not None:
             kwargs["on_tool_call"] = on_tool_call
+        if check_budget is not None:
+            kwargs["check_budget"] = check_budget
         if cacheable_system:
             kwargs["cacheable_system"] = cacheable_system
         if prior_messages:

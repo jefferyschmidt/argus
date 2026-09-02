@@ -91,6 +91,30 @@ class AgentRunner:
                     f"(used {tokens_used}) after tool call to '{name}'"
                 )
 
+        def check_budget(tokens_used):
+            """Fires at the top of every tool-loop iteration, before the
+            call that iteration would pay for. on_tool_call above only
+            fires once a tool has already run, so a breach was noticed
+            only after paying for the iteration that caused it -- and a
+            long-running tool between two cheap ones could push a run well
+            past its wall-clock before anything checked. This bounds the
+            overshoot to the iteration already in flight.
+
+            Known limit, deliberate: neither hook can interrupt a single
+            hung tool call (a wedged shell command, an MCP server that
+            never answers -- both observed in this repo). Killing work
+            mid-call needs process isolation, not a callback; recorded
+            against PRD Sec 6 rather than half-solved here."""
+            elapsed = time.monotonic() - start
+            if elapsed > self.max_wall_seconds:
+                raise AgentBudgetExceeded(
+                    f"exceeded max_wall_seconds={self.max_wall_seconds} (elapsed {elapsed:.0f}s)"
+                )
+            if self.max_tokens_total is not None and tokens_used > self.max_tokens_total:
+                raise AgentBudgetExceeded(
+                    f"exceeded max_tokens_total={self.max_tokens_total} (used {tokens_used})"
+                )
+
         try:
             result = self.router.complete_with_tools(
                 goal,
@@ -98,6 +122,7 @@ class AgentRunner:
                 tool_registry=self.tools,
                 force_tier=Tier.ADVANCED,
                 max_iterations=self.max_iterations,
+                check_budget=check_budget,
                 on_tool_call=on_tool_call,
             )
             self.audit.record("goal_finished", summary=result.text, model=result.model)

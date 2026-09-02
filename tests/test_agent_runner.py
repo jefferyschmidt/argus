@@ -1,3 +1,4 @@
+import time
 from unittest.mock import MagicMock
 
 from argus.agent.runner import AgentRunner
@@ -88,3 +89,37 @@ def test_on_progress_fires_after_every_tool_call(tmp_path, monkeypatch):
     runner.run("do something", on_progress=progress_notes.append)
 
     assert progress_notes == ["called noop"]
+
+
+def test_budget_is_enforced_on_iterations_that_make_no_tool_call(monkeypatch):
+    """Found at the Phase I gate. Both budget checks lived only inside
+    on_tool_call, so any iteration that did not end in a tool call was
+    never budget-checked at all, and a breach was only ever noticed after
+    the iteration that caused it had already been paid for. This exercises
+    exactly that path: a loop whose iterations cost time but never invoke
+    on_tool_call. Before the check_budget hook it ran to max_iterations
+    regardless of the wall-clock budget."""
+    from argus.agent.runner import AgentRunner
+
+    api_calls = {"n": 0}
+
+    class NoToolCallRouter:
+        def complete_with_tools(self, goal, *, system, tool_registry, force_tier,
+                                max_iterations, check_budget=None, on_tool_call=None, **kw):
+            for _ in range(max_iterations):
+                if check_budget is not None:
+                    check_budget(0)
+                api_calls["n"] += 1
+                time.sleep(0.25)
+            raise AssertionError("ran to max_iterations -- the budget was never enforced")
+
+    runner = AgentRunner(
+        tool_registry=MagicMock(), router=NoToolCallRouter(),
+        max_iterations=50, max_wall_seconds=0.5,
+    )
+
+    result = runner.run("think without calling anything")
+
+    assert "max_wall_seconds" in result
+    assert api_calls["n"] < 50, "the loop was not stopped by the budget"
+    assert api_calls["n"] <= 4, f"kept spending well past the budget ({api_calls['n']} calls)"

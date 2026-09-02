@@ -196,6 +196,7 @@ class AnthropicClient:
         on_tool_call=None,
         cacheable_system: str = "",
         prior_messages: list[Message] | None = None,
+        check_budget=None,
     ) -> CompletionResult:
         """Runs the full tool-use loop: send message, execute any tool calls
         the model asks for via the registry (which enforces permission
@@ -227,6 +228,18 @@ class AnthropicClient:
         tools = _cached_tools(tool_registry)
 
         for _ in range(max_iterations):
+            # Checked BEFORE spending, not only after. on_tool_call below
+            # fires once a tool has already run, so a budget breach was
+            # only ever noticed after paying for the iteration that
+            # breached it -- and never at all on the final iteration,
+            # which returns text without calling a tool. This bounds the
+            # overshoot to the iteration already in flight. It still
+            # cannot interrupt a single hung tool call; see the note on
+            # PRD §6 about why that needs process isolation rather than a
+            # callback.
+            if check_budget is not None:
+                check_budget(total_in + total_out)
+
             response = self._client.messages.create(
                 model=model,
                 max_tokens=4096,

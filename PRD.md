@@ -467,6 +467,17 @@ CREATE TABLE IF NOT EXISTS tasks (
 ```
 
 - Bounded worker pool, `settings.max_concurrent_tasks` (default 2).
+- **Where budget enforcement actually bites, and where it does not.** Checks run at two
+  points: at the top of each tool-loop iteration (`check_budget`, before that iteration is
+  paid for) and after each tool call (`on_tool_call`). Together these bound the overshoot to
+  the single iteration already in flight, and they cover the iterations that end without a
+  tool call — which the `on_tool_call` hook alone never saw.
+  **Known and accepted limit:** neither hook can interrupt a *single hung tool call* — a
+  wedged shell command, or an MCP server that never answers (both observed in this repo).
+  A run blocked inside one tool exceeds its wall-clock until that tool returns. Truly
+  bounding that needs process isolation, not a callback; it is recorded here as a known bound
+  rather than half-solved. Any future work on it belongs with Phase D's daemon, where a task
+  can own a real subprocess.
 - **Hard budgets are enforced, not advisory.** On exceeding either, the task is stopped and
   marked `failed` with the reason. This is where runaway cost lives; there is no exception.
 - `progress_note` is updated as the task runs so "how's that coming?" is answerable without
