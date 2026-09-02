@@ -73,6 +73,20 @@ class HeldQueue:
             ).fetchall()
         return [_row_to_item(r) for r in rows]
 
+    def list_dismissed(self, since: float | None = None, limit: int = 1000) -> list[HeldItem]:
+        """G4 induction (PRD §7.5) reads this looking for "repeated
+        dismissals of the same kind" -- a pattern worth proposing a
+        suppression rule for."""
+        clauses, params = ["dismissed_ts IS NOT NULL"], []
+        if since is not None:
+            clauses.append("dismissed_ts >= ?")
+            params.append(since)
+        sql = f"SELECT * FROM held_items WHERE {' AND '.join(clauses)} ORDER BY dismissed_ts DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_item(r) for r in rows]
+
     def mark_delivered(self, item_id: int) -> bool:
         with self._lock:
             cur = self._conn.execute(

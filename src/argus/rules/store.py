@@ -153,6 +153,20 @@ class RuleStore:
             rows = self._conn.execute("SELECT * FROM rules WHERE status = 'proposed' ORDER BY created_ts").fetchall()
         return [_row_to_rule(r) for r in rows]
 
+    def list_by_origin(self, origin: str, *, since: float | None = None) -> list[Rule]:
+        """G4 induction (PRD §7.5) reads this in every status, not just
+        active/proposed -- a revoked induced rule still counts against
+        "don't re-propose a rejected pattern," and every induced rule
+        (any status) counts against the weekly proposal cap."""
+        clauses, params = ["origin = ?"], [origin]
+        if since is not None:
+            clauses.append("created_ts >= ?")
+            params.append(since)
+        sql = f"SELECT * FROM rules WHERE {' AND '.join(clauses)} ORDER BY created_ts DESC"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_rule(r) for r in rows]
+
     def record_hit(self, rule_id: int) -> None:
         with self._lock:
             self._conn.execute(

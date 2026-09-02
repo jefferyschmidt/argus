@@ -339,6 +339,11 @@ class Settings(BaseSettings):
     # registered, and whether Orchestrator constructs a TaskRunner at all.
     enable_task_runner: bool = False
 
+    # PRD §7.5 (G4 induction). Exceeding this makes it the nagging it
+    # exists to remove -- counts ALL induced proposals created in the
+    # trailing 7 days, not just still-pending ones.
+    induced_rule_proposals_per_week: int = 2
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir
