@@ -1137,6 +1137,58 @@ omissions in this document, not implementation errors — §7.6 listed only intr
 and never a rule-authoring one, and the roadmap named query-over-history as a primary mode
 without ever specifying a unit for it.
 
+### Unit 24a — Confirmation prompt must not persist in the conversation (SEVERE, do first)
+
+**Depends on:** nothing. This wedges the assistant; fix it before anything else.
+
+**Confirmed live 2026-09-02** from `data/events/events-2026-09-02.jsonl`:
+
+```
+13:29:39  confirm_request   write_file
+13:29:53  confirm_resolved            (approved via the console card)
+13:32:22  you    "Artis how is Turkish company?"
+13:32:23  argus  "Sorry, didn't catch that -- yes or no?"
+13:32:31  you    "Well, the answer is yes."
+13:32:32  argus  "Sorry, didn't catch that -- yes or no?"
+           ... repeats verbatim until the process is restarted
+```
+
+The repeated sentence is `_ask_voice_confirmation`'s own second-attempt prompt string, and no
+new `confirm_request` appears — the confirmation had resolved cleanly three minutes earlier.
+
+**Cause:** `_ask_voice_confirmation` speaks its question by injecting a
+`conversation.item.create` with `role: "system"` reading *"Say exactly this to the user, word
+for word: …"*. Realtime API conversation items **persist for the whole session**. One is
+injected per attempt and none are ever removed, so once the confirmation finishes the model is
+permanently under a standing instruction to say that sentence, and obeys it on every later
+turn. Two attempts leave two such instructions; the model follows the most recent.
+
+**Effect:** after any `CONFIRM`-tier tool call in `VOICE_MODE=realtime`, Argus answers every
+subsequent utterance with the confirmation prompt and cannot be recovered without restarting
+the process. Introduced by the voice-confirmation work earlier the same day.
+
+**Fix:** do not put the prompt into conversation history at all. `response.create` accepts a
+response-scoped `instructions` field that applies to that single response and is never
+persisted:
+
+```jsonc
+{"type": "response.create", "response": {"instructions": "Say exactly this to the user, word for word: \"...\""}}
+```
+
+Replace the `conversation.item.create` + `_create_response_or_defer` pair in
+`_ask_voice_confirmation` with a single response-scoped create. Deleting the injected items
+afterwards via `conversation.item.delete` is **not** the fix to reach for — it leaves a window
+in which the instruction is live, and it fails silently if the delete is dropped.
+
+**Acceptance:**
+- [ ] After a `CONFIRM`-tier tool call resolves by any route (spoken yes, spoken no, UI click,
+      or timeout), the next unrelated question gets a normal answer.
+- [ ] A regression test asserts no `conversation.item.create` carrying the confirmation prompt
+      is ever sent — the prompt travels only in a response-scoped `instructions` field.
+- [ ] Two consecutive confirmations in one session leave no residue from the first.
+- [ ] `announce()` and `submit_text_message()`, which legitimately *do* add conversation
+      items, are unchanged.
+
 ### Unit 24 — Voice confirmation window must start when the question finishes
 
 **Depends on:** nothing. Do this first; it is a live annoyance.
