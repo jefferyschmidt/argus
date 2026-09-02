@@ -1276,3 +1276,168 @@ returning a compact summary rather than raw rows.
       back that far.
 - [ ] `limit` is capped server-side regardless of what the model asks for.
 - [ ] Zero LLM calls inside the tool itself.
+
+---
+
+## 14. Unit 27 — Standing authorizations
+
+**Depends on:** unit 15 (`RuleStore`), unit 25 (`remember_preference`).
+
+**The gap:** `ROADMAP.md` Part III's G-delta 3 unified standing authorizations into the rule
+store, and §7.1's `rules` table has an `authorization` column — but **nothing in the permission
+gate ever reads it.** Verified 2026-09-02: `tools/registry.py` and `rules/matcher.py` contain
+no reference to it. So *"you can archive newsletters without asking"* is storable and inert,
+and every benign repeated action is still confirmed forever.
+
+### 14.1 How the existing gate works — read this before changing it
+
+`ToolRegistry.execute()` handles `CONFIRM` tier in this order:
+
+1. `_explicit_task_authorized` — the user asked for this in so many words this turn → run.
+2. `approval_key` (the tool's `group`, else its name) already in `_task_approved` → run.
+   **Session-scoped and in-process**; cleared by `reset_task_autonomy()` every turn.
+3. `confirmer(name, input)` → deny on a no.
+4. If the tool is `high_risk`, `confirmer` again. Both must pass.
+5. Record the approval if the tool is `repeatable`.
+
+A standing authorization is the **durable, scoped, revocable** sibling of step 2. It is checked
+as a new **step 2b**, after `_task_approved` and before the confirmer. It changes nothing else.
+
+### 14.2 Grant shape
+
+Grants live in the existing `rules` table (`kind='authorization'`), so `list_rules` and
+`revoke_rule` already cover inspection and revocation — no parallel system, per G-delta 3. The
+`authorization` column holds:
+
+```jsonc
+{
+  "tool": "delete_email",
+  "allow": [{"field": "sender", "op": "contains", "value": "newsletter"}],
+  "deny":  [{"field": "sender", "op": "fuzzy",    "value": "a real person, not a company"}],
+  "expires_ts": 1772668800
+}
+```
+
+`allow`/`deny` reuse Appendix A.3's filter vocabulary and evaluator, applied to the **tool's
+arguments** rather than to an Observation. Reuse the matcher's filter code; do not write a
+second one.
+
+### 14.3 Rules that are not negotiable
+
+- **A grant never covers `PermissionTier.DENY`.** That tier means disabled, not "ask first".
+- **`deny` clauses beat `allow` clauses**, always. This is what makes *"…but never delete
+  anything from a person"* expressible, and it is the half of the roadmap's own example that
+  a naive allow-list would silently drop.
+- **A grant with an empty `allow` list is refused at authoring time.** A blanket "this tool,
+  always" grant is not a scoped authorization; it is turning the tier off.
+- **`high_risk` tools may be granted, but only with the double confirmation paid at authoring
+  time** — the same two confirmations `execute()` would demand per call, asked once when the
+  grant is created instead of forever afterwards. This is deliberate: the user's standing
+  position is that having asked once is enough, and `delete_email` (the motivating example)
+  is itself `high_risk`, so a blanket exclusion would block the very case this unit exists
+  for. Scope constraints plus expiry plus revocability are what make it safe, not repetition.
+- **Every grant has an `expires_ts`**, defaulting to `settings.authorization_default_days`
+  (90). An expired grant is inert and reported as expired by `list_rules`, never
+  auto-renewed.
+- **Every auto-approved call records `tool.auto_approved` on the spine** with the tool, the
+  arguments, and the granting rule id. Without this the user cannot see what was done without
+  asking, and `argus timeline` becomes the audit trail. **This is a required part of the
+  unit, not optional.**
+- **A `fuzzy` op inside a grant uses the same cached judge as A.3.** If the judge is
+  unavailable, the clause evaluates to **no-match for `allow` and match for `deny`** — i.e.
+  uncertainty falls back to asking, never to acting.
+
+### 14.4 Authoring
+
+Extend `remember_preference` (unit 25) to recognize an authorization-shaped utterance and
+compile it into a `kind='authorization'` rule. The read-back must state the scope in plain
+words — *"I'll archive newsletters without asking, but never anything from a person, and I'll
+forget this in 90 days"* — because scope is the entire safety story and the user is approving
+it unheard otherwise.
+
+### 14.5 Acceptance
+
+- [ ] A granted, in-scope call runs with no confirmer invocation at all.
+- [ ] The same tool with out-of-scope arguments still prompts normally.
+- [ ] A `deny` clause overrides a matching `allow` clause.
+- [ ] A grant with an empty `allow` list is refused at authoring time.
+- [ ] A `DENY`-tier tool is never run via a grant.
+- [ ] Granting a `high_risk` tool requires two confirmations at authoring time.
+- [ ] An expired grant does not authorize, and `list_rules` shows it as expired.
+- [ ] `revoke_rule` on a grant restores normal prompting immediately.
+- [ ] Every auto-approved call writes exactly one `tool.auto_approved` observation.
+- [ ] With the fuzzy judge unavailable, an `allow` fuzzy clause does not authorize.
+- [ ] Grants survive a restart.
+
+Add `tool.auto_approved` to §3.1's kind vocabulary.
+
+---
+
+## 15. Phase H — The status surface
+
+**Depends on:** B, C. See `ROADMAP.md` Part III Phase H for the rationale.
+
+**Why now:** a week of machinery is invisible. Threads open and close, items are held, rules
+fire, integrations break — and the only windows are `argus timeline` and `argus held`, which
+exist *only because this phase doesn't*. Until the held queue is visible, deferral cannot be
+trusted, and the salience weights cannot be tuned by feel.
+
+**The governing constraint:** the dashboard and the voice interface are two projections of
+**one** world model. The dashboard gets no store of its own. Recreating state in the UI layer
+would be the split-registry bug (P4) in a new place.
+
+### Unit 28 — `GET /api/state`
+
+`ui/server.py` currently exposes only an event stream. Add a state projection.
+
+- Returns a JSON `WorldSnapshot` plus held items, active rules, and system health.
+- Built from the **already-constructed** `ProactiveEngine` instances — the server must not
+  build its own `WorldModel`, `ThreadStore`, or `SpineStore` (P4, and P1: the UI is another
+  thread).
+- Bounded and cheap: honors `WorldModel`'s existing snapshot TTL; caps every list.
+- Returns valid, empty-but-shaped JSON when the engine isn't running (`argus chat`, or a
+  bare UI preview), never a 500.
+
+**Acceptance:** shape is stable when empty · no second store is constructed (assert by
+patching the constructors) · 100 rapid calls trigger at most one recompute · never 500s with
+no engine.
+
+### Unit 29 — Widgets, ranked by salience
+
+Extend `ui/static/index.html`. Widgets **render from what the state endpoint actually
+contains** — a widget with no data does not appear. That is what makes this adaptive rather
+than configurable: adding a sensor later surfaces a widget with no UI work.
+
+Initial set: open threads (count + top items) · important mail · next obligations · home &
+devices · active rules (and which are *currently firing*) · system health · **held items** ·
+current focus.
+
+Order and prominence come from the salience ranking already computed, not a fixed layout.
+
+**Acceptance:** a widget whose data is absent does not render · ordering follows the ranking ·
+the page degrades to "nothing tracked yet" rather than erroring · no polling faster than
+`settings.dashboard_poll_seconds` (default 5).
+
+### Unit 30 — Acknowledgment closes the loop
+
+Clicking "got it" on a thread widget must emit `thread.acknowledged` — the same observation a
+spoken acknowledgment produces (Appendix A.1) — so it closes the thread, which resolves any
+rule instance watching it, which restores the prior state.
+
+This one path exercises B, C, G3 and H together and is the end-to-end integration test for
+the whole architecture.
+
+**Acceptance:** a UI acknowledgment closes the thread · a watching rule instance resolves and
+its prior state is restored · a spoken acknowledgment and a clicked one are indistinguishable
+downstream · dismissing a held item marks it dismissed and it does not reappear.
+
+### Unit 31 — Retire the scaffolding
+
+Once 28–30 are live, `argus timeline` and `argus held` stay (they are genuinely useful
+headless and over SSH) but stop being the primary way to see state. No code change beyond
+noting it in `README.md`.
+
+### Out of scope for Phase H
+
+No editing of rules from the dashboard beyond revoke; no chat UI changes; no authentication
+(the console is already localhost-only — revisit with Phase D, not here).
