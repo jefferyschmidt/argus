@@ -119,3 +119,30 @@ def test_suppress_does_not_consume_budget_or_get_held(tmp_path, monkeypatch):
     assert decision.action == "suppress"
     assert engine.held.pending() == []
     assert engine.budget.remaining(1_000_000.0) == 3
+
+
+# -- decision log (PRD §7.6) -------------------------------------------
+
+def test_decide_logs_the_decision_when_a_decision_log_is_given(tmp_path):
+    from argus.salience.decision_log import DecisionLog
+
+    matcher = RuleMatcher(RuleStore(tmp_path / "rules.db"))
+    budget = InterruptionBudget(tmp_path / "budget.db")
+    held = HeldQueue(tmp_path / "held.db")
+    decision_log = DecisionLog(tmp_path / "log.db")
+    engine = SalienceEngine(matcher, budget, held, decision_log=decision_log)
+    candidate = Candidate(observation_id=1, kind="git.branch_stale", subject="repo-x", text="x", base_urgency=0.05)
+
+    decision = engine.decide(candidate, _snapshot(), now=1_000_000.0)
+
+    last = decision_log.last()
+    assert last.kind == "git.branch_stale"
+    assert last.subject == "repo-x"
+    assert last.action == decision.action
+    assert last.reason == decision.reason
+
+
+def test_decide_without_a_decision_log_does_not_raise(tmp_path):
+    engine = _engine(tmp_path)  # no decision_log
+    candidate = Candidate(observation_id=1, kind="git.branch_stale", subject=None, text="x", base_urgency=0.05)
+    engine.decide(candidate, _snapshot(), now=1_000_000.0)  # must not raise

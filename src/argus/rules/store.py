@@ -174,3 +174,35 @@ class RuleStore:
                 (time.time(), rule_id),
             )
             self._conn.commit()
+
+    def list_by_group(self, group_name: str) -> list[Rule]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM rules WHERE group_name = ? ORDER BY created_ts", (group_name,)
+            ).fetchall()
+        return [_row_to_rule(r) for r in rows]
+
+    def activate_mode(self, group_name: str) -> int:
+        """PRD §7.6 (G-h): "a named mode arms ... its whole group
+        atomically." One UPDATE over every member is one SQLite
+        transaction -- either all matching rows change or none do. Only
+        touches rules already `disabled` in this group: a mode toggles
+        rules that have each individually been confirmed once already, it
+        does not confirm a still-`proposed` rule on a group's behalf."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE rules SET status = 'active' WHERE group_name = ? AND status = 'disabled'",
+                (group_name,),
+            )
+            self._conn.commit()
+            return cur.rowcount
+
+    def deactivate_mode(self, group_name: str) -> int:
+        """The other half of activate_mode -- same atomicity guarantee."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE rules SET status = 'disabled' WHERE group_name = ? AND status = 'active'",
+                (group_name,),
+            )
+            self._conn.commit()
+            return cur.rowcount

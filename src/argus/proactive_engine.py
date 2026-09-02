@@ -40,7 +40,6 @@ class ProactiveEngine:
         self.orchestrator = orchestrator
 
         from argus.rules.matcher import RuleMatcher
-        from argus.rules.store import RuleStore
         from argus.salience.budget import InterruptionBudget
         from argus.salience.dispatch import SalienceDispatcher
         from argus.salience.engine import SalienceEngine
@@ -58,11 +57,19 @@ class ProactiveEngine:
         self.rhythms = RhythmStore()
         self.world_model = WorldModel(spine=self.spine, threads=self.threads, rhythms=self.rhythms)
 
-        self.rule_matcher = RuleMatcher(RuleStore())
+        # Reuses orchestrator.rule_store/.decision_log rather than
+        # building its own (P4) -- both are constructed unconditionally
+        # in Orchestrator.__init__ specifically so this engine, built
+        # from that orchestrator afterwards, can share them: a rule
+        # revoked via the introspection tools is immediately visible to
+        # matching, and a decision logged here is immediately explainable
+        # through explain_last_action.
+        self.rule_matcher = RuleMatcher(self.orchestrator.rule_store)
         self.budget = InterruptionBudget()
         self.held = HeldQueue()
         self.salience_engine = SalienceEngine(
             self.rule_matcher, self.budget, self.held, rhythms=self.rhythms, spine=self.spine,
+            decision_log=self.orchestrator.decision_log,
         )
         self.dispatcher = SalienceDispatcher(self.salience_engine, self.world_model, speak_fn, interaction_lock)
         # Escalation delivery reuses the same speak_fn -- channel-specific

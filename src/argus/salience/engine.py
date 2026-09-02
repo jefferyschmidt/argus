@@ -20,7 +20,7 @@ from argus.world.rhythms import RhythmStore
 class SalienceEngine:
     def __init__(
         self, matcher, budget: InterruptionBudget, held: HeldQueue,
-        rhythms: RhythmStore | None = None, spine=None, llm_tiebreak=None,
+        rhythms: RhythmStore | None = None, spine=None, llm_tiebreak=None, decision_log=None,
     ):
         self.matcher = matcher
         self.budget = budget
@@ -28,6 +28,10 @@ class SalienceEngine:
         self.rhythms = rhythms
         self.spine = spine
         self.llm_tiebreak = llm_tiebreak
+        # PRD §7.6: explain_last_action reads this back. Optional --
+        # existing callers/tests that don't pass one just don't get a
+        # persisted history, same as before this existed.
+        self.decision_log = decision_log
 
     def decide(
         self, candidate: Candidate, snapshot: WorldSnapshot, observation=None, now: float | None = None,
@@ -54,6 +58,11 @@ class SalienceEngine:
             self.held.add(
                 kind=candidate.kind, subject=candidate.subject, text=candidate.text,
                 score=final_score, thread_id=candidate.thread_id,
+            )
+
+        if self.decision_log is not None:
+            self.decision_log.record(
+                kind=candidate.kind, subject=candidate.subject, action=decision.action, reason=decision.reason, ts=now,
             )
 
         return decision

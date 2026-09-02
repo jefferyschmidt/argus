@@ -107,7 +107,23 @@ class Orchestrator:
             from argus.tasks.worker import TaskRunner
             self.task_runner = TaskRunner(TaskStore(), SpineStore(), self.router)
 
-        self.tools = tool_registry or build_default_registry(router=self.router, task_runner=self.task_runner)
+        # Phase G (PRD §7): always constructed, unlike task_runner --
+        # Phase G has no enable_ flag. Exposed the same way task_runner
+        # is, for the same reason: ProactiveEngine (built from this
+        # orchestrator, after it) reuses these exact instances for its
+        # RuleMatcher and SalienceEngine's decision log instead of
+        # building its own, so a rule revoked via the introspection tools
+        # here is immediately visible to matching, and a decision logged
+        # by salience there is immediately explainable here.
+        from argus.rules.store import RuleStore
+        from argus.salience.decision_log import DecisionLog
+        self.rule_store = RuleStore()
+        self.decision_log = DecisionLog()
+
+        self.tools = tool_registry or build_default_registry(
+            router=self.router, task_runner=self.task_runner,
+            rule_store=self.rule_store, decision_log=self.decision_log,
+        )
         self.last_tier: Tier | None = None
         self.last_model: str | None = None
         self.last_expression: str | None = None

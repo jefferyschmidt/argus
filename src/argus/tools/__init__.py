@@ -49,6 +49,13 @@ from argus.tools.routines import (
 )
 from argus.tools.scan_document import _build_scan_document
 from argus.tools.second_opinion import _build_second_opinion
+from argus.tools.rules import (
+    _build_activate_mode,
+    _build_deactivate_mode,
+    _build_explain_last_action,
+    _build_list_rules,
+    _build_revoke_rule,
+)
 from argus.tools.self_improve import (
     commit_own_changes_tool,
     list_own_source_tool,
@@ -64,7 +71,7 @@ from argus.tools.web_content import close_show_window_tool, fetch_image_tool, sh
 log = logging.getLogger(__name__)
 
 
-def build_default_registry(router=None, task_runner=None) -> ToolRegistry:
+def build_default_registry(router=None, task_runner=None, rule_store=None, decision_log=None) -> ToolRegistry:
     registry = ToolRegistry()
     for tool in (
         read_file_tool,
@@ -139,6 +146,18 @@ def build_default_registry(router=None, task_runner=None) -> ToolRegistry:
         registry.register(_build_start_task(task_runner))
         registry.register(_build_task_status(task_runner))
         registry.register(_build_cancel_task(task_runner))
+
+    # Phase G introspection (PRD §7.6) -- not gated by a feature flag
+    # (Phase G has never had one, unlike Phase I); only registered when
+    # the collaborators actually exist, same "don't build one here"
+    # pattern as everything else in this function.
+    if rule_store is not None:
+        registry.register(_build_list_rules(rule_store))
+        registry.register(_build_revoke_rule(rule_store))
+        registry.register(_build_activate_mode(rule_store))
+        registry.register(_build_deactivate_mode(rule_store))
+    if decision_log is not None:
+        registry.register(_build_explain_last_action(decision_log))
 
     # Plugin tools (README item 13): auto-discovered from argus/plugins/,
     # no core-code changes needed to add a new one. A plugin can't
