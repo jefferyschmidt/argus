@@ -36,6 +36,7 @@ from argus.tools.memory_review import (
     list_pending_core_memories_tool,
     reject_core_memory_tool,
 )
+from argus.rules.authorization import AuthorizationChecker
 from argus.tools.query_timeline import _build_query_timeline
 from argus.tools.registry import ToolRegistry, console_confirmer
 from argus.tools.reminders import cancel_reminder_tool, list_reminders_tool, set_reminder_tool
@@ -75,7 +76,12 @@ log = logging.getLogger(__name__)
 
 
 def build_default_registry(router=None, task_runner=None, rule_store=None, decision_log=None, spine=None) -> ToolRegistry:
-    registry = ToolRegistry()
+    # PRD §14 (unit 27): wired at construction, not registered as a tool
+    # -- step 2b lives inside ToolRegistry.execute() itself, not as
+    # something a caller invokes. None when there's no rule_store, same
+    # "only if the collaborator exists" gating as everything else here.
+    authorization_checker = AuthorizationChecker(rule_store) if rule_store is not None else None
+    registry = ToolRegistry(authorization_checker=authorization_checker, spine=spine)
     for tool in (
         read_file_tool,
         list_dir_tool,
@@ -164,7 +170,7 @@ def build_default_registry(router=None, task_runner=None, rule_store=None, decis
         # second_opinion/scan_document above, on top of the rule_store gate
         # the rest of this block already uses.
         if router is not None:
-            registry.register(_build_remember_preference(rule_store, router))
+            registry.register(_build_remember_preference(rule_store, router, registry))
     if decision_log is not None:
         registry.register(_build_explain_last_action(decision_log))
 

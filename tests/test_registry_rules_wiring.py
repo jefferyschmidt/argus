@@ -63,6 +63,24 @@ def test_declining_the_confirmation_leaves_no_rule_at_all(tmp_path):
     assert store.list_pending() == []
 
 
+def test_build_default_registry_wires_an_authorization_checker_with_a_rule_store():
+    """PRD §14 (unit 27): step 2b needs a live AuthorizationChecker on
+    the constructed registry, not just the rule-authoring tools."""
+    registry = build_default_registry(router=None, rule_store=MagicMock())
+    assert registry.authorization_checker is not None
+
+
+def test_build_default_registry_leaves_no_authorization_checker_without_a_rule_store():
+    registry = build_default_registry(router=None, rule_store=None)
+    assert registry.authorization_checker is None
+
+
+def test_build_default_registry_wires_spine_into_the_registry_for_auto_approved_recording():
+    spine = MagicMock()
+    registry = build_default_registry(router=None, spine=spine)
+    assert registry.spine is spine
+
+
 def test_explain_last_action_absent_without_a_decision_log():
     registry = build_default_registry(router=None, decision_log=None)
     assert "explain_last_action" not in registry._tools

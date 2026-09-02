@@ -43,6 +43,30 @@ def _compiled_regex(pattern: str) -> "re.Pattern | None":
     return _regex_cache[pattern]
 
 
+def evaluate_ops(actual, op: str, value) -> bool:
+    """Appendix A.3's op vocabulary MINUS `fuzzy`. Shared by RuleMatcher
+    (trigger filters, below) and rules/authorization.py (unit 27's grant
+    allow/deny clauses, applied to tool arguments instead of an
+    Observation) -- the one piece of the evaluator both can use as-is.
+    `fuzzy` is deliberately excluded: it needs a judge + cache neither
+    caller can hand through a pure function, and the two callers actually
+    want opposite fallbacks when that judge is unavailable (RuleMatcher
+    fails a trigger to no-match; a grant's `deny` clause must fail to
+    MATCH instead, per PRD §14.3 -- uncertainty always falls back to
+    asking, never to acting), so each keeps its own fuzzy handling."""
+    if op == "matches":
+        pattern = _compiled_regex(value) if isinstance(value, str) else None
+        return bool(pattern and isinstance(actual, str) and pattern.search(actual))
+    handler = _COMPARISON_OPS.get(op)
+    if handler is None:
+        log.warning("Unknown filter op %r -- treating as no-match", op)
+        return False
+    try:
+        return bool(handler(actual, value))
+    except TypeError:
+        return False
+
+
 def _resolve_field(obs, field: str):
     """Dotted path against an Observation: subject, source, confidence,
     or payload.<key> (nested allowed). Unresolvable is no-match (None).
@@ -98,22 +122,12 @@ class RuleMatcher:
         field = f.get("field")
         op = f.get("op")
         value = f.get("value")
-        actual = _resolve_field(obs, field) if field else None
 
-        if op == "matches":
-            pattern = _compiled_regex(value) if isinstance(value, str) else None
-            return bool(pattern and isinstance(actual, str) and pattern.search(actual))
         if op == "fuzzy":
             return self._fuzzy_match(obs, observation_id, value)
 
-        handler = _COMPARISON_OPS.get(op)
-        if handler is None:
-            log.warning("Unknown filter op %r -- treating as no-match", op)
-            return False
-        try:
-            return bool(handler(actual, value))
-        except TypeError:
-            return False
+        actual = _resolve_field(obs, field) if field else None
+        return evaluate_ops(actual, op, value)
 
     def _fuzzy_match(self, obs, observation_id: int | None, value) -> bool:
         if observation_id is None:

@@ -359,6 +359,11 @@ class Settings(BaseSettings):
     voice_confirm_speak_timeout_seconds: float = 15.0
     voice_confirm_listen_seconds: float = 10.0
 
+    # PRD §14 (unit 27): standing authorizations. Every grant has an
+    # expiry -- never auto-renewed, never permanent -- so a forgotten
+    # grant ages out on its own rather than silently authorizing forever.
+    authorization_default_days: int = 90
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir

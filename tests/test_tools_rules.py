@@ -285,3 +285,142 @@ def test_a_rule_authored_this_way_actually_suppresses():
     decision = engine.decide(candidate, snapshot, observation=observation, now=1_000_000.0)
 
     assert decision.action == "suppress"
+
+
+# -- remember_preference authoring standing authorizations (PRD §14, unit 27) --
+
+_GRANT_REPLY = json.dumps({
+    "kind": "authorization",
+    "natural_language": "I'll archive newsletters without asking, but never anything from a real person, and I'll forget this in 90 days",
+    "authorization": {
+        "tool": "delete_email",
+        "allow": [{"field": "sender", "op": "contains", "value": "newsletter"}],
+        "deny": [],
+    },
+})
+
+
+def _grant_reply(tool="delete_email"):
+    return json.dumps({
+        "kind": "authorization", "natural_language": f"I'll {tool} newsletters without asking",
+        "authorization": {
+            "tool": tool,
+            "allow": [{"field": "sender", "op": "contains", "value": "newsletter"}],
+            "deny": [],
+        },
+    })
+
+
+def test_remember_preference_grants_a_non_high_risk_tool_with_one_confirmation():
+    """§14.5: only the outer CONFIRM-tier gate is paid for a non-high-risk
+    grant -- no second confirmation."""
+    from argus.tools.registry import ToolRegistry
+
+    store = RuleStore(":memory:")
+    confirmer = MagicMock(return_value=True)
+    registry = ToolRegistry(confirmer=confirmer)
+    registry.register(_build_remember_preference(store, _router(_grant_reply("archive_email")), registry))
+
+    result = registry.execute("remember_preference", {"utterance": "archive newsletters without asking"})
+
+    assert "now active" in result
+    assert confirmer.call_count == 1
+    [rule] = store.list_active()
+    assert rule.kind == "authorization"
+
+
+def test_remember_preference_granting_a_high_risk_tool_requires_two_confirmations():
+    """§14.3/§14.5: high_risk tools may be granted, but only with the
+    double confirmation execute() would demand per call -- paid once,
+    here, at authoring time."""
+    from argus.tools.base import Tool
+    from argus.tools.registry import ToolRegistry
+
+    store = RuleStore(":memory:")
+    confirmer = MagicMock(return_value=True)
+    registry = ToolRegistry(confirmer=confirmer)
+    registry.register(Tool(
+        name="delete_email", description="x", input_schema={"type": "object", "properties": {}},
+        tier=PermissionTier.CONFIRM, handler=lambda a: "deleted", high_risk=True,
+    ))
+    registry.register(_build_remember_preference(store, _router(_GRANT_REPLY), registry))
+
+    result = registry.execute("remember_preference", {"utterance": "archive newsletters without asking"})
+
+    assert "now active" in result
+    assert confirmer.call_count == 2
+    [rule] = store.list_active()
+    assert rule.kind == "authorization"
+
+
+def test_declining_the_second_confirmation_leaves_no_active_or_pending_grant():
+    from argus.tools.base import Tool
+    from argus.tools.registry import ToolRegistry
+
+    store = RuleStore(":memory:")
+    # Outer gate approves; the inner, grant-specific high_risk confirmation declines.
+    confirmer = MagicMock(side_effect=[True, False])
+    registry = ToolRegistry(confirmer=confirmer)
+    registry.register(Tool(
+        name="delete_email", description="x", input_schema={"type": "object", "properties": {}},
+        tier=PermissionTier.CONFIRM, handler=lambda a: "deleted", high_risk=True,
+    ))
+    registry.register(_build_remember_preference(store, _router(_GRANT_REPLY), registry))
+
+    result = registry.execute("remember_preference", {"utterance": "archive newsletters without asking"})
+
+    assert "declined" in result
+    assert confirmer.call_count == 2
+    assert store.list_active() == []
+    assert store.list_pending() == []
+
+
+def test_remember_preference_without_a_tool_registry_skips_the_high_risk_gate():
+    """tool_registry=None (default) is a graceful no-op, not a crash --
+    used by callers/tests that don't care about the grant-specific gate."""
+    store = RuleStore(":memory:")
+    tool = _build_remember_preference(store, _router(_GRANT_REPLY))  # no tool_registry
+
+    result = tool.handler({"utterance": "archive newsletters without asking"})
+
+    assert "now active" in result
+    [rule] = store.list_active()
+    assert rule.kind == "authorization"
+
+
+def test_list_rules_shows_an_expired_grant_as_expired():
+    store = RuleStore(":memory:")
+    rule_id = store.propose(
+        natural_language="archive newsletters without asking", kind="authorization",
+        trigger={}, action={"type": "authorize"},
+        authorization={
+            "tool": "delete_email",
+            "allow": [{"field": "sender", "op": "contains", "value": "newsletter"}],
+            "deny": [], "expires_ts": time.time() - 1,
+        },
+    )
+    store.confirm(rule_id)
+    tool = _build_list_rules(store)
+
+    result = tool.handler({})
+
+    assert "[expired]" in result
+
+
+def test_list_rules_does_not_flag_an_unexpired_grant():
+    store = RuleStore(":memory:")
+    rule_id = store.propose(
+        natural_language="archive newsletters without asking", kind="authorization",
+        trigger={}, action={"type": "authorize"},
+        authorization={
+            "tool": "delete_email",
+            "allow": [{"field": "sender", "op": "contains", "value": "newsletter"}],
+            "deny": [], "expires_ts": time.time() + 86400,
+        },
+    )
+    store.confirm(rule_id)
+    tool = _build_list_rules(store)
+
+    result = tool.handler({})
+
+    assert "[expired]" not in result

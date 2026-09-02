@@ -1,4 +1,5 @@
 import json
+import time
 from unittest.mock import MagicMock
 
 from argus.llm.base import CompletionResult, Tier
@@ -183,3 +184,99 @@ def test_ask_llm_uses_advanced_tier(tmp_path):
 
     _, kwargs = router.complete.call_args
     assert kwargs["force_tier"] == Tier.ADVANCED
+
+
+# -- standing authorizations (PRD §14, unit 27) --------------------------
+
+def test_compiles_an_authorization_shaped_utterance(tmp_path):
+    store = _store(tmp_path)
+    reply = json.dumps({
+        "kind": "authorization",
+        "natural_language": "I'll archive newsletters without asking, but never anything from a real person, and I'll forget this in 90 days",
+        "authorization": {
+            "tool": "delete_email",
+            "allow": [{"field": "sender", "op": "contains", "value": "newsletter"}],
+            "deny": [{"field": "sender", "op": "fuzzy", "value": "a real person"}],
+        },
+    })
+    compiler = RuleCompiler(_router(reply))
+
+    result = compiler.compile("archive newsletters without asking, but never anything from a person", store)
+
+    assert result.rule_id is not None
+    assert result.clarifying_question is None
+    rule = store.get(result.rule_id)
+    assert rule.kind == "authorization"
+    assert rule.status == "proposed"
+    assert rule.authorization["tool"] == "delete_email"
+    assert rule.authorization["allow"] == [{"field": "sender", "op": "contains", "value": "newsletter"}]
+    assert rule.authorization["deny"] == [{"field": "sender", "op": "fuzzy", "value": "a real person"}]
+
+
+def test_authorization_expires_ts_defaults_to_the_configured_days(tmp_path, monkeypatch):
+    monkeypatch.setattr("argus.rules.compiler.settings.authorization_default_days", 30)
+    store = _store(tmp_path)
+    reply = json.dumps({
+        "kind": "authorization", "natural_language": "x",
+        "authorization": {
+            "tool": "delete_email",
+            "allow": [{"field": "sender", "op": "contains", "value": "newsletter"}],
+        },
+    })
+    compiler = RuleCompiler(_router(reply))
+
+    before = time.time()
+    result = compiler.compile("archive newsletters without asking", store)
+
+    rule = store.get(result.rule_id)
+    expected = before + 30 * 86400
+    assert abs(rule.authorization["expires_ts"] - expected) < 5
+
+
+def test_authorization_expires_days_overrides_the_default(tmp_path):
+    store = _store(tmp_path)
+    reply = json.dumps({
+        "kind": "authorization", "natural_language": "x",
+        "authorization": {
+            "tool": "delete_email",
+            "allow": [{"field": "sender", "op": "contains", "value": "newsletter"}],
+            "expires_days": 7,
+        },
+    })
+    compiler = RuleCompiler(_router(reply))
+
+    before = time.time()
+    result = compiler.compile("archive newsletters without asking for a week", store)
+
+    rule = store.get(result.rule_id)
+    assert abs(rule.authorization["expires_ts"] - (before + 7 * 86400)) < 5
+
+
+def test_authorization_with_empty_allow_is_refused_without_storing_a_rule(tmp_path):
+    store = _store(tmp_path)
+    reply = json.dumps({
+        "kind": "authorization", "natural_language": "x",
+        "authorization": {"tool": "delete_email", "allow": []},
+    })
+    compiler = RuleCompiler(_router(reply))
+
+    result = compiler.compile("just always let you delete my email, no need to ask", store)
+
+    assert result.rule_id is None
+    assert result.clarifying_question is not None
+    assert store.list_pending() == []
+
+
+def test_authorization_missing_tool_is_refused_without_storing_a_rule(tmp_path):
+    store = _store(tmp_path)
+    reply = json.dumps({
+        "kind": "authorization", "natural_language": "x",
+        "authorization": {"allow": [{"field": "sender", "op": "contains", "value": "newsletter"}]},
+    })
+    compiler = RuleCompiler(_router(reply))
+
+    result = compiler.compile("stop asking me about stuff", store)
+
+    assert result.rule_id is None
+    assert result.clarifying_question is not None
+    assert store.list_pending() == []

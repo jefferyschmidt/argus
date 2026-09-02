@@ -17,8 +17,18 @@ _NOISY_FIRES_PER_DAY = 1.0
 
 def _flag(rule, now: float) -> str:
     """Rules that have never fired after 30 days are flagged for review;
-    rules firing more than daily are surfaced for confirmation (§7.6)."""
+    rules firing more than daily are surfaced for confirmation (§7.6).
+    Standing authorizations (§14) are exempted from both -- hit_count
+    tracks trigger fires, which a grant never has -- and instead get
+    their own expiry flag, since status stays 'active' in storage
+    forever until explicitly revoked (§14.3 requires list_rules to show
+    an expired one as expired, not silently still-looking-active)."""
     if rule.status != "active":
+        return ""
+    if rule.kind == "authorization":
+        expires_ts = (rule.authorization or {}).get("expires_ts")
+        if expires_ts is not None and now >= expires_ts:
+            return " [expired]"
         return ""
     age_days = (now - rule.created_ts) / 86400
     if rule.hit_count == 0 and age_days > _STALE_REVIEW_DAYS:
@@ -114,7 +124,7 @@ def _build_activate_mode(rule_store) -> Tool:
     )
 
 
-def _build_remember_preference(rule_store, router) -> Tool:
+def _build_remember_preference(rule_store, router, tool_registry=None) -> Tool:
     """PRD §13 unit 25: §7.6 specified every way to inspect a rule
     (list_rules, revoke_rule, activate/deactivate_mode) and none to make
     one -- RuleCompiler (unit 15) is built and fully unreachable from
@@ -127,7 +137,16 @@ def _build_remember_preference(rule_store, router) -> Tool:
     happen inside this one handler, after that approval, using the exact
     same store.propose()/store.confirm() pair the induced path (G4,
     unit 22) uses -- a decline never even reaches propose(), so no rule,
-    proposed or active, is left behind."""
+    proposed or active, is left behind.
+
+    PRD §14.4 (unit 27): also the authoring path for standing
+    authorizations -- RuleCompiler recognizes an authorization-shaped
+    utterance and compiles a kind='authorization' rule instead. Granting
+    a high_risk tool pays the same two confirmations execute() would
+    demand per call, but once, here, at authoring time (§14.3) -- needs
+    tool_registry to look up the target tool's high_risk flag and to
+    reuse its confirmer for that second ask. None (e.g. in tests that
+    don't care about grants) just skips that extra gate."""
     compiler = RuleCompiler(router)
 
     def handler(args: dict) -> str:
@@ -135,6 +154,22 @@ def _build_remember_preference(rule_store, router) -> Tool:
         compiled = compiler.compile(utterance, rule_store)
         if compiled.rule_id is None:
             return compiled.clarifying_question or "I couldn't turn that into a rule -- could you say it differently?"
+
+        rule = rule_store.get(compiled.rule_id)
+        if rule is not None and rule.kind == "authorization" and tool_registry is not None:
+            target_name = (rule.authorization or {}).get("tool")
+            target = tool_registry._tools.get(target_name)
+            if target is not None and getattr(target, "high_risk", False):
+                # §14.3: the same two confirmations execute() would ask
+                # per call, paid once here instead of forever afterwards.
+                # A decline revokes the just-proposed grant -- it never
+                # reached 'active', but leaving it 'proposed' forever
+                # would be a silent trap for a future auto-grant path.
+                if not tool_registry.confirmer(
+                    f"grant: {target_name}", {"scope": compiled.natural_language},
+                ):
+                    rule_store.revoke(compiled.rule_id)
+                    return "Not granting that -- declined on the second confirmation."
 
         lines = [f"Understood: {compiled.natural_language}"]
         if compiled.conflicts:
@@ -153,7 +188,9 @@ def _build_remember_preference(rule_store, router) -> Tool:
         description=(
             "Authors a new standing rule from the user's own words, e.g. "
             "\"stop telling me when I open Claude\" or \"boost anything from Julia\". "
-            "Compiles the instruction into a structured rule and activates it."
+            "Also authors standing authorizations, e.g. \"archive newsletters without asking, "
+            "but never anything from a real person\". Compiles the instruction into a "
+            "structured rule and activates it."
         ),
         input_schema={
             "type": "object",

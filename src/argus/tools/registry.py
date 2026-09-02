@@ -1,6 +1,8 @@
 import logging
+import time
 from typing import Callable
 
+from argus.spine.observation import Observation
 from argus.tools.base import PermissionTier, Tool
 
 log = logging.getLogger(__name__)
@@ -23,9 +25,19 @@ class ToolDenied(Exception):
 
 
 class ToolRegistry:
-    def __init__(self, confirmer: Confirmer = console_confirmer):
+    def __init__(self, confirmer: Confirmer = console_confirmer, authorization_checker=None, spine=None):
         self._tools: dict[str, Tool] = {}
         self.confirmer = confirmer
+        # PRD §14 (unit 27): the durable, scoped, revocable sibling of
+        # _task_approved below. None (the default) means no standing
+        # authorizations exist yet -- step 2b in execute() is skipped
+        # entirely rather than querying a store that was never wired.
+        self.authorization_checker = authorization_checker
+        # Only used to record tool.auto_approved (§14.3) when a grant
+        # fires -- None means that observation is simply never written,
+        # same "optional collaborator, fails soft" pattern as everywhere
+        # else in this codebase (§1).
+        self.spine = spine
         self._task_approved: set[str] = set()
         self._explicit_task_authorized = False
 
@@ -70,6 +82,21 @@ class ToolRegistry:
             if getattr(tool, "repeatable", False) and approval_key in self._task_approved:
                 log.info("Executing tool: %s(%s) [tier=%s, auto-approved for this task]", name, tool_input, tool.tier.value)
                 return tool.handler(tool_input)
+            # Step 2b (PRD §14.1, unit 27): a standing authorization grant
+            # -- durable and scoped, unlike _task_approved above (in-
+            # process, cleared every turn). Checked after that bucket and
+            # before the confirmer; changes nothing else about this gate.
+            # A grant can never cover a DENY-tier tool -- moot here, DENY
+            # already returned above before this branch is ever reached.
+            if self.authorization_checker is not None:
+                grant = self.authorization_checker.find_grant(name, tool_input)
+                if grant is not None:
+                    log.info(
+                        "Executing tool: %s(%s) [tier=%s, auto-approved by grant #%s]",
+                        name, tool_input, tool.tier.value, grant.id,
+                    )
+                    self._record_auto_approved(name, tool_input, grant.id)
+                    return tool.handler(tool_input)
             if not self.confirmer(name, tool_input):
                 log.info("Tool call denied by user: %s(%s)", name, tool_input)
                 raise ToolDenied(f"user declined to run '{name}'")
@@ -85,3 +112,15 @@ class ToolRegistry:
 
         log.info("Executing tool: %s(%s) [tier=%s]", name, tool_input, tool.tier.value)
         return tool.handler(tool_input)
+
+    def _record_auto_approved(self, name: str, tool_input: dict, rule_id: int) -> None:
+        """PRD §14.3: the only record of what Argus did without asking --
+        without this, tool.auto_approved calls leave no audit trail at
+        all. Required, not optional; the spine argument being None (no
+        collaborator wired) is the only thing that skips it."""
+        if self.spine is None:
+            return
+        self.spine.record(Observation(
+            source="tools", kind="tool.auto_approved", ts=time.time(), subject=name,
+            payload={"tool": name, "arguments": tool_input, "rule_id": rule_id},
+        ))

@@ -7,8 +7,10 @@ RuleStore.confirm(). Never activates on its own."""
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 
+from argus.config import settings
 from argus.llm.base import Message, Tier
 from argus.rules.store import RuleStore
 
@@ -24,6 +26,28 @@ Instruction: {utterance}
 If the scope is genuinely ambiguous (e.g. "stop telling me about that" -- about
 WHAT, exactly?), reply with ONLY this JSON and nothing else:
 {{"clarifying_question": "<one specific question that would resolve the ambiguity>"}}
+
+If the instruction is asking Argus to stop asking permission for a specific tool under some
+scope -- e.g. "archive newsletters without asking, but never anything from a real person" --
+reply with ONLY this JSON and nothing else:
+{{
+  "kind": "authorization",
+  "natural_language": "<the grant read back in plain English, stating BOTH the scope and the
+    expiry, e.g. \\"I'll archive newsletters without asking, but never anything from a real
+    person, and I'll forget this in 90 days\\">",
+  "authorization": {{
+    "tool": "<the exact tool name being authorized, e.g. delete_email>",
+    "allow": [{{"field": "...", "op": "...", "value": "..."}}],
+    "deny": [{{"field": "...", "op": "...", "value": "..."}}],
+    "expires_days": <number of days from now; omit to use the default>
+  }}
+}}
+
+allow must be non-empty -- a blanket "always allow this tool, no scope" grant is refused, it is
+turning the permission off rather than authorizing something specific. field/op/value use the
+same vocabulary as trigger.filters below, but applied directly to the tool's own call
+arguments instead of an observation -- e.g. field "sender" against delete_email's own `sender`
+argument, not "payload.sender".
 
 Otherwise reply with ONLY this JSON and nothing else (no markdown fences, no
 commentary):
@@ -80,6 +104,9 @@ class RuleCompiler:
         if parsed.get("clarifying_question"):
             return CompiledRule(rule_id=None, natural_language=None, clarifying_question=parsed["clarifying_question"])
 
+        if parsed.get("kind") == "authorization":
+            return self._compile_authorization(utterance, parsed, store)
+
         natural_language = parsed.get("natural_language")
         if not natural_language or not parsed.get("trigger", {}).get("kind"):
             return CompiledRule(
@@ -105,6 +132,48 @@ class RuleCompiler:
             rule_id=rule_id, natural_language=natural_language,
             conflicts=conflicts, warnings=warnings,
         )
+
+    def _compile_authorization(self, utterance: str, parsed: dict, store: RuleStore) -> CompiledRule:
+        """PRD §14.4: a standing authorization is stored as an ordinary
+        rule (kind='authorization'), so it's proposed/confirmed exactly
+        like every other rule -- trigger/action are irrelevant here
+        (RuleMatcher's trigger.kind match can never see them, since
+        trigger stays {}) and only exist as placeholders because the
+        rules table's columns are NOT NULL."""
+        natural_language = parsed.get("natural_language")
+        auth = parsed.get("authorization") or {}
+        tool = auth.get("tool")
+        allow = auth.get("allow") or []
+        if not natural_language or not tool or not allow:
+            # §14.3: an empty allow list is refused at authoring time --
+            # a blanket "this tool, always" grant is not a scoped
+            # authorization, it's turning the tier off. Refusing here
+            # (never calling store.propose) means nothing is left behind
+            # to revoke, same as every other clarifying-question path.
+            return CompiledRule(
+                rule_id=None, natural_language=None,
+                clarifying_question=(
+                    "What exactly should I be allowed to do without asking, and for what? "
+                    "A standing authorization needs a specific tool and at least one in-scope pattern."
+                ),
+            )
+
+        expires_days = auth.get("expires_days")
+        try:
+            expires_days = float(expires_days) if expires_days is not None else settings.authorization_default_days
+        except (TypeError, ValueError):
+            expires_days = settings.authorization_default_days
+        authorization = {
+            "tool": tool, "allow": allow, "deny": auth.get("deny") or [],
+            "expires_ts": time.time() + expires_days * 86400,
+        }
+
+        rule_id = store.propose(
+            natural_language=natural_language, source_utterance=utterance,
+            kind="authorization", trigger={}, action={"type": "authorize"},
+            authorization=authorization,
+        )
+        return CompiledRule(rule_id=rule_id, natural_language=natural_language)
 
     def _ask_llm(self, utterance: str) -> str:
         prompt = _COMPILE_PROMPT.format(utterance=utterance)

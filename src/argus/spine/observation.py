@@ -20,6 +20,11 @@ KINDS = frozenset({
     # satisfies the `user_acknowledged` predicate type.
     # payload: {"thread_id": <int>, "via": "voice" | "ui"}
     "thread.acknowledged",
+    # PRD §14 (unit 27): the only record of what Argus did without
+    # asking -- written by ToolRegistry.execute() whenever a standing
+    # authorization grant auto-approves a CONFIRM-tier call.
+    # payload: {"tool": <name>, "arguments": <dict>, "rule_id": <int>}
+    "tool.auto_approved",
 })
 
 
