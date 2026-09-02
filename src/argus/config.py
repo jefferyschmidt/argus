@@ -344,6 +344,21 @@ class Settings(BaseSettings):
     # trailing 7 days, not just still-pending ones.
     induced_rule_proposals_per_week: int = 2
 
+    # Unit 24: realtime voice confirmation timing. Confirmed live -- the
+    # old fixed listen window started the moment the question was SENT,
+    # before OpenAI had spoken a word of it, so both retry attempts timed
+    # out and fell through to the console card even with a spoken answer.
+    # voice_confirm_speak_timeout_seconds caps how long _ask_voice_
+    # confirmation waits for the question's audio to actually start and
+    # finish playing before giving up on it entirely (a failed generation
+    # must not hang the confirmer or the tool call). voice_confirm_listen_
+    # seconds is the answer window itself, started only once that audio
+    # has actually finished -- longer than pipeline mode's equivalent
+    # because realtime mode also pays for async transcription latency
+    # pipeline mode doesn't.
+    voice_confirm_speak_timeout_seconds: float = 15.0
+    voice_confirm_listen_seconds: float = 10.0
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir

@@ -539,11 +539,19 @@ def test_realtime_confirmation_falls_back_to_the_console_after_two_unclear_voice
     assert publish.call_count == 2
 
 
-def test_ask_voice_confirmation_reads_a_spoken_yes():
+def test_ask_voice_confirmation_reads_a_spoken_yes(monkeypatch):
     loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
     loop._socket = object()
     loop._send = MagicMock()
     loop._create_response_or_defer = MagicMock()
+    # Unit 24: the real audio-wait loop runs before listening starts --
+    # give it real (idle) playback state so it drains instantly instead of
+    # spinning for the full speak timeout.
+    loop._playback_lock = threading.Lock()
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    loop._response_active = False
+    monkeypatch.setattr("argus.voice.realtime.settings.voice_confirm_speak_timeout_seconds", 0.0)
 
     with patch("argus.voice.realtime.ui_commands.get_confirmation_answer", return_value="yeah go ahead"), \
          patch("argus.voice.realtime.ui_commands.set_voice_confirmation_active") as set_active, \
@@ -566,11 +574,16 @@ def test_ask_voice_confirmation_reads_a_spoken_yes():
     assert set_active.call_args_list == [((True,),), ((False,),)]
 
 
-def test_ask_voice_confirmation_reads_a_spoken_no():
+def test_ask_voice_confirmation_reads_a_spoken_no(monkeypatch):
     loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
     loop._socket = object()
     loop._send = MagicMock()
     loop._create_response_or_defer = MagicMock()
+    loop._playback_lock = threading.Lock()
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    loop._response_active = False
+    monkeypatch.setattr("argus.voice.realtime.settings.voice_confirm_speak_timeout_seconds", 0.0)
 
     with patch("argus.voice.realtime.ui_commands.get_confirmation_answer", return_value="no, don't"), \
          patch("argus.voice.realtime.ui_commands.set_voice_confirmation_active"), \
@@ -580,11 +593,16 @@ def test_ask_voice_confirmation_reads_a_spoken_no():
     assert result is False
 
 
-def test_ask_voice_confirmation_returns_none_on_silence_or_unclear_answer():
+def test_ask_voice_confirmation_returns_none_on_silence_or_unclear_answer(monkeypatch):
     loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
     loop._socket = object()
     loop._send = MagicMock()
     loop._create_response_or_defer = MagicMock()
+    loop._playback_lock = threading.Lock()
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    loop._response_active = False
+    monkeypatch.setattr("argus.voice.realtime.settings.voice_confirm_speak_timeout_seconds", 0.0)
 
     with patch("argus.voice.realtime.ui_commands.get_confirmation_answer", return_value=None), \
          patch("argus.voice.realtime.ui_commands.set_voice_confirmation_active"), \
@@ -604,6 +622,65 @@ def test_ask_voice_confirmation_returns_none_with_no_open_connection():
     assert loop._ask_voice_confirmation("May I delete email? Say yes or no.") is None
 
 
+def test_ask_voice_confirmation_waits_for_the_question_audio_to_finish_before_listening(monkeypatch):
+    """Unit 24 acceptance: the answer window does not begin while
+    _audio_is_active() is true. Confirmed live: the old fixed window
+    opened the instant the question was SENT, before OpenAI had spoken a
+    word of it -- streaming the audio takes ~3-5s on its own, so both
+    retry attempts timed out even when the user did answer."""
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = object()
+    loop._send = MagicMock()
+    loop._create_response_or_defer = MagicMock()
+    monkeypatch.setattr("argus.voice.realtime.settings.voice_confirm_speak_timeout_seconds", 5.0)
+    monkeypatch.setattr("argus.voice.realtime.settings.voice_confirm_listen_seconds", 10.0)
+
+    # Audio starts active (question playing) and stays active for a few
+    # polls before finishing.
+    active_sequence = iter([True, True, True, False])
+    loop._audio_is_active = MagicMock(side_effect=lambda: next(active_sequence, False))
+
+    calls = []
+
+    def fake_get_confirmation_answer(timeout):
+        calls.append(("listen", timeout))
+        return "yes"
+
+    with patch("argus.voice.realtime.ui_commands.get_confirmation_answer", side_effect=fake_get_confirmation_answer), \
+         patch("argus.voice.realtime.ui_commands.set_voice_confirmation_active"), \
+         patch("argus.voice.realtime.ui_events.publish"), \
+         patch("argus.voice.realtime.time.sleep"):
+        result = loop._ask_voice_confirmation("May I delete email? Say yes or no.")
+
+    assert result is True
+    # Listening only started once _audio_is_active() had gone False, using
+    # the configured listen window -- not the speak-timeout value, and not
+    # started any earlier while audio was still active.
+    assert calls == [("listen", 10.0)]
+    assert loop._audio_is_active.call_count == 4
+
+
+def test_ask_voice_confirmation_gives_up_after_speak_timeout_if_audio_never_finishes(monkeypatch):
+    """Unit 24 acceptance: a generation that never produces audio still
+    gives up after settings.voice_confirm_speak_timeout_seconds and does
+    not hang the confirmer or the tool call behind it."""
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = object()
+    loop._send = MagicMock()
+    loop._create_response_or_defer = MagicMock()
+    monkeypatch.setattr("argus.voice.realtime.settings.voice_confirm_speak_timeout_seconds", 0.01)
+    monkeypatch.setattr("argus.voice.realtime.settings.voice_confirm_listen_seconds", 10.0)
+    loop._audio_is_active = MagicMock(return_value=True)  # never finishes
+
+    with patch("argus.voice.realtime.ui_commands.get_confirmation_answer", return_value="yes") as get_answer, \
+         patch("argus.voice.realtime.ui_commands.set_voice_confirmation_active"), \
+         patch("argus.voice.realtime.ui_events.publish"):
+        result = loop._ask_voice_confirmation("May I delete email? Say yes or no.")
+
+    get_answer.assert_called_once_with(timeout=10.0)
+    assert result is True
+
+
 def test_ask_voice_confirmation_never_sends_a_conversation_item(monkeypatch):
     """Unit 24a acceptance: the prompt travels only in a response-scoped
     `instructions` field -- never a conversation.item.create. That kind of
@@ -618,6 +695,10 @@ def test_ask_voice_confirmation_never_sends_a_conversation_item(monkeypatch):
     loop._response_active = False
     loop._pending_create_after_cancel = False
     loop._pending_create_instructions = None
+    loop._playback_lock = threading.Lock()
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    monkeypatch.setattr("argus.voice.realtime.settings.voice_confirm_speak_timeout_seconds", 0.0)
     sent = []
     loop._send = lambda socket, event: sent.append(event)
 
@@ -637,7 +718,7 @@ def test_ask_voice_confirmation_never_sends_a_conversation_item(monkeypatch):
     }]
 
 
-def test_ask_voice_confirmation_defers_instructions_through_a_pending_cancel():
+def test_ask_voice_confirmation_defers_instructions_through_a_pending_cancel(monkeypatch):
     """Same wire-level proof as above, but through the cancel-then-defer
     path (a response was already active): the instructions must still
     reach the eventual response.create, not get dropped or leak as a
@@ -649,6 +730,15 @@ def test_ask_voice_confirmation_defers_instructions_through_a_pending_cancel():
     loop._response_active = True
     loop._pending_create_after_cancel = False
     loop._pending_create_instructions = None
+    loop._playback_lock = threading.Lock()
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    # _response_active stays True through this synchronous flow (nothing
+    # here plays the role of the real receive thread flipping it back to
+    # False), so the audio-wait loop would otherwise spin for the full
+    # speak timeout -- cap it at 0 since this test isn't exercising that
+    # wait itself.
+    monkeypatch.setattr("argus.voice.realtime.settings.voice_confirm_speak_timeout_seconds", 0.0)
     sent = []
     loop._send = lambda socket, event: sent.append(event)
 
@@ -686,7 +776,7 @@ def test_ask_voice_confirmation_defers_instructions_through_a_pending_cancel():
     assert loop._pending_create_instructions is None
 
 
-def test_two_consecutive_confirmations_leave_no_residue():
+def test_two_consecutive_confirmations_leave_no_residue(monkeypatch):
     """Unit 24a acceptance: two confirmations in one session must not
     accumulate -- the second attempt's response.create must carry only its
     own instructions, with nothing left over from the first (the original
@@ -697,6 +787,10 @@ def test_two_consecutive_confirmations_leave_no_residue():
     loop._response_active = False
     loop._pending_create_after_cancel = False
     loop._pending_create_instructions = None
+    loop._playback_lock = threading.Lock()
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    monkeypatch.setattr("argus.voice.realtime.settings.voice_confirm_speak_timeout_seconds", 0.0)
     sent = []
     loop._send = lambda socket, event: sent.append(event)
 

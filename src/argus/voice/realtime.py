@@ -32,7 +32,6 @@ _BLOCK_SIZE = 1200  # 50 ms at the Realtime API's PCM sample rate
 _BARGE_IN_CONFIRM_SECONDS = 0.45
 _FALSE_BARGE_IN_RESUME_SECONDS = 3.0
 _UI_CONFIRM_TIMEOUT_SECONDS = 45.0
-_VOICE_CONFIRM_LISTEN_SECONDS = 7.0
 _REALTIME_INSTRUCTIONS = CONVERSATION_PROMPT + """
 
 You are in Argus's native conversation mode. Argus normally has desktop,
@@ -395,8 +394,8 @@ class RealtimeVoiceLoop:
     def _ask_voice_confirmation(self, prompt_text: str) -> bool | None:
         """Speaks prompt_text and blocks (on whatever thread called this --
         see _run_pending_tools, run off the receive thread specifically so
-        this can block) for up to _VOICE_CONFIRM_LISTEN_SECONDS for a
-        matching answer to arrive via the is_voice_confirmation_active()
+        this can block) for up to settings.voice_confirm_listen_seconds for
+        a matching answer to arrive via the is_voice_confirmation_active()
         channel. Returns True/False on a clear answer, None on silence,
         an unclear answer, or no live connection -- same tri-state contract
         as pipeline mode's _try_voice, so the caller can retry once before
@@ -408,7 +407,21 @@ class RealtimeVoiceLoop:
         of the session -- earlier this was a standing "say this sentence"
         instruction the model kept obeying on every later turn, long after
         the confirmation had resolved. response.instructions applies to
-        exactly this one response and is never added to history."""
+        exactly this one response and is never added to history.
+
+        Unit 24: confirmed live -- the answer window used to open the
+        instant the question was SENT, before a word of it had been
+        spoken. The realtime sequence is send -> OpenAI generates and
+        streams the spoken question (~3-5s) -> the user hears it and
+        answers (~1-2s) -> the async transcription arrives (~0.5-1.5s),
+        comfortably longer than the old fixed 7s window was already
+        running against. Both retry attempts timed out and fell through
+        to the console card even when the user did answer. Fix: don't
+        start listening until the question has actually finished being
+        spoken -- wait for the question's audio to start and then drain
+        (poll _audio_is_active()), capped by
+        settings.voice_confirm_speak_timeout_seconds so a generation that
+        never produces audio can't hang the confirmer or the tool call."""
         socket = self._socket
         if socket is None:
             return None
@@ -419,7 +432,12 @@ class RealtimeVoiceLoop:
                 socket,
                 instructions=f'Say exactly this to the user, word for word, then stop: "{prompt_text}"',
             )
-            heard = ui_commands.get_confirmation_answer(timeout=_VOICE_CONFIRM_LISTEN_SECONDS)
+            speak_deadline = time.monotonic() + settings.voice_confirm_speak_timeout_seconds
+            while not self._audio_is_active() and time.monotonic() < speak_deadline:
+                time.sleep(0.05)
+            while self._audio_is_active() and time.monotonic() < speak_deadline:
+                time.sleep(0.05)
+            heard = ui_commands.get_confirmation_answer(timeout=settings.voice_confirm_listen_seconds)
             if not heard:
                 return None
             lowered = heard.strip().lower()
