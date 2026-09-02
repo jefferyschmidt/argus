@@ -8,6 +8,7 @@ when one instance is already sitting there."""
 
 import time
 
+from argus.rules.compiler import RuleCompiler
 from argus.tools.base import PermissionTier, Tool
 
 _STALE_REVIEW_DAYS = 30
@@ -109,6 +110,57 @@ def _build_activate_mode(rule_store) -> Tool:
             "required": ["group"],
         },
         tier=PermissionTier.ALLOW,
+        handler=handler,
+    )
+
+
+def _build_remember_preference(rule_store, router) -> Tool:
+    """PRD §13 unit 25: §7.6 specified every way to inspect a rule
+    (list_rules, revoke_rule, activate/deactivate_mode) and none to make
+    one -- RuleCompiler (unit 15) is built and fully unreachable from
+    conversation, so "say a sentence and durably change standing
+    behavior" (Phase G's entire point) couldn't actually be done.
+
+    tier=CONFIRM is the one explicit user approval this whole flow gets --
+    the same "may I remember_preference" gate console_confirmer/voice
+    already show for any other CONFIRM tool. Compiling and activating both
+    happen inside this one handler, after that approval, using the exact
+    same store.propose()/store.confirm() pair the induced path (G4,
+    unit 22) uses -- a decline never even reaches propose(), so no rule,
+    proposed or active, is left behind."""
+    compiler = RuleCompiler(router)
+
+    def handler(args: dict) -> str:
+        utterance = args["utterance"]
+        compiled = compiler.compile(utterance, rule_store)
+        if compiled.rule_id is None:
+            return compiled.clarifying_question or "I couldn't turn that into a rule -- could you say it differently?"
+
+        lines = [f"Understood: {compiled.natural_language}"]
+        if compiled.conflicts:
+            # §7.2 step 3: surfaced at authoring time, not silently
+            # overridden or silently left to collide at runtime.
+            described = "; ".join(f"#{c['rule_id']} ({c['natural_language']})" for c in compiled.conflicts)
+            lines.append(f"Note: conflicts with existing active rule(s): {described}.")
+        lines.extend(compiled.warnings)
+
+        rule_store.confirm(compiled.rule_id)
+        lines.append(f"Rule #{compiled.rule_id} is now active.")
+        return "\n".join(lines)
+
+    return Tool(
+        name="remember_preference",
+        description=(
+            "Authors a new standing rule from the user's own words, e.g. "
+            "\"stop telling me when I open Claude\" or \"boost anything from Julia\". "
+            "Compiles the instruction into a structured rule and activates it."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"utterance": {"type": "string", "description": "The user's instruction, verbatim."}},
+            "required": ["utterance"],
+        },
+        tier=PermissionTier.CONFIRM,
         handler=handler,
     )
 

@@ -1,7 +1,9 @@
+import json
 import time
 from unittest.mock import MagicMock
 
-from argus.rules.store import Rule
+from argus.llm.base import CompletionResult, Tier
+from argus.rules.store import Rule, RuleStore
 from argus.salience.decision_log import LoggedDecision
 from argus.tools.base import PermissionTier
 from argus.tools.rules import (
@@ -9,6 +11,7 @@ from argus.tools.rules import (
     _build_deactivate_mode,
     _build_explain_last_action,
     _build_list_rules,
+    _build_remember_preference,
     _build_revoke_rule,
 )
 
@@ -177,3 +180,108 @@ def test_deactivate_mode_reports_count():
     result = tool.handler({"group": "focus"})
     store.deactivate_mode.assert_called_once_with("focus")
     assert "2" in result
+
+
+# -- remember_preference (PRD §13 unit 25) ------------------------------
+
+def _router(reply_text: str) -> MagicMock:
+    router = MagicMock()
+    router.complete.return_value = CompletionResult(text=reply_text, tier=Tier.ADVANCED, model="test")
+    return router
+
+
+_SUPPRESS_REPLY = json.dumps({
+    "natural_language": "Don't tell me when I open Claude",
+    "kind": "suppression",
+    "trigger": {"kind": "app.focus_changed", "filters": [{"field": "payload.app", "op": "eq", "value": "Claude"}]},
+    "action": {"type": "suppress"},
+    "conditions": [], "until_condition": None, "group_name": None,
+})
+
+
+def test_remember_preference_is_confirm_tier():
+    store = RuleStore(":memory:")
+    assert _build_remember_preference(store, _router(_SUPPRESS_REPLY)).tier == PermissionTier.CONFIRM
+
+
+def test_remember_preference_activates_a_rule_that_survives_a_restart(tmp_path):
+    db_path = tmp_path / "argus.db"
+    store = RuleStore(db_path)
+    tool = _build_remember_preference(store, _router(_SUPPRESS_REPLY))
+
+    result = tool.handler({"utterance": "stop telling me when I open Claude"})
+
+    assert "Don't tell me when I open Claude" in result
+    assert "now active" in result
+    reopened = RuleStore(db_path)
+    [rule] = reopened.list_active()
+    assert rule.natural_language == "Don't tell me when I open Claude"
+    assert rule.status == "active"
+    assert rule.origin == "user"
+
+
+def test_remember_preference_surfaces_the_clarifying_question_and_proposes_nothing():
+    store = RuleStore(":memory:")
+    reply = json.dumps({"clarifying_question": "Stop telling you about which app, exactly?"})
+    tool = _build_remember_preference(store, _router(reply))
+
+    result = tool.handler({"utterance": "stop telling me about that"})
+
+    assert result == "Stop telling you about which app, exactly?"
+    assert store.list_active() == []
+    assert store.list_pending() == []
+
+
+def test_remember_preference_reports_a_conflict_with_an_existing_active_rule():
+    store = RuleStore(":memory:")
+    existing_id = store.propose(
+        natural_language="Suppress everything from Claude", kind="suppression",
+        trigger={"kind": "app.focus_changed", "filters": []}, action={"type": "suppress"},
+    )
+    store.confirm(existing_id)
+    tool = _build_remember_preference(store, _router(_SUPPRESS_REPLY))
+
+    result = tool.handler({"utterance": "stop telling me when I open Claude"})
+
+    assert f"#{existing_id}" in result
+    assert "conflicts" in result
+
+
+def test_a_rule_authored_this_way_actually_suppresses():
+    """Unit 25 acceptance: the matching candidate returns
+    Decision(action='suppress') from SalienceEngine -- not just that a row
+    landed in the rules table."""
+    from argus.rules.matcher import RuleMatcher
+    from argus.salience.budget import InterruptionBudget
+    from argus.salience.engine import SalienceEngine
+    from argus.salience.held import HeldQueue
+    from argus.salience.scoring import Candidate
+    from argus.world.model import RhythmSummary, WorldSnapshot
+    from dataclasses import dataclass
+    from datetime import datetime
+
+    @dataclass
+    class _FakeObs:
+        kind: str
+        subject: str | None = None
+        source: str = "test"
+        confidence: float = 1.0
+        payload: dict = None
+
+        def __post_init__(self):
+            if self.payload is None:
+                self.payload = {}
+
+    store = RuleStore(":memory:")
+    tool = _build_remember_preference(store, _router(_SUPPRESS_REPLY))
+    tool.handler({"utterance": "stop telling me when I open Claude"})
+
+    matcher = RuleMatcher(store)
+    engine = SalienceEngine(matcher, InterruptionBudget(":memory:"), HeldQueue(":memory:"))
+    snapshot = WorldSnapshot(now=datetime.now(), focus=None, open_threads=[], horizon=[], devices={}, health=[], rhythms=RhythmSummary())
+    candidate = Candidate(observation_id=1, kind="app.focus_changed", subject=None, text="x", base_urgency=1.0)
+    observation = _FakeObs(kind="app.focus_changed", payload={"app": "Claude"})
+
+    decision = engine.decide(candidate, snapshot, observation=observation, now=1_000_000.0)
+
+    assert decision.action == "suppress"

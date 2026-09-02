@@ -55,6 +55,7 @@ from argus.tools.rules import (
     _build_deactivate_mode,
     _build_explain_last_action,
     _build_list_rules,
+    _build_remember_preference,
     _build_revoke_rule,
 )
 from argus.tools.self_improve import (
@@ -157,6 +158,12 @@ def build_default_registry(router=None, task_runner=None, rule_store=None, decis
         registry.register(_build_revoke_rule(rule_store))
         registry.register(_build_activate_mode(rule_store))
         registry.register(_build_deactivate_mode(rule_store))
+        # PRD §13 unit 25: needs a router too (RuleCompiler's authoring-time
+        # LLM call) -- same "only if the collaborator exists" gating as
+        # second_opinion/scan_document above, on top of the rule_store gate
+        # the rest of this block already uses.
+        if router is not None:
+            registry.register(_build_remember_preference(rule_store, router))
     if decision_log is not None:
         registry.register(_build_explain_last_action(decision_log))
 
