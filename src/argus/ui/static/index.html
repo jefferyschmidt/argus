@@ -295,6 +295,22 @@
 
   footer.note { text-align: center; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.05em; color: var(--ink-dim); padding: 6px 0 2px; }
 
+  /* Phase H dashboard widgets (PRD §15) -- reuses .panels/.panel/.eyebrow/
+     .rows/.row/.empty-note as-is; these are only the pieces those don't
+     already cover (a row with a trailing action button, an inline
+     "firing" tag). */
+  .dash-eyebrow { display: flex; align-items: baseline; justify-content: space-between; }
+  .dash-row .k { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dash-row .v { flex: 0 0 auto; }
+  .dash-row button {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--ink-dim); background: transparent; border: 1px solid var(--line-strong); border-radius: 3px;
+    padding: 2px 7px; cursor: pointer; flex: 0 0 auto; margin-left: 8px;
+  }
+  .dash-row button:hover { border-color: var(--ok); color: var(--ok); }
+  .dash-row button.dash-dismiss:hover { border-color: var(--err); color: var(--err); }
+  .dash-firing-tag { color: var(--alert); font-family: var(--font-mono); font-size: 10.5px; margin-left: 8px; }
+
   @media (prefers-reduced-motion: reduce) { .rec-tag .dot { animation: none; } }
 </style>
 </head>
@@ -415,6 +431,58 @@
     </div>
 
   </div>
+
+  <!-- Phase H dashboard (PRD §15): the dashboard and the voice interface
+       are two projections of ONE world model -- everything here renders
+       purely from GET /api/state, polled no faster than
+       settings.dashboard_poll_seconds. A widget whose data is absent
+       does not render (each is hidden by default and only unhidden once
+       it actually has rows), so adding a sensor later surfaces a widget
+       with no UI work here. -->
+  <div class="panels" id="dashPanels">
+
+    <div class="panel" id="dashThreadsPanel" hidden>
+      <div class="eyebrow dash-eyebrow"><span>Open threads</span><span class="n" id="dashThreadsCount"></span></div>
+      <div class="rows" id="dashThreadsRows"></div>
+    </div>
+
+    <div class="panel" id="dashMailPanel" hidden>
+      <div class="eyebrow">Important mail</div>
+      <div class="rows" id="dashMailRows"></div>
+    </div>
+
+    <div class="panel" id="dashObligationsPanel" hidden>
+      <div class="eyebrow">Next obligations</div>
+      <div class="rows" id="dashObligationsRows"></div>
+    </div>
+
+    <div class="panel" id="dashDevicesPanel" hidden>
+      <div class="eyebrow">Home &amp; devices</div>
+      <div class="rows" id="dashDevicesRows"></div>
+    </div>
+
+    <div class="panel" id="dashRulesPanel" hidden>
+      <div class="eyebrow">Active rules</div>
+      <div class="rows" id="dashRulesRows"></div>
+    </div>
+
+    <div class="panel" id="dashHealthPanel" hidden>
+      <div class="eyebrow">System health</div>
+      <div class="rows" id="dashHealthRows"></div>
+    </div>
+
+    <div class="panel" id="dashHeldPanel" hidden>
+      <div class="eyebrow">Held</div>
+      <div class="rows" id="dashHeldRows"></div>
+    </div>
+
+    <div class="panel" id="dashFocusPanel" hidden>
+      <div class="eyebrow">Current focus</div>
+      <div class="rows" id="dashFocusRows"></div>
+    </div>
+
+  </div>
+  <div class="empty-note" id="dashEmptyNote" hidden>Nothing tracked yet.</div>
 
   <div class="transcript">
     <div class="eyebrow">Transcript</div>
@@ -690,7 +758,96 @@
       '<span class="flag">' + wakeWordFlag + '</span>' +
       '<span class="flag">Follow-up ' + esc(cfg.followup_window_seconds) + 's</span>';
     document.getElementById("budgetFill").dataset.cap = cfg.daily_budget_usd;
-  }).catch(function () {});
+    startDashboardPolling(cfg.dashboard_poll_seconds || 5);
+  }).catch(function () { startDashboardPolling(5); });
+
+  // ---------- dashboard (Phase H, PRD §15) ----------
+  // Widgets render from what /api/state actually contains -- a widget
+  // with no data simply stays hidden, rather than every possible widget
+  // being coded up front. Order here follows the salience ranking
+  // WorldSnapshot.to_prompt_block() already uses (most-salient-first:
+  // focus, then open threads, then upcoming, then health), not a
+  // separately invented layout.
+  var dashPanels = {
+    threads: { el: document.getElementById("dashThreadsPanel"), rows: document.getElementById("dashThreadsRows") },
+    mail: { el: document.getElementById("dashMailPanel"), rows: document.getElementById("dashMailRows") },
+    obligations: { el: document.getElementById("dashObligationsPanel"), rows: document.getElementById("dashObligationsRows") },
+    devices: { el: document.getElementById("dashDevicesPanel"), rows: document.getElementById("dashDevicesRows") },
+    rules: { el: document.getElementById("dashRulesPanel"), rows: document.getElementById("dashRulesRows") },
+    health: { el: document.getElementById("dashHealthPanel"), rows: document.getElementById("dashHealthRows") },
+    held: { el: document.getElementById("dashHeldPanel"), rows: document.getElementById("dashHeldRows") },
+    focus: { el: document.getElementById("dashFocusPanel"), rows: document.getElementById("dashFocusRows") }
+  };
+  var dashEmptyNote = document.getElementById("dashEmptyNote");
+
+  // A plain .row .k/.v pair (same classes the existing System panel's
+  // "Today's spend" row already uses) -- text via textContent, never
+  // innerHTML, so nothing here needs esc().
+  function dashRow(primary, secondary) {
+    var row = document.createElement("div");
+    row.className = "row dash-row";
+    var k = document.createElement("span");
+    k.className = "k";
+    k.textContent = primary;
+    row.appendChild(k);
+    if (secondary) {
+      var v = document.createElement("span");
+      v.className = "v";
+      v.textContent = secondary;
+      row.appendChild(v);
+    }
+    return row;
+  }
+
+  function setDashPanel(key, items, renderRow) {
+    var panel = dashPanels[key];
+    panel.rows.innerHTML = "";
+    if (!items || !items.length) {
+      panel.el.hidden = true;
+      return false;
+    }
+    items.forEach(function (item) { panel.rows.appendChild(renderRow(item)); });
+    panel.el.hidden = false;
+    return true;
+  }
+
+  function renderDashboard(state) {
+    var anyVisible = false;
+
+    var threads = state.open_threads || [];
+    if (setDashPanel("threads", threads.slice(0, 8), function (t) { return dashRow(t.title, t.kind); })) {
+      anyVisible = true;
+    }
+    document.getElementById("dashThreadsCount").textContent = threads.length ? String(threads.length) : "";
+
+    var mail = threads.filter(function (t) { return t.kind === "email_reply"; });
+    if (setDashPanel("mail", mail.slice(0, 5), function (t) { return dashRow(t.subject || t.title); })) anyVisible = true;
+
+    if (setDashPanel("obligations", (state.horizon || []).slice(0, 5), function (c) { return dashRow(c.summary, c.start); })) anyVisible = true;
+
+    var deviceEntries = Object.keys(state.devices || {}).map(function (k) { return [k, state.devices[k]]; });
+    if (setDashPanel("devices", deviceEntries, function (e) { return dashRow(e[0], String(e[1])); })) anyVisible = true;
+
+    if (setDashPanel("rules", (state.rules || []).slice(0, 10), function (r) { return dashRow(r.natural_language, r.status); })) anyVisible = true;
+
+    if (setDashPanel("health", state.health || [], function (h) { return dashRow(h.description, h.subject || ""); })) anyVisible = true;
+
+    if (setDashPanel("held", state.held || [], function (h) { return dashRow(h.text, h.kind); })) anyVisible = true;
+
+    var focusItems = state.focus ? [state.focus] : [];
+    if (setDashPanel("focus", focusItems, function (f) { return dashRow(f.title, Math.round(f.minutes) + " min"); })) anyVisible = true;
+
+    dashEmptyNote.hidden = anyVisible;
+  }
+
+  function fetchState() {
+    fetch("/api/state").then(function (r) { return r.json(); }).then(renderDashboard).catch(function () {});
+  }
+
+  function startDashboardPolling(pollSeconds) {
+    fetchState();
+    setInterval(fetchState, Math.max(1, pollSeconds) * 1000);
+  }
 
   // ---------- transcript ----------
   var TRANSCRIPT_MAX_LINES = 300;

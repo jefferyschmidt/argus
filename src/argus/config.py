@@ -364,6 +364,14 @@ class Settings(BaseSettings):
     # grant ages out on its own rather than silently authorizing forever.
     authorization_default_days: int = 90
 
+    # PRD §15 (Phase H, unit 29): how often the dashboard's own JS polls
+    # GET /api/state. Independent of world_snapshot_ttl_seconds -- that
+    # TTL bounds how often the *server* actually recomputes a snapshot;
+    # this bounds how often the *client* asks at all, so a slow client
+    # (or several open tabs) can't hammer the endpoint faster than a
+    # human dashboard glance ever needs.
+    dashboard_poll_seconds: float = 5.0
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir

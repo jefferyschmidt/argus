@@ -38,6 +38,7 @@ def config() -> dict:
         "wake_word_model": settings.openwakeword_model_name if settings.wake_word_engine == "openwakeword" else None,
         "followup_window_seconds": settings.followup_window_seconds,
         "daily_budget_usd": settings.daily_budget_usd,
+        "dashboard_poll_seconds": settings.dashboard_poll_seconds,
     }
 
 
