@@ -166,6 +166,11 @@ class RealtimeVoiceLoop:
         # _create_response_or_defer for why "right after" can't mean
         # "immediately."
         self._pending_create_after_cancel = False
+        # The response-scoped `instructions` text (if any) that the
+        # deferred create above should carry once it actually fires --
+        # see _create_response_or_defer and _ask_voice_confirmation (unit
+        # 24a). None means an ordinary create with no override.
+        self._pending_create_instructions: str | None = None
 
         # This session's own conversation never goes through Orchestrator
         # (OpenAI's realtime model answers directly) -- but the proactive
@@ -349,7 +354,18 @@ class RealtimeVoiceLoop:
         with self._send_lock:
             socket.send(json.dumps(event))
 
-    def _create_response_or_defer(self, socket) -> None:
+    @staticmethod
+    def _response_create_payload(instructions: str | None) -> dict:
+        payload = {"type": "response.create"}
+        if instructions is not None:
+            # Response-scoped: applies to exactly this one response and
+            # is never added to conversation history, unlike a
+            # conversation.item.create (unit 24a) -- see
+            # _ask_voice_confirmation for why that distinction matters.
+            payload["response"] = {"instructions": instructions}
+        return payload
+
+    def _create_response_or_defer(self, socket, instructions: str | None = None) -> None:
         """Confirmed live as a real bug (seen in production, not
         theoretical): sending response.create immediately after
         response.cancel races the server -- OpenAI processes the cancel
@@ -365,12 +381,16 @@ class RealtimeVoiceLoop:
         that response's response.done/error confirms the server actually
         considers it finished (see _receive's handling of those events) --
         rather than firing both requests back-to-back and hoping the
-        timing works out."""
+        timing works out. `instructions`, if given, is a response-scoped
+        override (unit 24a) that must survive into the deferred create
+        too, not just the immediate path -- stashed on
+        _pending_create_instructions until _receive actually sends it."""
         if self._response_active:
             self._send(socket, {"type": "response.cancel"})
             self._pending_create_after_cancel = True
+            self._pending_create_instructions = instructions
         else:
-            self._send(socket, {"type": "response.create"})
+            self._send(socket, self._response_create_payload(instructions))
 
     def _ask_voice_confirmation(self, prompt_text: str) -> bool | None:
         """Speaks prompt_text and blocks (on whatever thread called this --
@@ -380,24 +400,25 @@ class RealtimeVoiceLoop:
         channel. Returns True/False on a clear answer, None on silence,
         an unclear answer, or no live connection -- same tri-state contract
         as pipeline mode's _try_voice, so the caller can retry once before
-        falling back to the UI."""
+        falling back to the UI.
+
+        Unit 24a: the prompt is carried as a response-scoped `instructions`
+        override on the response.create itself, never as a
+        conversation.item.create. A conversation item persists for the rest
+        of the session -- earlier this was a standing "say this sentence"
+        instruction the model kept obeying on every later turn, long after
+        the confirmation had resolved. response.instructions applies to
+        exactly this one response and is never added to history."""
         socket = self._socket
         if socket is None:
             return None
         ui_events.publish({"type": "state", "value": "listening", "mode": "confirming"})
         ui_commands.set_voice_confirmation_active(True)
         try:
-            self._send(socket, {
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "message", "role": "system",
-                    "content": [{
-                        "type": "input_text",
-                        "text": f'Say exactly this to the user, word for word, then stop: "{prompt_text}"',
-                    }],
-                },
-            })
-            self._create_response_or_defer(socket)
+            self._create_response_or_defer(
+                socket,
+                instructions=f'Say exactly this to the user, word for word, then stop: "{prompt_text}"',
+            )
             heard = ui_commands.get_confirmation_answer(timeout=_VOICE_CONFIRM_LISTEN_SECONDS)
             if not heard:
                 return None
@@ -643,6 +664,7 @@ class RealtimeVoiceLoop:
                         # in-flight cancel) turns into a self-sustaining
                         # error loop instead of just settling.
                         self._pending_create_after_cancel = False
+                        self._pending_create_instructions = None
                     elif self._pending_calls:
                         # Run off the receive thread: a CONFIRM-tier tool's
                         # confirmer (_ask_voice_confirmation) blocks
@@ -655,13 +677,19 @@ class RealtimeVoiceLoop:
                         # once tool results are in -- a deferred one here
                         # would fire a second, redundant response.create.
                         self._pending_create_after_cancel = False
+                        self._pending_create_instructions = None
                     elif self._pending_create_after_cancel:
                         # The server has now genuinely confirmed the
                         # previous response is finished (this event is
                         # exactly that confirmation) -- safe to send the
                         # create that was deferred in _create_response_or_defer.
+                        # Any response-scoped instructions stashed alongside
+                        # the deferral (unit 24a) ride along with this create
+                        # too, not just the immediate-send path.
                         self._pending_create_after_cancel = False
-                        self._send(socket, {"type": "response.create"})
+                        instructions = self._pending_create_instructions
+                        self._pending_create_instructions = None
+                        self._send(socket, self._response_create_payload(instructions))
         except Exception:
             if not self._stop.is_set():
                 log.exception("Realtime connection stopped")

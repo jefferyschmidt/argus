@@ -173,6 +173,7 @@ def test_deferred_create_fires_only_once_response_done_confirms_it():
     loop._output_captioned = True
     loop._pending_calls = []
     loop._pending_create_after_cancel = True
+    loop._pending_create_instructions = None
     sent = []
     loop._send = lambda socket, event: sent.append(event)
 
@@ -550,7 +551,15 @@ def test_ask_voice_confirmation_reads_a_spoken_yes():
         result = loop._ask_voice_confirmation("May I delete email? Say yes or no.")
 
     assert result is True
-    loop._create_response_or_defer.assert_called_once_with(loop._socket)
+    # Unit 24a: the prompt rides as a response-scoped `instructions`
+    # override on the deferred create, never as a conversation item --
+    # and _send is never called directly by this function at all.
+    loop._create_response_or_defer.assert_called_once_with(
+        loop._socket,
+        instructions='Say exactly this to the user, word for word, then stop: '
+                      '"May I delete email? Say yes or no."',
+    )
+    loop._send.assert_not_called()
     # Must be active while listening and cleared afterward, even on the
     # success path -- a stuck-active flag would divert every later
     # transcript into the confirmation channel forever.
@@ -593,6 +602,141 @@ def test_ask_voice_confirmation_returns_none_with_no_open_connection():
     loop._socket = None
 
     assert loop._ask_voice_confirmation("May I delete email? Say yes or no.") is None
+
+
+def test_ask_voice_confirmation_never_sends_a_conversation_item(monkeypatch):
+    """Unit 24a acceptance: the prompt travels only in a response-scoped
+    `instructions` field -- never a conversation.item.create. That kind of
+    item persists for the whole session, so one injected per confirmation
+    attempt left the model under a standing "say this sentence" instruction
+    it kept obeying on every later, unrelated turn -- confirmed live from
+    data/events/events-2026-09-02.jsonl, unrecoverable without a restart.
+    This drives the real _create_response_or_defer (not a mock) so the
+    actual wire event is inspected end to end."""
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = object()
+    loop._response_active = False
+    loop._pending_create_after_cancel = False
+    loop._pending_create_instructions = None
+    sent = []
+    loop._send = lambda socket, event: sent.append(event)
+
+    with patch("argus.voice.realtime.ui_commands.get_confirmation_answer", return_value="yes"), \
+         patch("argus.voice.realtime.ui_commands.set_voice_confirmation_active"), \
+         patch("argus.voice.realtime.ui_events.publish"):
+        result = loop._ask_voice_confirmation("May I delete email? Say yes or no.")
+
+    assert result is True
+    assert not any(event["type"] == "conversation.item.create" for event in sent)
+    assert sent == [{
+        "type": "response.create",
+        "response": {
+            "instructions": 'Say exactly this to the user, word for word, then stop: '
+                             '"May I delete email? Say yes or no."',
+        },
+    }]
+
+
+def test_ask_voice_confirmation_defers_instructions_through_a_pending_cancel():
+    """Same wire-level proof as above, but through the cancel-then-defer
+    path (a response was already active): the instructions must still
+    reach the eventual response.create, not get dropped or leak as a
+    conversation item."""
+    import json
+
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = object()
+    loop._response_active = True
+    loop._pending_create_after_cancel = False
+    loop._pending_create_instructions = None
+    sent = []
+    loop._send = lambda socket, event: sent.append(event)
+
+    with patch("argus.voice.realtime.ui_commands.get_confirmation_answer", return_value=None), \
+         patch("argus.voice.realtime.ui_commands.set_voice_confirmation_active"), \
+         patch("argus.voice.realtime.ui_events.publish"):
+        loop._ask_voice_confirmation("May I delete email? Say yes or no.")
+
+    assert sent == [{"type": "response.cancel"}]
+    assert not any(event["type"] == "conversation.item.create" for event in sent)
+    assert loop._pending_create_after_cancel is True
+    assert loop._pending_create_instructions == (
+        'Say exactly this to the user, word for word, then stop: '
+        '"May I delete email? Say yes or no."'
+    )
+
+    # response.done now arrives -- the deferred create must carry the
+    # instructions that were stashed above, and clear them afterward.
+    loop._stop = threading.Event()
+    loop._connection_lost = threading.Event()
+    loop._connection_error = None
+    loop._transcript = []
+    loop._output_captioned = True
+    loop._pending_calls = []
+    with patch("argus.voice.realtime.ui_events.publish"):
+        loop._receive([json.dumps({"type": "response.done"})])
+
+    assert sent[-1] == {
+        "type": "response.create",
+        "response": {
+            "instructions": 'Say exactly this to the user, word for word, then stop: '
+                             '"May I delete email? Say yes or no."',
+        },
+    }
+    assert loop._pending_create_instructions is None
+
+
+def test_two_consecutive_confirmations_leave_no_residue():
+    """Unit 24a acceptance: two confirmations in one session must not
+    accumulate -- the second attempt's response.create must carry only its
+    own instructions, with nothing left over from the first (the original
+    bug was exactly this kind of accumulation, just via conversation items
+    instead of this field)."""
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._socket = object()
+    loop._response_active = False
+    loop._pending_create_after_cancel = False
+    loop._pending_create_instructions = None
+    sent = []
+    loop._send = lambda socket, event: sent.append(event)
+
+    with patch("argus.voice.realtime.ui_commands.get_confirmation_answer", return_value="yes"), \
+         patch("argus.voice.realtime.ui_commands.set_voice_confirmation_active"), \
+         patch("argus.voice.realtime.ui_events.publish"):
+        loop._ask_voice_confirmation("First question, say yes or no.")
+        loop._ask_voice_confirmation("Second question, say yes or no.")
+
+    assert loop._pending_create_instructions is None
+    assert not any(event["type"] == "conversation.item.create" for event in sent)
+    assert sent[0]["response"]["instructions"].endswith('"First question, say yes or no."')
+    assert sent[1]["response"]["instructions"].endswith('"Second question, say yes or no."')
+
+
+def test_announce_and_submit_text_message_are_unaffected_by_the_24a_fix():
+    """Unit 24a explicitly must leave announce() and submit_text_message()
+    alone -- they legitimately add real conversation items (a proactive
+    remark, a real user turn) and are not the bug."""
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    fake_socket = object()
+    loop._socket = fake_socket
+    loop._response_active = False
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    loop._playback_lock = threading.Lock()
+    loop._send_lock = threading.Lock()
+    sent = []
+    loop._send = lambda socket, event: sent.append(event)
+
+    with patch("argus.voice.realtime.ui_events.publish"):
+        assert loop.announce("you've got mail") is True
+    assert sent[0]["type"] == "conversation.item.create"
+    assert sent[0]["item"]["role"] == "system"
+
+    sent.clear()
+    with patch("argus.voice.realtime.ui_events.publish"):
+        assert loop.submit_text_message("what's the weather") is True
+    assert sent[0]["type"] == "conversation.item.create"
+    assert sent[0]["item"]["role"] == "user"
 
 
 def test_transcript_during_pending_confirmation_is_diverted_not_treated_as_a_new_turn():
