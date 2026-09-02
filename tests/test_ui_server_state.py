@@ -62,6 +62,7 @@ def _fake_engine():
     )
     engine.held.pending.return_value = []
     engine.orchestrator.rule_store.list_active.return_value = []
+    engine.rule_instances.list_active.return_value = []
     return engine
 
 
@@ -91,7 +92,10 @@ def test_returns_the_world_snapshot_held_items_and_active_rules():
     assert body["engine_running"] is True
     assert body["focus"] == {"title": "editor.exe", "minutes": 12.0, "confidence": 1.0}
     assert body["held"][0]["text"] == "new mail"
-    assert body["rules"][0] == {"id": 7, "natural_language": "suppress newsletters", "kind": "suppression", "status": "active"}
+    assert body["rules"][0] == {
+        "id": 7, "natural_language": "suppress newsletters", "kind": "suppression",
+        "status": "active", "firing": False,
+    }
 
 
 def test_never_constructs_a_second_store():

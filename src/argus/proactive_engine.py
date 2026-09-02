@@ -1,7 +1,9 @@
 import logging
 import threading
+import time
 
 from argus.orchestrator import Orchestrator
+from argus.spine.observation import Observation
 from argus.ui import commands as ui_commands
 
 log = logging.getLogger(__name__)
@@ -72,6 +74,16 @@ class ProactiveEngine:
         self.rule_matcher = RuleMatcher(self.orchestrator.rule_store)
         self.budget = InterruptionBudget()
         self.held = HeldQueue()
+
+        # PRD §7.4 + Appendix A.3 "Effect reversal", wired live for the
+        # first time at the PRD §15 unit 30 gate (acknowledge_thread
+        # below is what actually resolves an instance): constructed here
+        # so it's the one shared instance (P4), matching rule_store/
+        # decision_log's own constructed-once-in-Orchestrator-reused-here
+        # treatment above.
+        from argus.rules.instances import RuleInstanceStore
+        self.rule_instances = RuleInstanceStore()
+
         self.salience_engine = SalienceEngine(
             self.rule_matcher, self.budget, self.held, rhythms=self.rhythms, spine=self.spine,
             decision_log=self.orchestrator.decision_log,
@@ -109,6 +121,48 @@ class ProactiveEngine:
         # (ui/commands.py) -- ui/server.py reaches this instance instead
         # of ever constructing its own WorldModel/ThreadStore/SpineStore.
         ui_commands.set_active_proactive_engine(self)
+
+    def acknowledge_thread(self, thread_id: int, via: str) -> bool:
+        """PRD Appendix A.1 / §15 unit 30: this is the ONE mechanism
+        behind "got it" -- whether spoken or clicked. It records
+        thread.acknowledged with the exact {"thread_id", "via"} shape
+        §3.1 specifies, "voice" or "ui" being the only difference,
+        because there is no separate UI-only close path. That
+        observation is what the `user_acknowledged` predicate (Appendix
+        A.1) reads, so closing the thread and resolving any rule
+        instance watching it are just evaluating existing conditions
+        against it -- not a special case for acknowledgment.
+
+        Reaps both the thread and any watching rule instance
+        synchronously rather than waiting for a periodic timer: neither
+        is scheduled anywhere yet in this build (no periodic reap loop
+        exists), and "click got it" -> "watch it happen" is the whole
+        point of unit 30 -- an effect that only becomes visible on some
+        future timer tick would not close the loop at all.
+
+        Returns False only if the thread doesn't exist; a thread that
+        exists but whose close_condition isn't satisfied by
+        acknowledgment alone (e.g. still waiting on a reply) still
+        returns True -- the observation was recorded either way, exactly
+        as a spoken "got it" would too."""
+        thread = self.threads.get(thread_id)
+        if thread is None:
+            return False
+
+        self.spine.record(Observation(
+            source="ui" if via == "ui" else "voice", kind="thread.acknowledged", ts=time.time(),
+            subject=thread.subject, payload={"thread_id": thread_id, "via": via},
+        ))
+        # Appendix A.1 evaluation cadence: "on a timer, and immediately
+        # after any observation whose kind appears in an open thread's
+        # condition" -- this observation is exactly that trigger.
+        self.threads.reap(now=time.time())
+        self.world_model.invalidate()
+        self.rule_instances.reap(
+            registry=self.orchestrator.tools, rule_store=self.orchestrator.rule_store,
+            thread_store=self.threads, spine=self.spine,
+        )
+        return True
 
     def start(self) -> None:
         """Starts every worker's poll loop on its own daemon thread, plus

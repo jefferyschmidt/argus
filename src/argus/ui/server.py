@@ -215,6 +215,11 @@ def state() -> dict:
     snapshot = engine.world_model.snapshot()
     held = engine.held.pending(limit=_MAX_STATE_LIST)
     rules = engine.orchestrator.rule_store.list_active()[:_MAX_STATE_LIST]
+    # PRD §15 unit 30: "active rules (and which are currently firing)" --
+    # firing means an active rule_instance is watching something on this
+    # rule's behalf right now (Appendix A.3 "Effect reversal"), not
+    # merely that the rule is enabled.
+    firing_rule_ids = {instance.rule_id for instance in engine.rule_instances.list_active()}
 
     return {
         "engine_running": True,
@@ -226,10 +231,37 @@ def state() -> dict:
         "rhythms": asdict(snapshot.rhythms),
         "held": [asdict(h) for h in held],
         "rules": [
-            {"id": r.id, "natural_language": r.natural_language, "kind": r.kind, "status": r.status}
+            {
+                "id": r.id, "natural_language": r.natural_language, "kind": r.kind,
+                "status": r.status, "firing": r.id in firing_rule_ids,
+            }
             for r in rules
         ],
     }
+
+
+@app.post("/api/threads/{thread_id}/acknowledge")
+def acknowledge_thread(thread_id: int) -> dict:
+    """PRD §15 unit 30 / Appendix A.1: clicking "got it" on a thread
+    widget must emit the same thread.acknowledged observation a spoken
+    acknowledgment does -- not a parallel path.
+    ProactiveEngine.acknowledge_thread() is that one shared mechanism;
+    this endpoint just calls it with via="ui"."""
+    engine = ui_commands.get_active_proactive_engine()
+    if engine is None:
+        return {"ok": False, "error": "no engine running"}
+    return {"ok": engine.acknowledge_thread(thread_id, via="ui")}
+
+
+@app.post("/api/held/{item_id}/dismiss")
+def dismiss_held_item(item_id: int) -> dict:
+    """PRD §15 unit 30: dismissing a held item marks it dismissed and it
+    does not reappear -- HeldQueue.dismiss() already implements this;
+    this is just the dashboard's door into it."""
+    engine = ui_commands.get_active_proactive_engine()
+    if engine is None:
+        return {"ok": False, "error": "no engine running"}
+    return {"ok": engine.held.dismiss(item_id)}
 
 
 def _resolve_core_memory(memory_id: int, confirmed: bool) -> dict:

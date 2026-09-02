@@ -782,8 +782,10 @@
 
   // A plain .row .k/.v pair (same classes the existing System panel's
   // "Today's spend" row already uses) -- text via textContent, never
-  // innerHTML, so nothing here needs esc().
-  function dashRow(primary, secondary) {
+  // innerHTML, so nothing here needs esc(). `button` is optional:
+  // {label, onClick, dismiss} appends a trailing action button (unit 30
+  // -- "got it" on a thread, "dismiss" on a held item).
+  function dashRow(primary, secondary, button) {
     var row = document.createElement("div");
     row.className = "row dash-row";
     var k = document.createElement("span");
@@ -795,6 +797,13 @@
       v.className = "v";
       v.textContent = secondary;
       row.appendChild(v);
+    }
+    if (button) {
+      var btn = document.createElement("button");
+      if (button.dismiss) btn.className = "dash-dismiss";
+      btn.textContent = button.label;
+      btn.addEventListener("click", button.onClick);
+      row.appendChild(btn);
     }
     return row;
   }
@@ -815,7 +824,9 @@
     var anyVisible = false;
 
     var threads = state.open_threads || [];
-    if (setDashPanel("threads", threads.slice(0, 8), function (t) { return dashRow(t.title, t.kind); })) {
+    if (setDashPanel("threads", threads.slice(0, 8), function (t) {
+      return dashRow(t.title, t.kind, { label: "Got it", onClick: function () { acknowledgeThread(t.id); } });
+    })) {
       anyVisible = true;
     }
     document.getElementById("dashThreadsCount").textContent = threads.length ? String(threads.length) : "";
@@ -828,11 +839,26 @@
     var deviceEntries = Object.keys(state.devices || {}).map(function (k) { return [k, state.devices[k]]; });
     if (setDashPanel("devices", deviceEntries, function (e) { return dashRow(e[0], String(e[1])); })) anyVisible = true;
 
-    if (setDashPanel("rules", (state.rules || []).slice(0, 10), function (r) { return dashRow(r.natural_language, r.status); })) anyVisible = true;
+    // "and which are currently firing" (§15 unit 30): an active
+    // rule_instance is watching something on this rule's behalf right
+    // now (Appendix A.3 "Effect reversal") -- a distinct, rarer state
+    // than merely "active".
+    if (setDashPanel("rules", (state.rules || []).slice(0, 10), function (r) {
+      var row = dashRow(r.natural_language, r.firing ? null : r.status);
+      if (r.firing) {
+        var tag = document.createElement("span");
+        tag.className = "dash-firing-tag";
+        tag.textContent = "firing";
+        row.appendChild(tag);
+      }
+      return row;
+    })) anyVisible = true;
 
     if (setDashPanel("health", state.health || [], function (h) { return dashRow(h.description, h.subject || ""); })) anyVisible = true;
 
-    if (setDashPanel("held", state.held || [], function (h) { return dashRow(h.text, h.kind); })) anyVisible = true;
+    if (setDashPanel("held", state.held || [], function (h) {
+      return dashRow(h.text, h.kind, { label: "Dismiss", dismiss: true, onClick: function () { dismissHeldItem(h.id); } });
+    })) anyVisible = true;
 
     var focusItems = state.focus ? [state.focus] : [];
     if (setDashPanel("focus", focusItems, function (f) { return dashRow(f.title, Math.round(f.minutes) + " min"); })) anyVisible = true;
@@ -847,6 +873,25 @@
   function startDashboardPolling(pollSeconds) {
     fetchState();
     setInterval(fetchState, Math.max(1, pollSeconds) * 1000);
+  }
+
+  // ---------- thread acknowledgment / held dismissal (PRD §15 unit 30) ----------
+  // Clicking "got it" must emit the SAME thread.acknowledged observation
+  // a spoken acknowledgment does -- ProactiveEngine.acknowledge_thread()
+  // is that one shared mechanism; this just calls it with via="ui". A
+  // successful click re-fetches state immediately rather than waiting
+  // for the next poll tick, so the closed thread (and any rule instance
+  // it was watching) disappears from the dashboard right away.
+  function acknowledgeThread(threadId) {
+    fetch("/api/threads/" + threadId + "/acknowledge", { method: "POST" })
+      .then(fetchState)
+      .catch(function () { showToast("Couldn't reach Argus -- is it still running?"); });
+  }
+
+  function dismissHeldItem(itemId) {
+    fetch("/api/held/" + itemId + "/dismiss", { method: "POST" })
+      .then(fetchState)
+      .catch(function () { showToast("Couldn't reach Argus -- is it still running?"); });
   }
 
   // ---------- transcript ----------
