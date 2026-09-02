@@ -256,3 +256,32 @@ def test_grant_with_a_dedicated_observation_records_the_correct_source_and_kind(
     (obs,) = spine.query(kinds=["tool.auto_approved"])
     assert isinstance(obs, Observation)
     assert obs.kind == "tool.auto_approved"
+
+
+def test_a_granted_call_does_not_widen_the_grant_for_the_rest_of_the_turn(tmp_path):
+    """The scope-leak path worth guarding explicitly. `delete_email` is
+    repeatable, so a normal confirmed call adds its approval_key to
+    _task_approved and every later call that turn runs unprompted. If an
+    auto-approved call did the same, one in-scope newsletter delete would
+    silently authorize deleting anything -- including from a real person,
+    which is exactly what the grant's deny clause exists to prevent. Step
+    2b therefore returns without touching the bucket, unlike the
+    _explicit_task_authorized path directly above it.
+
+    Sequenced deliberately: in-scope call first, out-of-scope call second,
+    same turn, no reset_task_autonomy() in between."""
+    store = _rule_store(tmp_path)
+    _grant(store, deny=[{"field": "sender", "op": "contains", "value": "@person"}])
+    confirmer = MagicMock(return_value=True)
+    registry = ToolRegistry(confirmer=confirmer, authorization_checker=AuthorizationChecker(store))
+    registry.register(_tool(repeatable=True))
+
+    registry.execute("delete_email", {"sender": "newsletter@ex.com"})
+    confirmer.assert_not_called()
+
+    registry.execute("delete_email", {"sender": "julia@person.com"})
+
+    assert confirmer.call_count == 1, (
+        "an auto-approved call widened the session approval bucket -- the second, "
+        "out-of-scope call ran without asking"
+    )
