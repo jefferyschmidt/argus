@@ -11,6 +11,7 @@ from rich.console import Console
 
 from argus.config import settings
 from argus.orchestrator import Orchestrator
+from argus.voice.acknowledgment import maybe_acknowledge_spoken_thread
 from argus.voice.audio_io import ListeningPaused, record_followup
 from argus.voice.speaker_factory import build_speaker
 from argus.voice.stt import Transcriber
@@ -737,6 +738,20 @@ class VoiceLoop:
             return True  # keep the follow-up window open, just ignore this one
 
         console.print(f"[bold green]you>[/bold green] {text}")
+
+        # PRD §15 unit 32: no is_voice_confirmation_active() guard needed
+        # here, unlike voice/realtime.py's _receive -- every call into
+        # _process_utterance already happens under self._interaction_lock
+        # (see run()/_external_input_worker() below), and voice/confirm.py's
+        # confirmer captures and consumes its own recording synchronously
+        # from within a tool call that's already holding that same lock.
+        # A second _process_utterance call literally cannot start while a
+        # confirmation is pending -- it would block on the lock -- so
+        # there is no transcript here that could be a yes/no meant for a
+        # confirmer. A side effect on an otherwise normal turn, not a
+        # replacement for it: never suppresses anything below, even when
+        # it does close a thread.
+        maybe_acknowledge_spoken_thread(text, getattr(self, "proactive", None))
 
         if any(phrase in text.lower() for phrase in _STOP_LISTENING_PHRASES):
             self._hot_mic_until = 0.0

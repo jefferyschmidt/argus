@@ -871,3 +871,109 @@ def test_transcript_during_pending_confirmation_is_diverted_not_treated_as_a_new
     # not be treated as an ordinary new conversational turn.
     assert sent == []
     loop.tools.reset_task_autonomy.assert_not_called()
+
+
+def test_acknowledgment_phrase_during_pending_confirmation_is_diverted_not_acknowledged():
+    """PRD §15 unit 32: the existing is_voice_confirmation_active()
+    diversion must still run FIRST and unchanged -- a yes/no (or here, an
+    acknowledgment phrase that happens to also be a plausible answer)
+    answering a permission prompt goes to the confirmer, never to
+    acknowledgment. The acknowledgment check must never even be reached."""
+    import json
+    import threading
+
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._stop = threading.Event()
+    loop._connection_lost = threading.Event()
+    loop._connection_error = None
+    loop._transcript = []
+    loop._output_captioned = True
+    loop._pending_calls = []
+    loop._pending_create_after_cancel = False
+    loop._speech_lock = threading.Lock()
+    loop._resume_timer = None
+    loop.tools = MagicMock()
+    loop.proactive = MagicMock()
+    sent = []
+    loop._send = lambda socket, event: sent.append(event)
+    event = json.dumps({
+        "type": "conversation.item.input_audio_transcription.completed",
+        "transcript": "got it",
+    })
+
+    with patch("argus.voice.realtime.ui_commands.is_voice_confirmation_active", return_value=True), \
+         patch("argus.voice.realtime.ui_commands.submit_confirmation_answer") as submit, \
+         patch("argus.voice.realtime.ui_events.publish"):
+        loop._receive([event])
+
+    submit.assert_called_once_with("got it")
+    loop.proactive.acknowledge_thread.assert_not_called()
+
+
+def test_acknowledgment_phrase_on_a_non_diverted_transcript_acknowledges_the_spoken_thread():
+    """Only reachable once the diversion above found nothing to divert."""
+    import json
+    import threading
+
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._stop = threading.Event()
+    loop._connection_lost = threading.Event()
+    loop._connection_error = None
+    loop._speech_lock = threading.Lock()
+    loop._input_had_transcript = False
+    loop._resume_timer = None
+    loop._response_active = False
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    loop._playback_lock = threading.Lock()
+    loop._send_lock = threading.Lock()
+    loop._last_expression = None
+    loop.tools = MagicMock()
+    loop.proactive = MagicMock()
+    loop.proactive.dispatcher.last_spoken_thread_id = 42
+    loop.proactive.dispatcher.last_spoken_ts = 1_000_000.0
+    loop.proactive.acknowledge_thread.return_value = True
+    event = json.dumps({
+        "type": "conversation.item.input_audio_transcription.completed",
+        "transcript": "got it",
+    })
+
+    with patch("argus.voice.realtime.ui_commands.is_voice_confirmation_active", return_value=False), \
+         patch("argus.voice.realtime.ui_events.publish"), \
+         patch("argus.voice.acknowledgment.time.time", return_value=1_000_010.0):
+        loop._receive([event])
+
+    loop.proactive.acknowledge_thread.assert_called_once_with(42, via="voice")
+
+
+def test_bare_yes_on_a_non_diverted_transcript_never_acknowledges():
+    import json
+    import threading
+
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._stop = threading.Event()
+    loop._connection_lost = threading.Event()
+    loop._connection_error = None
+    loop._speech_lock = threading.Lock()
+    loop._input_had_transcript = False
+    loop._resume_timer = None
+    loop._response_active = False
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    loop._playback_lock = threading.Lock()
+    loop._send_lock = threading.Lock()
+    loop._last_expression = None
+    loop.tools = MagicMock()
+    loop.proactive = MagicMock()
+    loop.proactive.dispatcher.last_spoken_thread_id = 42
+    loop.proactive.dispatcher.last_spoken_ts = 1_000_000.0
+    event = json.dumps({
+        "type": "conversation.item.input_audio_transcription.completed",
+        "transcript": "yes",
+    })
+
+    with patch("argus.voice.realtime.ui_commands.is_voice_confirmation_active", return_value=False), \
+         patch("argus.voice.realtime.ui_events.publish"):
+        loop._receive([event])
+
+    loop.proactive.acknowledge_thread.assert_not_called()

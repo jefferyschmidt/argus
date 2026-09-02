@@ -372,6 +372,16 @@ class Settings(BaseSettings):
     # human dashboard glance ever needs.
     dashboard_poll_seconds: float = 5.0
 
+    # PRD §15 unit 32: a completed transcript matching an acknowledgment
+    # phrase only closes the most recently SPOKEN-about thread if it
+    # arrives within this many seconds of Argus actually saying it
+    # (hold/ambient deliveries don't count -- the user never heard
+    # those). Long enough to cover a natural "got it" a few seconds
+    # after Argus finishes a sentence, short enough that an unrelated
+    # "got it" minutes later about something else entirely doesn't
+    # reach back and close a stale thread.
+    acknowledgment_window_seconds: float = 180.0
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir

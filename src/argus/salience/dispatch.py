@@ -8,6 +8,7 @@ a new email, a research finding are all just candidates now, not their
 own reason to talk."""
 
 import logging
+import time
 
 from argus.salience.engine import SalienceEngine
 from argus.salience.scoring import Candidate, Decision
@@ -23,6 +24,15 @@ class SalienceDispatcher:
         self.world_model = world_model
         self._speak_fn = speak_fn
         self._interaction_lock = interaction_lock
+        # PRD §15 unit 32: the thread id and timestamp of the most recent
+        # item this dispatcher actually SPOKE about -- a hold (blocked by
+        # the interaction lock) or an ambient decision never sets these,
+        # because the user never heard either. This is what lets a
+        # spoken "got it" resolve to a specific thread without an LLM in
+        # the loop: only the single most recently spoken-about thread is
+        # ever eligible, never a bulk close, never an older one.
+        self.last_spoken_thread_id: int | None = None
+        self.last_spoken_ts: float | None = None
 
     def submit(self, candidate: Candidate, observation=None, now: float | None = None) -> Decision:
         """Scores `candidate` against the current world snapshot and, if
@@ -36,16 +46,22 @@ class SalienceDispatcher:
             log.exception("Salience decide() failed for candidate kind=%s -- treating as hold", candidate.kind)
             return Decision(action="hold", reason="salience decide() raised")
 
-        if decision.action == "speak" and not self._deliver(candidate.text):
-            # Argus was mid-conversation. The interruption budget slot is
-            # already spent (SalienceEngine.decide() consumed it before
-            # we got here), but nothing is ever silently dropped (§5.4) --
-            # this queues it the same as an ordinary hold rather than
-            # losing it outright.
-            self.engine.held.add(
-                kind=candidate.kind, subject=candidate.subject, text=candidate.text,
-                score=1.0, thread_id=candidate.thread_id,
-            )
+        if decision.action == "speak":
+            if self._deliver(candidate.text):
+                if candidate.thread_id is not None:
+                    self.last_spoken_thread_id = candidate.thread_id
+                    self.last_spoken_ts = now if now is not None else time.time()
+            else:
+                # Argus was mid-conversation. The interruption budget slot
+                # is already spent (SalienceEngine.decide() consumed it
+                # before we got here), but nothing is ever silently
+                # dropped (§5.4) -- this queues it the same as an ordinary
+                # hold rather than losing it outright. Not delivered, so
+                # last_spoken_* stays untouched -- the user never heard it.
+                self.engine.held.add(
+                    kind=candidate.kind, subject=candidate.subject, text=candidate.text,
+                    score=1.0, thread_id=candidate.thread_id,
+                )
         return decision
 
     def _deliver(self, text: str) -> bool:

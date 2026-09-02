@@ -113,6 +113,80 @@ def test_now_never_actually_speaks_when_ambient_or_lower(tmp_path):
     assert spoken == []
 
 
+# -- last_spoken_thread_id / last_spoken_ts (PRD §15 unit 32) ----------
+
+def test_speak_decision_records_the_spoken_about_thread(tmp_path):
+    dispatcher, engine = _dispatcher(tmp_path)
+    candidate = _boosted_candidate(engine.matcher)
+    candidate.thread_id = 42
+
+    dispatcher.submit(candidate, observation=_FakeObs(kind="reminder.due"), now=1_000_000.0)
+
+    assert dispatcher.last_spoken_thread_id == 42
+    assert dispatcher.last_spoken_ts == 1_000_000.0
+
+
+def test_hold_decision_does_not_record_a_spoken_about_thread(tmp_path):
+    dispatcher, engine = _dispatcher(tmp_path)
+    candidate = Candidate(observation_id=1, kind="git.branch_stale", subject=None, text="x", base_urgency=0.05, thread_id=7)
+
+    dispatcher.submit(candidate, now=1_000_000.0)
+
+    assert dispatcher.last_spoken_thread_id is None
+    assert dispatcher.last_spoken_ts is None
+
+
+def test_ambient_decision_does_not_record_a_spoken_about_thread(tmp_path):
+    dispatcher, engine = _dispatcher(tmp_path)
+    candidate = Candidate(observation_id=1, kind="routine.due", subject=None, text="x", base_urgency=0.90, thread_id=7)
+
+    dispatcher.submit(candidate, now=1_000_000.0)
+
+    assert dispatcher.last_spoken_thread_id is None
+    assert dispatcher.last_spoken_ts is None
+
+
+def test_speak_decision_blocked_by_a_busy_lock_does_not_record_a_spoken_about_thread(tmp_path):
+    """The user never heard this one -- it was queued as held instead
+    (see test_speak_decision_with_busy_lock_is_queued_not_lost above), so
+    it must not become eligible for a spoken "got it" either."""
+    dispatcher, engine = _dispatcher(tmp_path)
+    candidate = _boosted_candidate(engine.matcher)
+    candidate.thread_id = 42
+    dispatcher._interaction_lock.acquire()
+
+    dispatcher.submit(candidate, observation=_FakeObs(kind="reminder.due"), now=1_000_000.0)
+
+    assert dispatcher.last_spoken_thread_id is None
+    assert dispatcher.last_spoken_ts is None
+
+
+def test_speak_decision_with_no_thread_id_leaves_tracking_untouched(tmp_path):
+    dispatcher, engine = _dispatcher(tmp_path)
+    candidate = _boosted_candidate(engine.matcher)  # thread_id defaults to None
+
+    dispatcher.submit(candidate, observation=_FakeObs(kind="reminder.due"), now=1_000_000.0)
+
+    assert dispatcher.last_spoken_thread_id is None
+    assert dispatcher.last_spoken_ts is None
+
+
+def test_a_later_spoken_thread_overwrites_the_earlier_one(tmp_path):
+    """Only the single most recently spoken-about thread is ever
+    eligible."""
+    dispatcher, engine = _dispatcher(tmp_path)
+    first = _boosted_candidate(engine.matcher)
+    first.thread_id = 1
+    dispatcher.submit(first, observation=_FakeObs(kind="reminder.due"), now=1_000_000.0)
+
+    second = _boosted_candidate(engine.matcher, kind="reminder.due")
+    second.thread_id = 2
+    dispatcher.submit(second, observation=_FakeObs(kind="reminder.due"), now=1_000_100.0)
+
+    assert dispatcher.last_spoken_thread_id == 2
+    assert dispatcher.last_spoken_ts == 1_000_100.0
+
+
 def test_measured_unprompted_interruptions_per_hour_never_exceeds_the_cap(tmp_path, monkeypatch):
     """Phase C acceptance (§5.6 #8), measured directly: flood the
     dispatcher with 50 unambiguous, high-urgency candidates -- every one

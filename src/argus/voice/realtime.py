@@ -652,6 +652,17 @@ class RealtimeVoiceLoop:
                         if requested_expression:
                             self._last_expression = requested_expression
                             ui_events.publish({"type": "expression", "value": requested_expression})
+                        # PRD §15 unit 32: only reachable here, after the
+                        # is_voice_confirmation_active() diversion above
+                        # has already run and found nothing to divert --
+                        # a yes/no answering a permission prompt never
+                        # gets here at all. A side effect on an otherwise
+                        # normal turn, not a replacement for it: this
+                        # never suppresses the rest of this transcript's
+                        # handling below, even when it does close a
+                        # thread.
+                        from argus.voice.acknowledgment import maybe_acknowledge_spoken_thread
+                        maybe_acknowledge_spoken_thread(transcript, getattr(self, "proactive", None))
                         with self._speech_lock:
                             self._input_had_transcript = True
                             self._cancel_timer(self._resume_timer)
