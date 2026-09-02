@@ -1,11 +1,15 @@
-"""PRD.md §15 unit 32, voice/loop.py's side of it. Unlike
-voice/realtime.py's _receive, no explicit is_voice_confirmation_active()
-check is needed here: every call into _process_utterance already happens
-under self._interaction_lock, and voice/confirm.py's confirmer captures
-and consumes its own recording synchronously from within a tool call
-that's already holding that same lock -- see the call site in loop.py
-for the full reasoning. These tests exercise the acknowledgment wiring
-itself, not that structural guarantee (which has no code to test)."""
+"""PRD.md §15 unit 32, voice/loop.py's side of it.
+
+Pipeline mode's protection against a confirmer's yes/no being read as an
+acknowledgment was originally structural: every call into
+_process_utterance happens under self._interaction_lock, and
+voice/confirm.py's confirmer consumes its own recording synchronously
+from within a tool call already holding that lock, so a second
+_process_utterance cannot start while a confirmation is pending. That
+argument is correct -- and enforced by nothing, holding only while every
+future caller also takes the lock. An explicit
+is_voice_confirmation_active() check was added at the call site so both
+voice loops guard this the same way, and the last test here pins it."""
 
 from unittest.mock import MagicMock
 
@@ -92,3 +96,35 @@ def test_no_proactive_engine_is_a_safe_no_op():
     result = loop._process_utterance(text="got it")  # must not raise
 
     assert result is True
+
+
+def test_acknowledgment_is_skipped_while_a_confirmation_is_pending(monkeypatch):
+    """The guard that replaced a structural-only argument. A yes/no meant
+    for a confirmer must never close a thread, in either voice loop."""
+    ui_commands.set_quiet_mode(False)
+    proactive = MagicMock()
+    proactive.dispatcher.last_spoken_thread_id = 42
+    proactive.dispatcher.last_spoken_ts = 1_000_000.0
+    loop = _loop(proactive)
+    monkeypatch.setattr("argus.voice.acknowledgment.time.time", lambda: 1_000_010.0)
+    monkeypatch.setattr("argus.ui.commands.is_voice_confirmation_active", lambda: True)
+
+    loop._process_utterance(text="got it")
+
+    proactive.acknowledge_thread.assert_not_called()
+
+
+def test_acknowledgment_still_runs_when_no_confirmation_is_pending(monkeypatch):
+    """The guard must not break the normal path it wraps."""
+    ui_commands.set_quiet_mode(False)
+    proactive = MagicMock()
+    proactive.dispatcher.last_spoken_thread_id = 42
+    proactive.dispatcher.last_spoken_ts = 1_000_000.0
+    proactive.acknowledge_thread.return_value = True
+    loop = _loop(proactive)
+    monkeypatch.setattr("argus.voice.acknowledgment.time.time", lambda: 1_000_010.0)
+    monkeypatch.setattr("argus.ui.commands.is_voice_confirmation_active", lambda: False)
+
+    loop._process_utterance(text="got it")
+
+    proactive.acknowledge_thread.assert_called_once_with(42, via="voice")

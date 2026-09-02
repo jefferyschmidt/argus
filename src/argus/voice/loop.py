@@ -739,19 +739,26 @@ class VoiceLoop:
 
         console.print(f"[bold green]you>[/bold green] {text}")
 
-        # PRD §15 unit 32: no is_voice_confirmation_active() guard needed
-        # here, unlike voice/realtime.py's _receive -- every call into
-        # _process_utterance already happens under self._interaction_lock
-        # (see run()/_external_input_worker() below), and voice/confirm.py's
-        # confirmer captures and consumes its own recording synchronously
-        # from within a tool call that's already holding that same lock.
-        # A second _process_utterance call literally cannot start while a
-        # confirmation is pending -- it would block on the lock -- so
-        # there is no transcript here that could be a yes/no meant for a
-        # confirmer. A side effect on an otherwise normal turn, not a
-        # replacement for it: never suppresses anything below, even when
+        # PRD §15 unit 32. A side effect on an otherwise normal turn, not a
+        # replacement for one: never suppresses anything below, even when
         # it does close a thread.
-        maybe_acknowledge_spoken_thread(text, getattr(self, "proactive", None))
+        #
+        # The guard is belt-and-braces, and deliberately so. Structurally
+        # it should be unreachable: every call into _process_utterance
+        # happens under self._interaction_lock, and voice/confirm.py's
+        # confirmer captures and consumes its own recording synchronously
+        # from inside a tool call already holding that same lock, so a
+        # second _process_utterance cannot start while a confirmation is
+        # pending -- it would block. But that is an invariant with no
+        # enforcement: it holds only as long as every future caller also
+        # takes the lock, and this repo has already had one structural
+        # safety claim (ThreadStore's connection docstring) go stale the
+        # moment a new caller appeared. One cheap explicit check makes
+        # both voice loops guard this the same way instead of one relying
+        # on an argument, so a yes/no meant for a confirmer can never
+        # close a thread here.
+        if not ui_commands.is_voice_confirmation_active():
+            maybe_acknowledge_spoken_thread(text, getattr(self, "proactive", None))
 
         if any(phrase in text.lower() for phrase in _STOP_LISTENING_PHRASES):
             self._hot_mic_until = 0.0

@@ -8,7 +8,10 @@ dist/
 
 .env
 
+# Covers the -wal/-shm siblings WAL mode creates too: a bare `data/*.db`
+# pattern does NOT match `data/spine.db-wal`, so those were being committed.
 data/*.db
+data/*.db-*
 data/chroma/
 data/*.sqlite3
 data/spend.json
