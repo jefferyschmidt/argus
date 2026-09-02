@@ -1437,6 +1437,50 @@ Once 28–30 are live, `argus timeline` and `argus held` stay (they are genuinel
 headless and over SSH) but stop being the primary way to see state. No code change beyond
 noting it in `README.md`.
 
+### Unit 32 — Spoken acknowledgment (found at the Phase H gate)
+
+**Depends on:** unit 30.
+
+**The gap:** `ProactiveEngine.acknowledge_thread(thread_id, via)` is correct and supports
+`via="voice"`, and Appendix A.1 has specified `{"thread_id", "via": "voice" | "ui"}` since it
+was written — but **nothing in the codebase ever calls it with `"voice"`.** Verified
+2026-09-02: the only production caller is `ui/server.py`, with `via="ui"`.
+
+So saying *"got it"* out loud does nothing. The bulb flow closes only by clicking the
+dashboard, and the light otherwise stays on until the instance's safety timeout. Unit 30's
+"a spoken and a clicked acknowledgment are indistinguishable downstream" was satisfied
+literally and correctly — both go through one method — but §15 never said *who detects the
+spoken one*. Specification omission, same shape as unit 25's.
+
+**Build — deterministic, no LLM in the loop:**
+
+- `SalienceDispatcher` records the thread id and timestamp of the most recent item it actually
+  *spoke* about (`hold`/`ambient` deliveries do not count — the user never heard those).
+- On a completed user transcript, the voice loop checks: is there a spoken-about thread within
+  `settings.acknowledgment_window_seconds` (default 180), and does the utterance match an
+  acknowledgment phrase? If so, call `acknowledge_thread(id, via="voice")`.
+- **Only the single most recently spoken-about thread is ever eligible.** Never a bulk close,
+  never an older thread.
+- Runs **after** the existing `is_voice_confirmation_active()` diversion, never instead of it —
+  a yes/no answering a permission prompt must keep going to the confirmer, and that check
+  already happens first in `_receive`.
+- Acknowledgment phrases are a small explicit list ("got it", "thanks", "noted", "handled",
+  "dealt with it", "took care of it"), deliberately **not** reusing `_YES_WORDS`: a bare "yes"
+  answering some unrelated question must not silently close a thread. Closing a thread the
+  user did not mean to close loses the item, so this errs toward not firing.
+
+**Acceptance:**
+- [ ] "Got it" within the window after Argus speaks about a thread closes that thread and emits
+      `thread.acknowledged` with `via="voice"`.
+- [ ] The same phrase with no recently spoken-about thread does nothing.
+- [ ] The same phrase after the window expires does nothing.
+- [ ] An item that was *held* rather than spoken is never eligible.
+- [ ] A yes/no answering an active tool confirmation still reaches the confirmer and closes no
+      thread.
+- [ ] A bare "yes" never closes a thread.
+- [ ] A voice acknowledgment resolves a watching rule instance and restores prior state, exactly
+      as the UI path does.
+
 ### Out of scope for Phase H
 
 No editing of rules from the dashboard beyond revoke; no chat UI changes; no authentication
