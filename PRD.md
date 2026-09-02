@@ -1127,3 +1127,100 @@ Insert into §11, before the units that depend on them:
 Units 8a and 9a fall inside the Phase B gate (unit 11); 15a and 16a inside the Phase C gate
 (unit 19). Both gates now additionally require every acceptance box in this appendix to be
 ticked.
+
+---
+
+## 13. Follow-on units (added 2026-09-01 after first live use)
+
+Three gaps found by actually running the built system. Units 24 and 25 close specification
+omissions in this document, not implementation errors — §7.6 listed only introspection tools
+and never a rule-authoring one, and the roadmap named query-over-history as a primary mode
+without ever specifying a unit for it.
+
+### Unit 24 — Voice confirmation window must start when the question finishes
+
+**Depends on:** nothing. Do this first; it is a live annoyance.
+
+**Confirmed live 2026-09-01:** a `CONFIRM`-tier tool call in `VOICE_MODE=realtime` fell through
+to the console's click-to-approve card instead of accepting a spoken yes, even though
+`_ask_voice_confirmation` exists and is wired.
+
+**Cause:** in `voice/realtime.py::_ask_voice_confirmation`, the
+`_VOICE_CONFIRM_LISTEN_SECONDS` window opens the moment the question is *sent* to OpenAI —
+before a word of it has been spoken. The realtime sequence is: send (t=0) → OpenAI generates
+and streams the spoken question (~3–5s) → the user hears it and answers (~1–2s) → the async
+transcription arrives (~0.5–1.5s). Total 5–8s+, against a 7s window that was already running.
+Both attempts time out and the UI fallback fires. Pipeline mode does not have this problem
+because `record_followup` starts after `speaker.speak()` returns.
+
+**Fix:** do not start the answer window until the question has actually finished being spoken.
+After sending the question and calling `_create_response_or_defer`, wait for that response's
+audio to drain — poll `_audio_is_active()` until it goes false, capped by
+`settings.voice_confirm_speak_timeout_seconds` (default 15) so a failed generation cannot hang
+the confirmer — and only then begin waiting on `ui_commands.get_confirmation_answer`.
+
+Raise `_VOICE_CONFIRM_LISTEN_SECONDS` to `settings.voice_confirm_listen_seconds` (default
+10.0) to cover realtime transcription latency, which pipeline mode does not pay.
+
+**Acceptance:**
+- [ ] The answer window does not begin while `_audio_is_active()` is true.
+- [ ] A spoken "yes" arriving 6 seconds after the question finishes is accepted (it previously
+      landed outside the window).
+- [ ] A generation that never produces audio still gives up after the speak timeout and does
+      not hang the confirmer or the tool call.
+- [ ] The UI fallback still fires after two genuinely unanswered attempts.
+- [ ] Pipeline mode's `voice/confirm.py` is unchanged.
+
+### Unit 25 — Authoring a rule by voice
+
+**Depends on:** unit 15 (`RuleCompiler`, already built and tested).
+
+**The gap:** §7.6 specified `list_rules`, `explain_last_action`, `revoke_rule`,
+`activate_mode`, `deactivate_mode` — every way to inspect a rule and no way to make one. The
+compiler is built and unreachable from conversation, so "say a sentence and durably change
+standing behavior" — Phase G's entire point, and the most differentiating item on the roadmap
+— cannot currently be done. `list_rules` returns empty and modes have nothing to activate.
+
+**Build:** a `remember_preference` tool (tier `CONFIRM`) taking the user's sentence verbatim,
+running it through `RuleCompiler`, and going through the existing propose/confirm path.
+
+- The compiler's clarifying question and its natural-language read-back are surfaced to the
+  user before the rule is confirmed — that confirmation is what §7.2 already specifies.
+- A conflict with an existing active rule is surfaced at authoring time (§7.2 step 3).
+- An authored rule lands `status='proposed'`, `origin='user'`, and becomes `active` only on
+  explicit confirmation — identical to the induced path.
+- Registered only when `rule_store` is available, matching how the other rule tools are gated.
+
+**Acceptance:**
+- [ ] "Stop telling me when I open Claude" produces a suppression rule that afterwards appears
+      in `list_rules` and survives a restart.
+- [ ] The rule is read back in natural language before confirmation.
+- [ ] Declining the confirmation leaves no active rule.
+- [ ] A rule conflicting with an existing active one is reported before confirmation.
+- [ ] A suppression authored this way actually suppresses — the matching candidate returns
+      `Decision(action="suppress")` from `SalienceEngine`.
+
+### Unit 26 — Query over history
+
+**Depends on:** Phase A.
+
+**The gap:** `ROADMAP.md` Part III names query-over-history as principle P2 — "a primary mode,
+not a side effect" — and no unit ever specified it. The spine holds the data and nothing
+exposes it to conversation.
+
+**Build:** a `query_timeline` tool (tier `ALLOW` — it only reads) wrapping
+`SpineStore.query()`, taking optional `kinds`, `subject`, `since`, `until`, `limit`, and
+returning a compact summary rather than raw rows.
+
+- Bounded: cap `limit` server-side (default 50, max 200) so a broad query cannot flood the
+  model's context.
+- Summarize rather than dump: counts by kind plus the most recent handful, not every row.
+- Honest about gaps: if the requested window predates the spine's earliest observation, say so
+  rather than implying nothing happened (`ROADMAP.md` P1, honest uncertainty).
+
+**Acceptance:**
+- [ ] "When did I last get mail from X?" answers from real spine data.
+- [ ] A query whose window starts before the earliest observation says the record does not go
+      back that far.
+- [ ] `limit` is capped server-side regardless of what the model asks for.
+- [ ] Zero LLM calls inside the tool itself.
