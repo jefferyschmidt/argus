@@ -2,6 +2,7 @@ import logging
 import threading
 
 from argus.orchestrator import Orchestrator
+from argus.ui import commands as ui_commands
 
 log = logging.getLogger(__name__)
 
@@ -101,6 +102,13 @@ class ProactiveEngine:
 
         from argus.memory.consolidation_worker import ConsolidationWorker
         self.consolidation_worker = ConsolidationWorker(orchestrator.router, orchestrator.memory)
+
+        # PRD §15's governing constraint: the dashboard and the voice
+        # interface are two projections of ONE world model. Self-
+        # registers exactly like Orchestrator does for set_active_router
+        # (ui/commands.py) -- ui/server.py reaches this instance instead
+        # of ever constructing its own WorldModel/ThreadStore/SpineStore.
+        ui_commands.set_active_proactive_engine(self)
 
     def start(self) -> None:
         """Starts every worker's poll loop on its own daemon thread, plus

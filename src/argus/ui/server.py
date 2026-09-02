@@ -1,5 +1,6 @@
 import json
 import logging
+from dataclasses import asdict
 from pathlib import Path
 
 import anyio
@@ -167,6 +168,67 @@ def confirm_pending() -> dict:
     would be missed by a page that wasn't open yet."""
     pending = ui_commands.get_pending_confirmation()
     return {"pending": pending}
+
+
+# PRD §15 (Phase H). Every list in /api/state is capped here regardless
+# of how many rows the underlying stores hold -- a dashboard widget needs
+# a manageable handful, not everything WorldModel/HeldQueue/RuleStore
+# happen to be tracking.
+_MAX_STATE_LIST = 50
+
+
+def _empty_state() -> dict:
+    """Same top-level shape as a live response, just empty -- so the
+    dashboard's rendering code never has to special-case "no engine yet"
+    (argus chat, or a bare UI preview) versus "engine running, nothing
+    tracked." Never a 500."""
+    return {
+        "engine_running": False,
+        "now": None,
+        "focus": None,
+        "open_threads": [],
+        "horizon": [],
+        "health": [],
+        "rhythms": {"baselines": {}},
+        "held": [],
+        "rules": [],
+    }
+
+
+@app.get("/api/state")
+def state() -> dict:
+    """PRD §15 unit 28: one projection of the SAME WorldModel/ThreadStore/
+    SpineStore the voice loop already runs, reached through
+    ui_commands.get_active_proactive_engine() -- the set_active_router
+    precedent, applied here. This must never construct a second
+    WorldModel/ThreadStore/SpineStore of its own (P4, and P1: uvicorn
+    serves this on its own thread)."""
+    engine = ui_commands.get_active_proactive_engine()
+    if engine is None:
+        return _empty_state()
+
+    # WorldModel.snapshot() is already TTL-cached (§4.3,
+    # world_snapshot_ttl_seconds) and invalidated early on thread
+    # open/close -- calling it plainly here, on every request, is what
+    # "honors the existing TTL" means. No second cache belongs here.
+    snapshot = engine.world_model.snapshot()
+    held = engine.held.pending(limit=_MAX_STATE_LIST)
+    rules = engine.orchestrator.rule_store.list_active()[:_MAX_STATE_LIST]
+
+    return {
+        "engine_running": True,
+        "now": snapshot.now.isoformat(),
+        "focus": asdict(snapshot.focus) if snapshot.focus is not None else None,
+        "open_threads": [asdict(t) for t in snapshot.open_threads[:_MAX_STATE_LIST]],
+        "horizon": [asdict(c) for c in snapshot.horizon[:_MAX_STATE_LIST]],
+        "health": [asdict(h) for h in snapshot.health[:_MAX_STATE_LIST]],
+        "rhythms": asdict(snapshot.rhythms),
+        "held": [asdict(h) for h in held],
+        "rules": [
+            {"id": r.id, "natural_language": r.natural_language, "kind": r.kind, "status": r.status}
+            for r in rules
+        ],
+    }
 
 
 def _resolve_core_memory(memory_id: int, confirmed: bool) -> dict:

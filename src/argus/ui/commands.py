@@ -274,3 +274,26 @@ def set_active_memory_manager(memory_manager) -> None:
 
 def get_active_memory_manager():
     return _active_memory_manager
+
+
+# PRD §15 (Phase H): same pattern again, for GET /api/state and the
+# thread-acknowledge/held-dismiss endpoints. The dashboard and the voice
+# interface are two projections of ONE world model (§15's governing
+# constraint) -- the server must reach the already-constructed
+# WorldModel/ThreadStore/SpineStore/RuleInstanceStore living on the
+# running ProactiveEngine, never build its own (P4, and P1: uvicorn
+# serves on its own thread). ProactiveEngine registers itself here at
+# the end of its own __init__, exactly like Orchestrator does for
+# set_active_router above; None means no engine is running yet (argus
+# chat, or a bare UI preview), which every consumer must handle without
+# erroring.
+_active_proactive_engine = None
+
+
+def set_active_proactive_engine(engine) -> None:
+    global _active_proactive_engine
+    _active_proactive_engine = engine
+
+
+def get_active_proactive_engine():
+    return _active_proactive_engine
