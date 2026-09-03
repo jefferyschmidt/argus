@@ -1650,3 +1650,115 @@ action+subject routes: an **existence/possession/state question about a tool sub
       chat lane.
 - [ ] The chat lane still handles plain small talk without tools (tone/latency unchanged for
       "tell me a joke", "how are you").
+
+---
+
+## 18. Unit 36 — Idle emotes: curated library + filled particle forms
+
+**User feedback, live 2026-09-03:** idle emotes "usually just make some random small shape near
+his head, and it usually doesn't resemble what it's supposed to." Then, two refinements: some
+emotes should have Argus **morph into** the shape (become a heart) rather than wear it as a
+prop; and the shapes look like thin **line art** when "you have a swarm to work with — make
+them more swarm-y and artistic."
+
+Root causes (verified by reading the code and rendering candidates):
+1. Generation ran on the weak LOCAL tier, drawing blind into an abstract coordinate system with
+   no visual feedback — the caption came from the spec's `name`, the shapes from whatever the
+   model imagined, so they routinely didn't match.
+2. The primitive vocabulary (`ring/rect/arc/line/blob`) traces **hairline outlines**, while the
+   head is a **filled particle cloud** — so props read as wireframe stuck on a swarm.
+
+**Decision (user):** replace live generation with a curated, visually-verified library, and
+render shapes as filled/thickened particle forms. Every spec below was rendered with the exact
+client interpreter and eyeballed before inclusion — that verification is the whole point; do not
+add or re-author specs without rendering them the same way (a harness is in
+`scratchpad/emote_preview.html` / `fill_preview.html`).
+
+### 36.1 Interpreter upgrades (`ui/static/index.html`)
+
+Three additions. Keep the existing `ring/rect/arc/line/blob` interpreter working — accessories
+still use it, just rendered as ribbons.
+
+**(a) Ribbon rendering for outline primitives.** `line`, `arc`, `ring`, `rect` currently place
+a particle exactly on the path. Give each placed particle a small normal-direction jitter so the
+stroke becomes a particle *ribbon* with width, not a 1px line. Verified helper:
+
+```js
+// after computing the on-path point p for a line/arc/ring/rect particle,
+// offset it along the path normal by a stable per-particle amount:
+function ribbonJitter(idx, amt){ return (rnd(idx*3.1) - 0.5) * (amt || 0.09); }
+// rnd is a stable hash of the particle index (see below), NOT Math.random,
+// so the ribbon is stable frame-to-frame rather than boiling.
+function rnd(seed){ var x = Math.sin(seed*127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
+```
+
+Apply the offset along the local normal for `line`; radially for `ring`/`arc`; outward from the
+nearest edge for `rect`. Thickness ~0.06–0.10 of scale.
+
+**(b) A `fill` primitive** — a filled parametric particle cloud, rim-biased so the edge glows and
+the interior is softer, matching the head's density feel. This is what makes morph shapes read.
+Verified functions (copy exactly — these were rendered and confirmed):
+
+```js
+function heartB(t){var a=t*Math.PI*2;var x=16*Math.pow(Math.sin(a),3);
+  var y=-(13*Math.cos(a)-5*Math.cos(2*a)-2*Math.cos(3*a)-Math.cos(4*a));return{x:x/17,y:y/17};}
+function starB(t){var seg=t*10,k=Math.floor(seg),f=seg-k;
+  var rA=(k%2===0)?1.0:0.45, rB=((k+1)%2===0)?1.0:0.45; var R=rA+(rB-rA)*f;
+  var ang=-Math.PI/2+t*Math.PI*2; return{x:Math.cos(ang)*R,y:Math.sin(ang)*R};}
+function discB(t){var a=t*Math.PI*2;return{x:Math.cos(a),y:Math.sin(a)};}
+var FILL_SHAPES={heart:heartB, star:starB, disc:discB};
+
+// place one fill particle (u,v stable per particle):
+function fillPoint(shapeFn,cx,cy,r,u,v,idx){
+  var b=shapeFn(u); var rr=0.30+0.70*Math.sqrt(v);       // rim-biased area fill
+  var jx=(rnd(idx*1.7)-0.5)*0.06, jy=(rnd(idx*2.3)-0.5)*0.06;
+  return{x:cx+(b.x*rr+jx)*r, y:cy+(b.y*rr+jy)*r};
+}
+// crescent is disc-minus-offset-disc; verified:
+function crescentPoint(cx,cy,r,u,v,idx){
+  var a=u*Math.PI*2, rad=Math.sqrt(v); var x=Math.cos(a)*rad, y=Math.sin(a)*rad;
+  if((x-0.42)*(x-0.42)+y*y < 0.72*0.72){ rad=0.80+0.20*rnd(idx); x=Math.cos(a)*rad; y=Math.sin(a)*rad; }
+  var jx=(rnd(idx*1.7)-0.5)*0.05, jy=(rnd(idx*2.3)-0.5)*0.05;
+  return{x:cx+(x+jx)*r, y:cy+(y+jy)*r};
+}
+```
+
+`fill` part fields: `{"type":"fill","shape":"heart|star|disc|crescent","cx","cy","r","share"}`.
+Render edge particles (v>0.82) brighter than interior — the glow that sells it.
+
+**(c) `mode: "morph"` on a spec.** When present, `buildEmoteDef` omits `HEAD_PART` entirely and
+the parts share the full particle budget (the `_MAX_TOTAL_SHARE` 0.5 cap does not apply). The
+swarm *becomes* the shape. Absent/`"accessory"` keeps today's behavior (head + prop). Use a
+larger scale for morph (~0.42 vs 0.34).
+
+### 36.2 Flow change (`idle_emote.py`)
+
+- **Remove live LLM generation as the primary path.** `generate_idle_emote(router)` now returns a
+  `random.choice` from the curated library. Keep the function signature so callers/tests are
+  unaffected; the `router` arg becomes unused (leave it, or accept and ignore).
+- Keep `_validate_spec` as the safety net, extended to accept the `mode` field and `fill` type,
+  and to allow shares summing near 1.0 when `mode=="morph"`.
+- The curated library replaces `_FALLBACK_SPECS`.
+
+### 36.3 The curated library
+
+The full verified spec list is in `docs/emote_library.json` in the repo (accessory + morph sets), committed with this spec.
+Accessories: reading glasses, halo, top hat, antennae, party hat, monocle, crown, propeller
+beanie, cat ears, bowtie, headphones, wizard hat, graduation cap, swim goggles, balloon,
+umbrella, sparkles, sleepy zzz. Morphs (fill-based): heart, crescent moon, star, musical note,
+question mark, lightning bolt. Copy them verbatim — every one was rendered and kept only if it
+read clearly; four candidates (mustache, sweat drop, devil horns, raised eyebrow) were rendered
+and cut for not reading, so do not resurrect them.
+
+### 36.4 Acceptance
+
+- [ ] A `fill`-type part renders as a filled, rim-glowing particle cloud, not an outline.
+- [ ] A `mode:"morph"` spec drops the head and forms the shape from the whole swarm.
+- [ ] Outline primitives render as ribbons with visible width, not 1px lines, and are stable
+      frame-to-frame (no per-frame boiling — jitter keyed to particle index, not Math.random).
+- [ ] `generate_idle_emote` returns a library spec and makes no network/LLM call.
+- [ ] `_validate_spec` accepts `mode` and `fill`, and morph shares summing near 1.0; still
+      rejects unknown types and out-of-range numbers.
+- [ ] Existing accessory specs still validate and render (regression).
+- [ ] Rendered check (not automatable): open the console idle state, confirm heart/crescent/star
+      morphs and a few accessories read clearly and look swarm-like. Capture one screenshot.
