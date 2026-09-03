@@ -45,6 +45,14 @@ class Decision:
     reason: str                        # human-readable; powers "why did you do that?"
     escalation: list[EscalationStep] = field(default_factory=list)
     audience: str | None = None        # reserved; never set in Phases A-I
+    # PRD §19 unit 37: set by SalienceDispatcher.submit() (never by
+    # decide() itself, which has no delivery concept) -- True only when
+    # action=="speak" AND the speak_fn call actually happened, as opposed
+    # to being queued to HeldQueue because Argus was mid-conversation.
+    # action=="speak" alone doesn't mean it was heard; this does. The
+    # reminder consumer's whole "mark notified only after confirmed
+    # delivery" guarantee depends on this distinction existing.
+    delivered: bool = False
 
 
 # -- base_urgency (Appendix A.2 static table) --------------------------------

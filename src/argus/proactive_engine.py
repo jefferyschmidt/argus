@@ -2,11 +2,18 @@ import logging
 import threading
 import time
 
+from argus.config import settings
 from argus.orchestrator import Orchestrator
 from argus.spine.observation import Observation
 from argus.ui import commands as ui_commands
 
 log = logging.getLogger(__name__)
+
+# PRD §19 unit 37: induction and retention both run at most once a day,
+# gated on their own last-run timestamps -- not a user-configurable
+# setting, since nothing in the PRD asks for one; the tick's own cadence
+# (settings.proactive_tick_seconds) is what's actually tunable.
+_DAILY_SECONDS = 86400.0
 
 
 class ProactiveEngine:
@@ -88,11 +95,36 @@ class ProactiveEngine:
             self.rule_matcher, self.budget, self.held, rhythms=self.rhythms, spine=self.spine,
             decision_log=self.orchestrator.decision_log,
         )
-        self.dispatcher = SalienceDispatcher(self.salience_engine, self.world_model, speak_fn, interaction_lock)
-        # Escalation delivery reuses the same speak_fn -- channel-specific
-        # routing (ambient/push) isn't implemented anywhere yet, so every
-        # channel currently just speaks.
+        # Built BEFORE the dispatcher (order matters here) so it can be
+        # handed in -- PRD §19 unit 37: schedule() was never called
+        # anywhere in production, so the scheduler's own drain timer only
+        # ever drained an empty queue. Escalation delivery reuses the
+        # same speak_fn -- channel-specific routing (ambient/push) isn't
+        # implemented anywhere yet, so every channel currently just speaks.
         self.escalation_scheduler = EscalationScheduler(threads=self.threads, deliver_fn=lambda channel, text: speak_fn(text))
+        self.dispatcher = SalienceDispatcher(
+            self.salience_engine, self.world_model, speak_fn, interaction_lock, escalation=self.escalation_scheduler,
+        )
+
+        # PRD §7.5 (G4 induction), wired live for the first time at the
+        # PRD §19 unit 37 gate: constructed here so it's the one shared
+        # instance (P4), reusing rule_store/held rather than building
+        # either again.
+        from argus.rules.induction import InductionEngine
+        self.induction_engine = InductionEngine(self.orchestrator.rule_store, self.held)
+
+        # PRD §19 unit 37: cursors for the proactive tick's own timer-
+        # gated steps (see _run_proactive_tick). Rule-firing starts from
+        # "now", not epoch -- a fresh process must not replay years of
+        # spine history through automation rules that fire real tool
+        # calls. Reap/induction/retention start from epoch instead, so a
+        # long-neglected install (spine growing unbounded, a stale thread
+        # that should have timed out weeks ago) catches up on the very
+        # first tick after a restart rather than waiting a full cadence.
+        self._last_rule_check_ts = time.time()
+        self._last_reap_ts = 0.0
+        self._last_induction_ts = 0.0
+        self._last_prune_ts = 0.0
 
         from argus.context_awareness import ContextAwarenessWorker
         self.context_awareness = ContextAwarenessWorker(self.dispatcher)
@@ -134,11 +166,12 @@ class ProactiveEngine:
         against it -- not a special case for acknowledgment.
 
         Reaps both the thread and any watching rule instance
-        synchronously rather than waiting for a periodic timer: neither
-        is scheduled anywhere yet in this build (no periodic reap loop
-        exists), and "click got it" -> "watch it happen" is the whole
-        point of unit 30 -- an effect that only becomes visible on some
-        future timer tick would not close the loop at all.
+        synchronously in addition to the periodic tick's own reap-on-
+        timer (unit 37) -- "click got it" -> "watch it happen" is the
+        whole point of unit 30, and waiting out however much of the
+        tick's own cadence remains would not close the loop
+        immediately, which is the entire reason this method exists
+        rather than just letting the next tick catch it.
 
         Returns False only if the thread doesn't exist; a thread that
         exists but whose close_condition isn't satisfied by
@@ -163,6 +196,175 @@ class ProactiveEngine:
             thread_store=self.threads, spine=self.spine,
         )
         return True
+
+    # -- PRD §19 unit 37: the proactive tick ------------------------------
+    #
+    # One periodic loop driving every orphaned producer, started alongside
+    # the other workers (see start()) and isolated the same way: each step
+    # wrapped in its own try/except so one failure can't block the rest.
+    # No step calls an LLM -- rule matching and reaping are deterministic
+    # by design (RuleMatcher.match() only calls an LLM through a
+    # caller-supplied fuzzy_judge, and this engine's own RuleMatcher never
+    # gets one), which is the whole point: this loop must be safe to run
+    # every settings.proactive_tick_seconds without ever touching the
+    # daily budget or a rate limit.
+
+    def _tick_reminders(self, now: float) -> None:
+        """Units 37+38: reads ReminderStore.list_due() DIRECTLY, not the
+        spine's reminder.due observation (which unit 38 demotes to a
+        pure timeline record, deduped, mutating nothing). Marks a
+        reminder notified ONLY after Decision.delivered confirms it was
+        actually spoken -- a reminder that couldn't be delivered (Argus
+        mid-conversation) is simply left un-notified, so
+        ReminderStore.list_due() itself re-surfaces it next tick. This
+        is the durable, restart-safe version of the email watcher's old
+        in-memory _pending_delivery retry list (commit 3f07efc,
+        retired at U-C4 once HeldQueue offered a general version of the
+        same guarantee) -- reminders need the stronger, always-retry
+        form HeldQueue alone doesn't give them: a held reminder must
+        keep trying every tick, not just sit visible in Held forever."""
+        from datetime import datetime
+
+        from argus.memory.reminders import ReminderStore
+        from argus.memory.store import get_connection
+        from argus.salience.scoring import Candidate, base_urgency_for
+
+        now_iso = datetime.fromtimestamp(now).astimezone().isoformat()
+        conn = get_connection()
+        try:
+            store = ReminderStore(conn)
+            for row in store.list_due(now_iso):
+                candidate = Candidate(
+                    observation_id=None, kind="reminder.due", subject=None,
+                    text=f"Reminder: {row['text']}", base_urgency=base_urgency_for("reminder.due"),
+                )
+                decision = self.dispatcher.submit(candidate, now=now)
+                if decision.delivered:
+                    store.mark_notified(row["id"])
+        finally:
+            conn.close()
+
+    def _tick_rule_firing(self, now: float) -> None:
+        """Step 3: RuleInstanceStore.fire() was previously called only
+        from tests -- no automation rule ever actually ran in
+        production; this is what makes standing automations and
+        standing authorizations actually execute. A notify-action match
+        is turned into a Candidate and goes through the normal salience
+        path, same as every other producer.
+
+        boost/suppress-action rules are deliberately NOT re-submitted
+        here: SalienceEngine.decide() already consults RuleMatcher
+        itself (Appendix A.2 step 1) when the observation's own real
+        producer (email watcher, etc.) submits its own candidate, so
+        doing it again here would only risk a second, lower-fidelity
+        announcement of the same event, not add coverage.
+
+        since/until has a narrow, accepted race at the exact tick
+        boundary -- SpineStore.query() has no exclusive-bound option
+        and Observation carries no row id to dedupe by, so an
+        observation landing at exactly the cursor timestamp could in
+        principle be seen twice. Vanishingly unlikely at time.time()'s
+        resolution against a 15s default cadence, and not worth a spine
+        schema change to close completely."""
+        from argus.salience.scoring import Candidate, base_urgency_for
+
+        since = self._last_rule_check_ts
+        self._last_rule_check_ts = now
+        for obs in self.spine.query(since=since, limit=500):
+            for rule in self.rule_matcher.match(obs):
+                try:
+                    action_type = rule.action.get("type")
+                    if action_type == "tool_call":
+                        self.rule_instances.fire(rule=rule, registry=self.orchestrator.tools, now=now)
+                    elif action_type == "notify":
+                        candidate = Candidate(
+                            observation_id=None, kind=obs.kind, subject=obs.subject,
+                            text=rule.action.get("text") or rule.natural_language,
+                            base_urgency=base_urgency_for(obs.kind),
+                        )
+                        self.dispatcher.submit(candidate, observation=obs, now=now)
+                except Exception:
+                    log.exception("Rule #%s failed to fire for observation kind=%s", rule.id, obs.kind)
+
+    def _tick_reap(self, now: float) -> None:
+        """Step 4 / Appendix A.1: reap() previously only ran inside
+        acknowledge_thread() -- a thread with a pure timeout,
+        observation_seen, or value_threshold close condition, never
+        manually acknowledged, stayed open forever. This is the timer
+        Appendix A.1's own evaluation-cadence description already
+        claimed existed. The reap-on-acknowledge path is unchanged."""
+        if now - self._last_reap_ts < settings.thread_reap_seconds:
+            return
+        self._last_reap_ts = now
+        self.threads.reap(now=now)
+        self.world_model.invalidate()
+        self.rule_instances.reap(
+            registry=self.orchestrator.tools, rule_store=self.orchestrator.rule_store,
+            thread_store=self.threads, spine=self.spine, now=now,
+        )
+
+    def _tick_escalation(self, now: float) -> None:
+        """Step 5, drain half: the producer side (schedule() actually
+        being called) is wired into SalienceDispatcher.submit() itself,
+        not here -- see its docstring; that's what makes this queue
+        stop being permanently empty. This just drains, mirroring what
+        the scheduler's own timer thread (started separately in
+        start()) already does on settings.escalation_poll_seconds --
+        calling it again here is idempotent (process_due() only touches
+        rows whose fire_ts has already passed) and keeps escalation
+        draining on the same cadence as everything else this tick
+        drives."""
+        self.escalation_scheduler.process_due(now=now)
+
+    def _tick_induction(self, now: float) -> None:
+        """Step 6 / §7.5: InductionEngine.run_once() was never scheduled
+        anywhere -- G4 induction never actually ran. Proposes only,
+        never activates (unchanged); gated to at most once a day
+        regardless of how often the tick itself runs."""
+        if now - self._last_induction_ts < _DAILY_SECONDS:
+            return
+        self._last_induction_ts = now
+        self.induction_engine.run_once(now=now)
+
+    def _tick_retention(self, now: float) -> None:
+        """Step 7: SpineStore.prune() was never called -- the spine grew
+        unbounded. Gated to at most once a day."""
+        if now - self._last_prune_ts < _DAILY_SECONDS:
+            return
+        self._last_prune_ts = now
+        self.spine.prune(settings.spine_retention_days)
+
+    def _run_proactive_tick(self, now: float | None = None) -> None:
+        """One tick: every step below, each isolated so one failing step
+        (raise) never stops the others that same tick."""
+        now = now if now is not None else time.time()
+        for step in (
+            self._tick_reminders,
+            self._tick_rule_firing,
+            self._tick_reap,
+            self._tick_escalation,
+            self._tick_induction,
+            self._tick_retention,
+        ):
+            try:
+                step(now)
+            except Exception:
+                # getattr, not step.__name__ directly: a test double (or
+                # any non-plain-function callable) standing in for a step
+                # may not have __name__ at all, and this line runs INSIDE
+                # the except block -- raising here would escape this
+                # try/except entirely, defeating the one thing this loop
+                # exists to guarantee.
+                name = getattr(step, "__name__", repr(step))
+                log.exception("Proactive tick step %s failed -- continuing with the rest of this tick", name)
+
+    def _proactive_tick_loop(self) -> None:
+        while True:
+            try:
+                self._run_proactive_tick()
+            except Exception:
+                log.exception("Proactive tick failed")
+            time.sleep(settings.proactive_tick_seconds)
 
     def start(self) -> None:
         """Starts every worker's poll loop on its own daemon thread, plus
@@ -209,3 +411,9 @@ class ProactiveEngine:
                 threading.Thread(target=worker.run, daemon=True).start()
             except Exception:
                 log.exception("Could not start %s -- continuing without it", type(worker).__name__)
+        # PRD §19 unit 37: the proactive tick, started with the other
+        # workers -- see _proactive_tick_loop's own docstring block above.
+        try:
+            threading.Thread(target=self._proactive_tick_loop, daemon=True).start()
+        except Exception:
+            log.exception("Could not start the proactive tick -- continuing without it")

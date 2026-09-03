@@ -19,11 +19,21 @@ log = logging.getLogger(__name__)
 
 
 class SalienceDispatcher:
-    def __init__(self, engine: SalienceEngine, world_model: WorldModel, speak_fn, interaction_lock):
+    def __init__(self, engine: SalienceEngine, world_model: WorldModel, speak_fn, interaction_lock, escalation=None):
         self.engine = engine
         self.world_model = world_model
         self._speak_fn = speak_fn
         self._interaction_lock = interaction_lock
+        # PRD §19 unit 37: the producer side of escalation scheduling --
+        # EscalationScheduler.schedule() was never called anywhere in
+        # production, so its own drain timer only ever drained an empty
+        # queue. Wired here, not in the tick, so EVERY candidate that
+        # carries escalation steps gets them scheduled on actual delivery,
+        # not just ones the tick happens to submit. None (a caller that
+        # doesn't have one yet) just means escalation never schedules --
+        # same "optional collaborator, fails soft" shape as everywhere
+        # else in this codebase.
+        self.escalation = escalation
         # PRD §15 unit 32: the thread id and timestamp of the most recent
         # item this dispatcher actually SPOKE about -- a hold (blocked by
         # the interaction lock) or an ambient decision never sets these,
@@ -48,16 +58,30 @@ class SalienceDispatcher:
 
         if decision.action == "speak":
             if self._deliver(candidate.text):
+                # PRD §19 unit 37: action=="speak" is the DECISION, not
+                # proof it was actually heard -- _deliver() can still
+                # no-op below when Argus is mid-conversation. This is
+                # the one place that distinction is knowable, so it's
+                # recorded on the Decision itself for callers (the
+                # reminder consumer, most importantly) that must not act
+                # as if delivered until it actually happened.
+                decision.delivered = True
                 if candidate.thread_id is not None:
                     self.last_spoken_thread_id = candidate.thread_id
                     self.last_spoken_ts = now if now is not None else time.time()
+                if decision.escalation and self.escalation is not None:
+                    self.escalation.schedule(
+                        text=candidate.text, steps=decision.escalation,
+                        thread_id=candidate.thread_id, now=now,
+                    )
             else:
                 # Argus was mid-conversation. The interruption budget slot
                 # is already spent (SalienceEngine.decide() consumed it
                 # before we got here), but nothing is ever silently
                 # dropped (§5.4) -- this queues it the same as an ordinary
                 # hold rather than losing it outright. Not delivered, so
-                # last_spoken_* stays untouched -- the user never heard it.
+                # last_spoken_*/decision.delivered/escalation scheduling
+                # all stay untouched -- the user never heard it.
                 self.engine.held.add(
                     kind=candidate.kind, subject=candidate.subject, text=candidate.text,
                     score=1.0, thread_id=candidate.thread_id,

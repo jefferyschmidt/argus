@@ -390,6 +390,15 @@ class Settings(BaseSettings):
     # afternoon") honest over a long session.
     realtime_time_refresh_seconds: float = 300.0
 
+    # PRD §19 unit 37: how often ProactiveEngine's one periodic tick runs
+    # -- reminders, rule firing, reap-on-timer, escalation draining,
+    # induction, and retention all live on this one cadence.
+    proactive_tick_seconds: float = 15.0
+    # Appendix A.1 evaluation cadence: "on a timer (default 60)". Already
+    # referenced by world/threads.py's own docstring/comments before this
+    # setting actually existed -- the timer itself is unit 37's fix.
+    thread_reap_seconds: float = 60.0
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir
