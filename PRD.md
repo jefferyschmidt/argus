@@ -1915,12 +1915,27 @@ chooses one. Scope the grant to the tool/domain the user actually invoked, prese
 
 ### Unit 43 — Cheap correctness fixes
 
-Low-impact given the current thread count, but real and cheap:
-- Make the interruption-budget check-and-consume atomic (one locked operation), so concurrent
-  workers cannot exceed the hourly cap.
-- `McpServerBridge.close()` must actually close the session and transport, and a timed-out
-  `call_tool` must cancel the underlying coroutine, so bridges don't leak child processes or
-  sockets over a long run.
+**43a — `busy_timeout` (do this FIRST, ahead of 39–42). Diagnosed at the Unit 37/38 gate as the
+real cause of the recurring "database is locked" flake — not flakiness.** No connection anywhere
+sets `PRAGMA busy_timeout`. Several stores (`memory.store.get_connection`, `RuleStore`,
+`RhythmStore`, `TaskStore`, `RuleInstanceStore`) each open the same `argus.db` file with their
+own connection; the per-store `threading.Lock` (P1) serializes threads *within* one connection
+but does nothing *across* connections to the same file. Under WAL, a writer that meets a lock
+held by another connection raises `database is locked` **immediately** instead of waiting — an
+intermittent failure that "reproduces clean on rerun," reported three times. Unit 37's tick
+raised the write pressure (a fresh `get_connection()` every `proactive_tick_seconds`, alongside
+rhythms/rules/threads), so this will get more frequent in production, not less.
+  - Fix: set `PRAGMA busy_timeout=5000` (5s) on **every** connection at open — `get_connection`
+    and each store's `__init__` — so a writer waits for the lock rather than failing.
+  - Acceptance: a test with N threads writing the same DB via separate connections raises no
+    `database is locked`; every connection-opening path sets the pragma.
+
+**43b — atomic interruption budget.** Make the budget check-and-consume one locked operation, so
+concurrent workers cannot exceed the hourly cap.
+
+**43c — MCP bridge cleanup.** `McpServerBridge.close()` must actually close the session and
+transport, and a timed-out `call_tool` must cancel the underlying coroutine, so bridges don't
+leak child processes or sockets over a long run.
 
 **Acceptance:**
 - [ ] Budget consume is atomic; a concurrent test cannot exceed the cap.
