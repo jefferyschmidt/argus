@@ -1567,3 +1567,86 @@ no basis for "3pm this afternoon" and hallucinates a timezone (observed: Asia/Ko
 - [ ] With `user_location` set, it appears too, matching pipeline mode.
 - [ ] `_REALTIME_INSTRUCTIONS`'s static persona text is unchanged; only the dynamic grounding
       is added around it.
+
+---
+
+## 17. Unit 35 — Tool-routing regression: state questions reach no tools
+
+**Found in live pipeline-mode use 2026-09-03.** Asked "do I have any important emails I
+haven't seen?", Argus answered on the FAST tier (haiku) that it had no email access and would
+"need credentials" — while the email watcher was actively running. It never reached a tool.
+
+### This is a regression, not a known limitation
+
+Before commit `9ba9e18` ("the conversational restructure"), `Orchestrator.handle()` and
+`handle_streaming()` **always** called `complete_with_tools`; every turn had the full
+registry. That commit split conversation into a cheap chat lane (no tools) and a tool lane,
+routed by `_should_use_tools()`. The split was a real improvement for tone and is staying —
+but its gate has false negatives, and a false negative means Argus denies a capability it has.
+
+It stayed hidden for ~two weeks because `VOICE_MODE=realtime` does not gate tools through this
+classifier at all — it attaches every tool to the session. Only pipeline mode routes through
+`_should_use_tools`, so switching to pipeline surfaced it.
+
+### The design principle: the costs are asymmetric
+
+- A false **positive** (tool lane for small talk) costs a few cents of frontier tokens and a
+  slightly less breezy reply. Recoverable, nearly invisible.
+- A false **negative** (chat lane for a real request) makes Argus deny what it can do and
+  invent a reason — the failure the user actually hit.
+
+The current classifier is tuned to avoid false positives. That is backwards. **When a turn
+plausibly concerns a tool domain, route it to tools.** Do not fix this by adding three regex
+words that the next phrasing defeats.
+
+### Current behavior — baseline to move (verified 2026-09-03)
+
+Must flip to **True** (all currently False):
+
+```
+do I have any important emails that I haven't seen yet
+any new messages
+is there anything in my inbox
+what's on my calendar today
+do I have any reminders set
+```
+
+Must **stay** as they are:
+
+```
+True   when is my next meeting      (already True)
+True   read me my latest email      (already True)
+True   check my email               (already True)
+True   what time is it              (already True)
+False  what do you think about my camera   (opinion, not a state query)
+False  I love the file you made me          (sentiment, not a request)
+False  tell me a joke
+False  how are you feeling today
+```
+
+### Approach
+
+Add a third route to `_should_use_tools`, alongside the existing direct-intent and
+action+subject routes: an **existence/possession/state question about a tool subject**.
+
+- Interrogative or possession framing — "do I have", "is there", "are there", "any", "how
+  many", "what's on/in/my", "when is", "show me" — combined with a `_TOOL_SUBJECT` match.
+- The distinguisher from "what do you think about my camera" is that the latter is an opinion
+  request ("what do you think", "how do you feel about", "do you like"). Exclude an explicit
+  opinion frame even when a subject is present, rather than trying to enumerate the state
+  frames exhaustively.
+- Keep `_TOOL_SUBJECT` broad; widen it if a real subject is missing, but the routing change,
+  not the word list, is the fix.
+
+### Acceptance
+
+- [ ] Every "must flip to True" phrase above returns True.
+- [ ] Every "must stay" phrase above keeps its listed value — the two False opinion/sentiment
+      cases especially.
+- [ ] A parametrized test encodes the whole table above so a future regex tweak can't
+      silently regress a row.
+- [ ] Pipeline mode: "do I have any important emails" reaches `complete_with_tools` (assert the
+      tool path is taken, e.g. the frontier tier is used / the registry is consulted), not the
+      chat lane.
+- [ ] The chat lane still handles plain small talk without tools (tone/latency unchanged for
+      "tell me a joke", "how are you").
