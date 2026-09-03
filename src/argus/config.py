@@ -382,6 +382,14 @@ class Settings(BaseSettings):
     # reach back and close a stale thread.
     acknowledgment_window_seconds: float = 180.0
 
+    # PRD §16 unit 34: a realtime session can run for hours, so the
+    # date/time/timezone grounding sent at connect drifts. Refreshed on
+    # the user's own turns once a refresh is this many seconds stale --
+    # the timezone (the actual reported bug) is already correct from the
+    # first connect regardless; this keeps clock math (e.g. "3pm this
+    # afternoon") honest over a long session.
+    realtime_time_refresh_seconds: float = 300.0
+
     @property
     def data_dir(self) -> Path:
         d = PROJECT_ROOT / self.argus_data_dir

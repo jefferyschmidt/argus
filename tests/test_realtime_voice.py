@@ -1,5 +1,6 @@
 import queue
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -24,6 +25,164 @@ def test_realtime_session_uses_native_audio_vad_and_interruption(monkeypatch):
     assert session["audio"]["input"]["noise_reduction"]["type"] == "near_field"
     assert session["audio"]["input"]["transcription"]["model"] == "gpt-4o-mini-transcribe"
     assert session["audio"]["output"]["voice"] == "marin"
+
+
+# -- PRD §16 unit 34: date/time/timezone grounding -----------------------
+
+def test_session_config_includes_current_date_time_and_timezone():
+    from datetime import datetime
+
+    listener = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    listener.tools = build_default_registry()
+    listener._last_grounding_refresh_ts = 0.0
+
+    session = listener._session_config()
+
+    assert "Current date/time:" in session["instructions"]
+    # The machine's REAL timezone abbreviation, not a default/guess
+    # (confirmed live: realtime mode previously hallucinated Asia/Kolkata
+    # with no grounding at all to go on).
+    assert datetime.now().astimezone().strftime("%Z") in session["instructions"]
+
+
+def test_persona_instructions_are_unchanged_grounding_is_appended_around_them():
+    from argus.voice.realtime import _REALTIME_INSTRUCTIONS
+
+    listener = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    listener.tools = build_default_registry()
+    listener._last_grounding_refresh_ts = 0.0
+
+    session = listener._session_config()
+
+    assert session["instructions"].startswith(_REALTIME_INSTRUCTIONS)
+
+
+def test_session_config_includes_user_location_when_set(monkeypatch):
+    monkeypatch.setattr("argus.voice.realtime.settings.user_location", "Boston, MA")
+    listener = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    listener.tools = build_default_registry()
+    listener._last_grounding_refresh_ts = 0.0
+
+    session = listener._session_config()
+
+    assert "User's location: Boston, MA" in session["instructions"]
+
+
+def test_session_config_omits_user_location_when_unset(monkeypatch):
+    monkeypatch.setattr("argus.voice.realtime.settings.user_location", "")
+    listener = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    listener.tools = build_default_registry()
+    listener._last_grounding_refresh_ts = 0.0
+
+    session = listener._session_config()
+
+    assert "User's location" not in session["instructions"]
+
+
+def test_grounding_is_recomputed_on_every_session_config_call_not_cached():
+    """Regenerated at each connect (including reconnects), never frozen
+    at import or construction time -- proven here by watching
+    _time_grounding() actually get called fresh each time, not by
+    inspecting the code."""
+    listener = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    listener.tools = build_default_registry()
+    listener._last_grounding_refresh_ts = 0.0
+    grounding = MagicMock(side_effect=["\n\nCurrent date/time: Monday", "\n\nCurrent date/time: Tuesday"])
+
+    with patch("argus.voice.realtime._time_grounding", grounding):
+        first = listener._session_config()["instructions"]
+        second = listener._session_config()["instructions"]
+
+    assert "Monday" in first
+    assert "Tuesday" in second
+    assert grounding.call_count == 2
+
+
+def test_session_config_updates_the_last_refresh_timestamp():
+    listener = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    listener.tools = build_default_registry()
+    listener._last_grounding_refresh_ts = 0.0
+
+    before = time.time()
+    listener._session_config()
+
+    assert listener._last_grounding_refresh_ts >= before
+
+
+def test_maybe_refresh_time_grounding_sends_nothing_when_fresh():
+    listener = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    listener._last_grounding_refresh_ts = time.time()
+    sent = []
+    listener._send = lambda socket, event: sent.append(event)
+
+    listener._maybe_refresh_time_grounding("fake-socket")
+
+    assert sent == []
+
+
+def test_maybe_refresh_time_grounding_sends_a_lightweight_update_when_stale(monkeypatch):
+    """Long-session staleness (§16 unit 34): a session can run for
+    hours, so the grounding sent at connect drifts. This is what keeps
+    clock math honest without waiting for a reconnect."""
+    monkeypatch.setattr("argus.voice.realtime.settings.realtime_time_refresh_seconds", 300.0)
+    listener = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    listener._last_grounding_refresh_ts = time.time() - 301.0
+    sent = []
+    listener._send = lambda socket, event: sent.append(event)
+
+    listener._maybe_refresh_time_grounding("fake-socket")
+
+    assert len(sent) == 1
+    assert sent[0]["type"] == "session.update"
+    # Lightweight: only instructions, not a full _session_config() resend
+    # re-declaring tools/audio config that hasn't changed.
+    assert set(sent[0]["session"].keys()) == {"instructions"}
+    assert "Current date/time:" in sent[0]["session"]["instructions"]
+    assert listener._last_grounding_refresh_ts > time.time() - 5
+
+
+def test_maybe_refresh_time_grounding_is_called_on_a_user_turn_when_stale(monkeypatch):
+    """Wired into the same transcript branch as unit 32's acknowledgment
+    check -- fires on the user's own turns, not on a separate timer."""
+    import json
+
+    monkeypatch.setattr("argus.voice.realtime.settings.realtime_time_refresh_seconds", 300.0)
+    loop = RealtimeVoiceLoop.__new__(RealtimeVoiceLoop)
+    loop._stop = threading.Event()
+    loop._connection_lost = threading.Event()
+    loop._connection_error = None
+    loop._speech_lock = threading.Lock()
+    loop._input_had_transcript = False
+    loop._resume_timer = None
+    loop._response_active = False
+    loop._playback = np.empty(0, dtype="int16")
+    loop._output = queue.Queue()
+    loop._playback_lock = threading.Lock()
+    loop._send_lock = threading.Lock()
+    loop._last_expression = None
+    loop._last_grounding_refresh_ts = time.time() - 301.0
+    loop.tools = MagicMock()
+    loop.proactive = None
+    sent = []
+    loop._send = lambda socket, event: sent.append(event)
+    event = json.dumps({
+        "type": "conversation.item.input_audio_transcription.completed",
+        "transcript": "what's on my calendar today",
+    })
+
+    with patch("argus.voice.realtime.ui_commands.is_voice_confirmation_active", return_value=False), \
+         patch("argus.voice.realtime.ui_events.publish"):
+        loop._receive([event])
+
+    assert any(e.get("type") == "session.update" for e in sent)
+
+    assert loop._last_grounding_refresh_ts > time.time() - 5
+
+
+def test_realtime_time_refresh_seconds_defaults_to_300():
+    from argus.config import settings
+
+    assert settings.realtime_time_refresh_seconds == 300.0
 
 
 def test_accepts_an_externally_built_tool_registry():

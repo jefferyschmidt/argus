@@ -12,6 +12,7 @@ import logging
 import queue
 import threading
 import time
+from datetime import datetime
 
 import numpy as np
 import sounddevice as sd
@@ -41,6 +42,24 @@ that privacy restrictions prevent them. Tool results are authoritative. Do not
 say an action happened until its tool result says it did. Confirmation-required
 actions are handled by Argus's normal confirmation system.
 """
+
+
+def _time_grounding() -> str:
+    """PRD §16 unit 34: built exactly as Orchestrator._build_dynamic_system
+    does, so both voice modes read identically -- pipeline mode injects
+    this fresh every turn; realtime mode never injected it at all,
+    leaving the model no basis for "3pm this afternoon" and it
+    hallucinated a timezone (observed live: Asia/Kolkata). Callers must
+    call this fresh each time (at connect, at reconnect, and on the
+    periodic mid-session refresh below) rather than caching the result --
+    the whole point is that it's never frozen at import or construction
+    time."""
+    now = datetime.now().astimezone()
+    now_str = now.strftime("%A, %B %d, %Y, %I:%M %p %Z")
+    grounding = f"\n\nCurrent date/time: {now_str}"
+    if settings.user_location:
+        grounding += f"\nUser's location: {settings.user_location}"
+    return grounding
 
 
 class _AnnounceLock:
@@ -203,11 +222,21 @@ class RealtimeVoiceLoop:
         # (console box, Telegram) had no consumer at all in realtime mode.
         threading.Thread(target=self._text_input_worker, daemon=True).start()
 
+        # PRD §16 unit 34: 0.0, not time.time() -- the first _session_config()
+        # call (at the first connect) must always send fresh grounding
+        # regardless of when __init__ ran, so the periodic-refresh check
+        # below has nothing to compare against yet.
+        self._last_grounding_refresh_ts = 0.0
+
     def _session_config(self) -> dict:
+        # Recomputed on every call, never cached -- this is what makes a
+        # reconnect (as well as the first connect) get fresh grounding
+        # instead of whatever was true when this loop was constructed.
+        self._last_grounding_refresh_ts = time.time()
         return {
             "type": "realtime",
             "model": settings.openai_realtime_model,
-            "instructions": _REALTIME_INSTRUCTIONS,
+            "instructions": _REALTIME_INSTRUCTIONS + _time_grounding(),
             "output_modalities": ["audio"],
             "tools": [
                 {
@@ -245,6 +274,26 @@ class RealtimeVoiceLoop:
                 },
             },
         }
+
+    def _maybe_refresh_time_grounding(self, socket) -> None:
+        """PRD §16 unit 34, long-session staleness: a realtime session can
+        run for hours, so the grounding sent at connect drifts. Checked
+        on the user's own turns (see _receive's transcript branch) --
+        once a refresh is older than settings.realtime_time_refresh_seconds,
+        sends a lightweight session.update carrying only regenerated
+        instructions, not a full _session_config() resend (which would
+        also re-declare tools/audio config nothing here changed). The
+        timezone itself -- the actual reported bug -- is already correct
+        from the first connect regardless of this; this only keeps clock
+        math (e.g. "3pm this afternoon") honest as the session ages."""
+        now = time.time()
+        if now - self._last_grounding_refresh_ts < settings.realtime_time_refresh_seconds:
+            return
+        self._send(socket, {
+            "type": "session.update",
+            "session": {"instructions": _REALTIME_INSTRUCTIONS + _time_grounding()},
+        })
+        self._last_grounding_refresh_ts = now
 
     def _should_forward_mic_audio(self) -> bool:
         """False while "listening paused"/mute is on in the console UI --
@@ -659,6 +708,7 @@ class RealtimeVoiceLoop:
                         # thread.
                         from argus.voice.acknowledgment import maybe_acknowledge_spoken_thread
                         maybe_acknowledge_spoken_thread(transcript, getattr(self, "proactive", None))
+                        self._maybe_refresh_time_grounding(socket)
                         with self._speech_lock:
                             self._input_had_transcript = True
                             self._cancel_timer(self._resume_timer)
