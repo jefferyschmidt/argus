@@ -1762,3 +1762,174 @@ and cut for not reading, so do not resurrect them.
 - [ ] Existing accessory specs still validate and render (regression).
 - [ ] Rendered check (not automatable): open the console idle state, confirm heart/crescent/star
       morphs and a few accessories read clearly and look swarm-like. Capture one screenshot.
+
+---
+
+## 19. Reliability pass — wire the orphaned producers, unify the modes
+
+Prompted by an external QA review (2026-09-03) and verified against the code. The build has a
+consistent failure shape: subsystems are built and unit-tested, but **nothing in production
+drives them.** A unit's tests call `fire()`/`reap()`/`schedule()` directly, so "nothing calls
+it in prod" passes every test. The gate reviews caught some instances (units 25, 26, 32, 33)
+but missed these because each unit was reviewed in isolation against the PRD, never with a
+cross-cutting "what is never called in `src/`" sweep. That sweep is now part of every gate
+below.
+
+**Verified orphaned/broken as of this section:**
+- `reminder.due` is emitted and the reminder is marked notified in the sensor, but nothing turns
+  it into speech — reminders are silently lost. The sensor also *mutates* reminder state, which
+  violates "sensors only observe."
+- `RuleInstanceStore.fire()` is called only in tests — no automation rule ever executes (the
+  bulb-turns-blue path is dead).
+- `reap()` runs only inside `acknowledge_thread()`, never on a timer — threads close only on
+  manual ack; timeout/reply closes never fire.
+- Induction (`rules/induction.py`) is never scheduled or invoked.
+- Escalation `schedule()` is never called — the scheduler drains an empty queue forever.
+- `SpineStore.prune()` / `spine_retention_days` are never called — the DB grows unbounded.
+- `TaskRunner` is constructed with `tool_registry=None`, so autonomous tasks build a bare
+  registry with no rules, no authorizations, no shared state — the **unit-33 bug at a new site.**
+- `argus chat` never constructs `ProactiveEngine` — none of the above runs in chat mode.
+
+### Unit 37 — The proactive tick (the core fix)
+
+One periodic evaluation loop, owned by `ProactiveEngine`, started with the other workers and
+isolated in the same per-subsystem try/except. It runs every `settings.proactive_tick_seconds`
+(default 15) and, each tick, drives every orphaned producer. Each step is independently wrapped
+so one failing step never blocks the others.
+
+**Per tick:**
+1. **Reminders.** Read `ReminderStore.list_due(now)` directly. For each not-yet-delivered
+   reminder, submit a salience `Candidate` (kind `reminder.due`). Mark it notified **only after
+   the candidate is actually spoken** (delivery confirmed) — a held reminder stays due and
+   retries next tick, mirroring the email watcher's `_pending` pattern. This is the fix for the
+   silent-loss regression; see Unit 38 for the sensor change that must land with it.
+2. **Routines.** Same shape for `routine.due`.
+3. **Rule firing.** Run `RuleMatcher` over observations recorded since the last tick. For each
+   matched rule whose action is an automation (`tool_call`), call `RuleInstanceStore.fire()`.
+   For `notify`/`boost`/`suppress` actions, feed the existing salience path. **This is what
+   makes standing automations and standing authorizations actually execute.**
+4. **Reap on a timer.** Call `threads.reap()` and `rule_instances.reap()` when the last reap is
+   older than `settings.thread_reap_seconds`. Keep the existing reap-on-acknowledge too — this
+   adds the timer the code comment admits is missing, so timeout/reply/`value_threshold` closes
+   fire without a manual ack.
+5. **Escalation.** Drain due escalation steps (the scheduler's queue). And wire the producer:
+   when the salience engine speaks a candidate that carries escalation steps, call
+   `escalation.schedule()` — today nothing does, so the queue is always empty.
+6. **Induction** (daily cadence, gated on the last-run timestamp): run `rules/induction.py`,
+   respecting `induced_rule_proposals_per_week`. Proposes only, never activates (unchanged).
+7. **Retention** (daily cadence): call `SpineStore.prune(settings.spine_retention_days)`.
+
+**Acceptance:**
+- [ ] A due reminder is spoken (or held then spoken next tick), and is marked notified only
+      after delivery — never lost, never spoken twice.
+- [ ] A matching automation rule causes `fire()` to run in production (not just in a test).
+- [ ] A thread with a `timeout` close condition closes on the timer with no acknowledgment.
+- [ ] A spoken candidate with escalation steps results in `schedule()` being called.
+- [ ] Induction runs at most weekly and only proposes.
+- [ ] `prune()` runs and old observations are deleted.
+- [ ] One failing step (raise) does not stop the other steps that tick.
+- [ ] A `grep` for `fire(` / `reap(` / `prune(` / `induction` shows a production caller for each.
+
+### Unit 38 — Reminder sensor stops mutating state
+
+`ReminderSensor.poll()` must not call `mark_notified` — a sensor observes, it does not decide or
+mutate. It may still emit `reminder.due` for the timeline (deduped), but the *delivery* decision
+and the `mark_notified` call move to Unit 37's reminder consumer, after confirmed delivery.
+
+**Acceptance:**
+- [ ] `ReminderSensor.poll()` contains no write to reminder state.
+- [ ] A reminder is marked notified exactly once, by the consumer, after it is delivered.
+- [ ] Removing the sensor entirely still leaves reminders working (proves the consumer, not the
+      sensor, drives delivery).
+
+### Unit 39 — TaskRunner uses the shared registry (unit-33 fix, task site)
+
+`Orchestrator` must give `TaskRunner` the same full registry the foreground conversation uses —
+with `rule_store`, `authorization_checker`, and shared task-approval/cost state — not let it
+build a bare one. Break the construction cycle (registry needs task tools; task tools need the
+runner) by building the registry first, constructing `TaskRunner(tool_registry=self.tools)`, and
+registering the task tools last.
+
+**Acceptance:**
+- [ ] An autonomous task's registry is the Orchestrator's registry (same object), with the
+      authorization checker wired.
+- [ ] A standing authorization is enforced inside a task exactly as in the foreground.
+- [ ] Only one registry (one set of MCP bridges) is constructed for the Orchestrator+TaskRunner.
+
+### Unit 40 — Realtime is primary; standard mode is a frozen fallback; shared behavior unified
+
+**Decision (user, 2026-09-03):** stop developing two co-equal voice modes. Realtime is the
+default and the only actively-developed mode. Standard/pipeline mode is retained **only** as an
+unmaintained fallback for when the realtime API is unavailable, offline use, or cost avoidance —
+not deleted (realtime has a hard OpenAI dependency; deleting the fallback makes Argus mute when
+that dependency fails).
+
+- **Default resolution:** `VOICE_MODE` unset → realtime when `openai_api_key` is present, else
+  pipeline. `argus voice` help text labels pipeline as "fallback (local STT/TTS, no realtime
+  API)."
+- **Unify shared behavior.** Extract the behavior currently implemented in *both* loops —
+  reminder/proactive delivery, caption/transcript publishing, confirmation handling, held-item
+  and acknowledgment handling — into one shared module both loops call. Voice transport (OpenAI
+  socket vs. local STT/TTS) is the only thing that legitimately differs. This is what stops
+  bugs being fixed twice and is the actual cure for the per-mode divergence.
+- **Both entrypoints start the proactive layer.** A single helper starts `ProactiveEngine`;
+  `argus voice` and `argus chat` both call it, so reminders/threads/rules run in chat too
+  (today chat starts none of it). Chat delivers proactive items as text.
+- Do **not** delete `voice/loop.py`. Freezing it is the goal; deletion is a later follow-on once
+  realtime has proven reliable.
+
+**Acceptance:**
+- [ ] `VOICE_MODE` unset selects realtime when a key is present, pipeline otherwise.
+- [ ] Reminder delivery, captions, confirmations, and proactive delivery run through one shared
+      module, not two divergent copies.
+- [ ] `argus chat` starts the proactive layer; a due reminder surfaces as text in chat.
+- [ ] Pipeline mode still runs from the fallback path (not broken by the extraction).
+
+### Unit 41 — End-to-end voice regression harness
+
+A test harness (fake socket + scripted audio/transcript events, no live API) exercising the
+behaviors unit tests structurally can't, primarily against the realtime loop: interrupting
+speech, resuming after a false interruption, captions matching spoken output, spoken approval of
+a confirm-tier tool, typed input during a turn, a tool call round-trip, proactive announcement
+delivery, and reminder delivery. This is the layer that would have caught every mode-specific
+bug in this section.
+
+**Acceptance:**
+- [ ] Each listed behavior has an end-to-end test driving the real loop code with a fake
+      transport.
+- [ ] The reminder and proactive-delivery tests fail against the pre-Unit-37 code and pass after.
+
+### Unit 42 — Scoped turn approval (tighten, don't remove)
+
+The `_explicit_task_authorized` grant is the user's deliberate "if I asked for it, don't re-ask"
+policy and stays. But it is currently **turn-wide**: any tool-routed turn authorizes every
+confirm-tier tool that turn, so "check my email" authorizes an unrelated delete if the model
+chooses one. Scope the grant to the tool/domain the user actually invoked, preserving the
+"don't re-ask for what I asked for" intent while closing the unrelated-action hole.
+
+**Acceptance:**
+- [ ] Asking for a read action does not auto-approve an unrelated destructive action the same
+      turn.
+- [ ] Repeating the asked-for action in the same turn still runs without re-asking.
+- [ ] The existing group/`repeatable` bucket behavior is unchanged.
+
+### Unit 43 — Cheap correctness fixes
+
+Low-impact given the current thread count, but real and cheap:
+- Make the interruption-budget check-and-consume atomic (one locked operation), so concurrent
+  workers cannot exceed the hourly cap.
+- `McpServerBridge.close()` must actually close the session and transport, and a timed-out
+  `call_tool` must cancel the underlying coroutine, so bridges don't leak child processes or
+  sockets over a long run.
+
+**Acceptance:**
+- [ ] Budget consume is atomic; a concurrent test cannot exceed the cap.
+- [ ] `close()` closes session and transport; a timed-out call cancels its coroutine.
+
+### Build order
+
+37 and 38 land together (the reminder fix is meaningless without its consumer). 39 is
+independent. 40 depends on 37 (shared delivery is what 37's reminder consumer plugs into). 41
+should be written alongside 37 so its reminder/proactive tests are the acceptance evidence. 42
+and 43 are independent and lower priority. Gate each with the cross-cutting "no orphaned
+producers" grep.
