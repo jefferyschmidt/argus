@@ -38,7 +38,10 @@ _TOOL_ACTION = re.compile(
     re.IGNORECASE,
 )
 _TOOL_SUBJECT = re.compile(
-    r"\b(weather|forecast|email|inbox|mail|calendar|reminder|timer|alarm|"
+    # emails?/reminders?/messages? (PRD §17 unit 35): plural forms and
+    # "message" itself were missing entirely, so "any important emails"
+    # and "any reminders set" fell through -- see _should_use_tools.
+    r"\b(weather|forecast|emails?|inbox|mail|messages?|calendar|reminders?|timer|alarm|"
     r"screenshot|camera|photo|screen|browser|website|file|folder|document|"
     r"pdf|app|window|volume|news|price|stock|search|google|chrome|firefox|"
     r"calculator|notepad|spotify|explorer)\b",
@@ -47,6 +50,27 @@ _TOOL_SUBJECT = re.compile(
 _DIRECT_TOOL_INTENT = re.compile(
     r"^(remind me\b|set (?:a )?(?:reminder|timer|alarm)\b|"
     r"what time is it\b|tell me (?:the )?(?:weather|forecast|news|score)\b)",
+    re.IGNORECASE,
+)
+# PRD §17 unit 35: a third route -- an existence/possession/state question
+# about a tool subject ("do I have any new mail", "is there anything in my
+# inbox", "what's on my calendar") never had an action verb to trip
+# _TOOL_ACTION, so it fell all the way through to the chat lane and Argus
+# denied a capability it actually has. The costs here are asymmetric (§17):
+# a false positive is a few wasted frontier tokens, a false negative is
+# Argus lying about what it can do. Bias toward tools.
+_STATE_QUESTION_FRAME = re.compile(
+    r"\b(do i have|is there|are there|any|how many|what'?s (?:on|in|my)|when is|show me)\b",
+    re.IGNORECASE,
+)
+# The one thing that must NOT become a tool-domain trigger just because a
+# subject is present: "what do you think about my camera" is an opinion
+# request, not a status check. Excluding the opinion frame directly is
+# the guardrail against this becoming subject-only routing (tried and
+# rejected) -- more robust than trying to enumerate every state-question
+# phrasing that isn't one.
+_OPINION_FRAME = re.compile(
+    r"\b(what do you think|how do you feel|do you like)\b",
     re.IGNORECASE,
 )
 
@@ -66,16 +90,35 @@ def _chat_max_tokens(user_text: str) -> int:
 
 
 def _should_use_tools(user_text: str) -> bool:
-    """Keep a mention of a tool-domain in the conversational lane.
+    """Routes to the tool lane on any of four grounds: a direct intent
+    phrase, a factual query, an action+subject pair, or (PRD §17 unit 35)
+    an existence/possession/state question about a tool subject.
 
     The old keyword-only routing treated "what do you think about my camera"
     like a camera command, injecting the whole operational prompt and tool
-    schema. Tools need both an action and a concrete operational subject,
-    with a few factual queries handled as direct requests.
+    schema -- the action+subject route exists to require BOTH, not just a
+    subject, for exactly that reason. The state-question route added here
+    is deliberately NOT gated on an action verb ("do I have any new mail"
+    has no verb _TOOL_ACTION would catch), which is exactly why it needs
+    its own opinion-frame exclusion instead of relying on the missing
+    action to keep it from over-firing (§17: the costs are asymmetric --
+    a false negative here means Argus denies a capability it actually has,
+    which is strictly worse than an occasional unnecessary tool-lane
+    turn, so this errs toward tools).
     """
     text = user_text.strip()
     factual_query = re.match(r"^(what(?:'s| is) (?:the )?(weather|forecast|news|score|price)|when is )", text, re.I)
-    return bool(_DIRECT_TOOL_INTENT.search(text) or factual_query or (_TOOL_ACTION.search(text) and _TOOL_SUBJECT.search(text)))
+    state_question = (
+        _STATE_QUESTION_FRAME.search(text)
+        and _TOOL_SUBJECT.search(text)
+        and not _OPINION_FRAME.search(text)
+    )
+    return bool(
+        _DIRECT_TOOL_INTENT.search(text)
+        or factual_query
+        or (_TOOL_ACTION.search(text) and _TOOL_SUBJECT.search(text))
+        or state_question
+    )
 
 
 class Orchestrator:
