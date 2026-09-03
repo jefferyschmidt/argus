@@ -1485,3 +1485,85 @@ spoken one*. Specification omission, same shape as unit 25's.
 
 No editing of rules from the dashboard beyond revoke; no chat UI changes; no authentication
 (the console is already localhost-only — revisit with Phase D, not here).
+
+---
+
+## 16. Realtime-mode parity fixes (found in live use 2026-09-03)
+
+Two defects, both `VOICE_MODE=realtime` only, both found in one live conversation: Argus
+interrogated the user about the current time and timezone before setting a 3pm reminder, and
+then denied having a rules engine when asked to default to Eastern time. Pipeline mode has
+neither problem. Neither is a builder error — unit 33 is a stale wiring decision of mine, unit
+34 a grounding omission.
+
+### Unit 33 — Realtime must use the Orchestrator's full tool registry (SEVERE)
+
+**The gap:** `voice/realtime.py` builds a bare `build_default_registry()` (no arguments) and
+passes it into its `Orchestrator(tool_registry=self.tools)`. Because `Orchestrator.__init__`
+only builds the *full* registry — with `rule_store`, `spine`, `task_runner`, `decision_log`,
+`router` — when it is given no registry, sharing the bare one means realtime mode is missing
+**every capability that depends on those**: `remember_preference`, `list_rules`,
+`revoke_rule`, `activate_mode`/`deactivate_mode`, standing authorizations
+(`AuthorizationChecker`), `start_task`/`task_status`/`cancel_task`, `query_timeline`,
+`compose_document`, `second_opinion`, and `scan_document`. Confirmed live: asked to set a
+standing timezone rule, Argus correctly reported it had no such tool — in realtime, it does
+not.
+
+**History:** this came from the earlier double-MCP-subprocess fix (commit cf612fd), which
+correctly wanted one registry shared between the realtime session and its Orchestrator, but
+shared the bare one instead of the full one. The `self.tools`-built-with-`router=None` comment
+in `__init__` documents a "minor gap" that has since silently grown to include the entire
+Phase G and Phase I toolset.
+
+**Fix:** construct the Orchestrator first and take its registry, rather than building a
+registry first and starving the Orchestrator.
+
+- If a `tool_registry` was passed into `RealtimeVoiceLoop.__init__`, pass it through to
+  `Orchestrator(tool_registry=...)` (honoring the shared-registry caller contract).
+- Otherwise call `Orchestrator()` with no registry so it builds the full one, then set
+  `self.tools = self.orchestrator.tools`.
+- Set the voice confirmer on that same object (`self.tools.confirmer = _make_voice_confirmer(self)`).
+- Still exactly one registry and one set of MCP bridges — the doubling cf612fd fixed does not
+  return. Verify that: constructing a `RealtimeVoiceLoop` must build the registry once, not
+  twice.
+- Delete the now-false "minor gap: second_opinion/scan_document" comment.
+
+**Acceptance:**
+- [ ] `_session_config()`'s advertised tools include `remember_preference`, `list_rules`,
+      `query_timeline`, `compose_document`, and the task tools when their prerequisites are
+      enabled — the same set pipeline mode exposes.
+- [ ] Standing authorizations are enforced in realtime mode (the `AuthorizationChecker` is
+      wired, not None).
+- [ ] Only one registry is constructed per `RealtimeVoiceLoop` (assert `build_default_registry`
+      is called exactly once, or that no second set of MCP bridges is created).
+- [ ] A caller-supplied `tool_registry` is still honored.
+- [ ] Pipeline mode (`voice/loop.py`) is unchanged.
+
+### Unit 34 — Realtime must know the current date, time, and timezone
+
+**The gap:** `_REALTIME_INSTRUCTIONS` is a static module-level string with no time grounding.
+Pipeline mode injects `Current date/time: <weekday, date, time, %Z>` (and `user_location`)
+fresh on every turn via `Orchestrator._dynamic_context`. Realtime never does, so the model has
+no basis for "3pm this afternoon" and hallucinates a timezone (observed: Asia/Kolkata).
+
+**Fix:** inject the same grounding into the realtime session.
+
+- Build the date/time/timezone line the same way `orchestrator.py` does
+  (`datetime.now().astimezone().strftime("%A, %B %d, %Y, %I:%M %p %Z")`, plus
+  `settings.user_location` when set), and include it in the session instructions sent in
+  `_session_config()` — not baked in at import.
+- It must be recomputed at each connect (including reconnects), never frozen at process start.
+- **Long-session staleness:** a realtime session can run for hours, so a timestamp fixed at
+  connect drifts. Refresh it on the user's own turns by sending a lightweight `session.update`
+  with regenerated instructions when the last refresh is older than
+  `settings.realtime_time_refresh_seconds` (default 300). The timezone — the actual reported
+  bug — is correct from the first connect regardless; the refresh keeps clock math honest over
+  a long session.
+
+**Acceptance:**
+- [ ] A freshly built `_session_config()` contains the current date, time, and timezone.
+- [ ] The timezone reflects the machine's real zone (Eastern, here), not a default/guess.
+- [ ] The grounding is regenerated on reconnect, not carried over stale.
+- [ ] With `user_location` set, it appears too, matching pipeline mode.
+- [ ] `_REALTIME_INSTRUCTIONS`'s static persona text is unchanged; only the dynamic grounding
+      is added around it.
