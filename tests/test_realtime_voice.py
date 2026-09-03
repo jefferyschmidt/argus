@@ -44,6 +44,67 @@ def test_still_builds_its_own_registry_when_none_is_given():
     assert any(tool["name"] == "list_dir" for tool in loop.tools.schemas())
 
 
+# -- PRD §16 unit 33: realtime must use the Orchestrator's full registry --
+
+def test_tools_is_the_same_object_as_the_orchestrators_registry():
+    """The fix in one sentence: self.tools = self.orchestrator.tools, not
+    the other way around."""
+    with patch("argus.voice.realtime.settings.openai_api_key", "test-key"):
+        loop = RealtimeVoiceLoop()
+    assert loop.tools is loop.orchestrator.tools
+
+
+def test_a_supplied_tool_registry_is_shared_with_the_orchestrator_not_duplicated():
+    shared = build_default_registry()
+    with patch("argus.voice.realtime.settings.openai_api_key", "test-key"):
+        loop = RealtimeVoiceLoop(tool_registry=shared)
+    assert loop.tools is shared
+    assert loop.orchestrator.tools is shared
+
+
+def test_only_one_registry_is_constructed_per_realtime_voice_loop():
+    """The whole reason the old (bad) wiring existed: commit cf612fd
+    fixed realtime spawning duplicate MCP subprocesses by sharing ONE
+    registry. This fix must not let that regress -- verified by counting
+    actual build_default_registry() calls, not just by inspection."""
+    real_build = build_default_registry
+    counter = MagicMock(side_effect=real_build)
+    with patch("argus.voice.realtime.settings.openai_api_key", "test-key"), \
+         patch("argus.orchestrator.build_default_registry", counter):
+        RealtimeVoiceLoop()
+
+    counter.assert_called_once()
+
+
+def test_realtime_registry_has_the_full_capability_set():
+    """Confirmed live as the actual bug: asked to set a standing timezone
+    rule, Argus reported having no rules engine at all -- because the
+    old bare registry never got rule_store/spine/task_runner/
+    decision_log/router, so none of the tools that depend on them were
+    registered."""
+    with patch("argus.voice.realtime.settings.openai_api_key", "test-key"):
+        loop = RealtimeVoiceLoop()
+
+    for name in ("remember_preference", "list_rules", "revoke_rule", "query_timeline", "compose_document"):
+        assert name in loop.tools._tools, f"{name} missing from realtime mode's registry"
+
+
+def test_standing_authorizations_are_wired_in_realtime_mode():
+    with patch("argus.voice.realtime.settings.openai_api_key", "test-key"):
+        loop = RealtimeVoiceLoop()
+
+    assert loop.tools.authorization_checker is not None
+
+
+def test_session_config_advertises_the_full_tool_set():
+    with patch("argus.voice.realtime.settings.openai_api_key", "test-key"):
+        loop = RealtimeVoiceLoop()
+
+    advertised = {tool["name"] for tool in loop._session_config()["tools"]}
+    for name in ("remember_preference", "list_rules", "query_timeline", "compose_document"):
+        assert name in advertised
+
+
 def test_realtime_prompt_is_accurate_about_available_tools():
     from argus.voice.realtime import _REALTIME_INSTRUCTIONS
 

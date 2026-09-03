@@ -19,7 +19,6 @@ from rich.console import Console
 
 from argus.config import settings
 from argus.persona import CONVERSATION_PROMPT
-from argus.tools import build_default_registry
 from argus.tools.registry import ToolDenied
 from argus.ui import commands as ui_commands
 from argus.ui import events as ui_events
@@ -135,14 +134,6 @@ class RealtimeVoiceLoop:
         self._connection_error: str | None = None
         self._send_lock = threading.Lock()
         self._pending_calls: list[dict] = []
-        # Accepts an externally-built registry (ROADMAP.md Phase 1: a
-        # single ToolServer shared across every consumer -- chat, this
-        # realtime loop, and eventually the proactive engine -- instead of
-        # each one silently building its own with no shared task-approval
-        # or cost-governor state). Falls back to a fresh one so this class
-        # still works standalone, same as before.
-        self.tools = tool_registry if tool_registry is not None else build_default_registry()
-        self.tools.confirmer = _make_voice_confirmer(self)
         self._response_active = False
         self._speech_lock = threading.Lock()
         self._speech_started_at: float | None = None
@@ -180,24 +171,29 @@ class RealtimeVoiceLoop:
         # session's own OpenAI usage (a different provider Argus doesn't
         # meter).
         #
-        # tool_registry=self.tools matters more than it looks: Orchestrator
-        # builds its own registry by default -- confirmed live as a real
-        # resource-doubling bug once Phase 3-5's MCP integrations existed.
-        # With enable_playwright_mcp on, leaving this unset spawned TWO
-        # separate headless-browser subprocesses for one realtime session
-        # (one for self.tools above, a second, wasted one buried inside
-        # Orchestrator's own construction) -- same doubling for any other
-        # enabled MCP server (GitHub, Zapier, Home Assistant, Figma), each
-        # a real subprocess or network connection, not a cheap object.
-        # Sharing self.tools costs one known, minor gap: second_opinion/
-        # scan_document need a router to be registered at all, and
-        # self.tools was built with router=None (unchanged from before this
-        # fix), so the proactive workers' orchestrator won't have those two
-        # tools. Acceptable -- avoiding duplicated real processes/
-        # connections matters far more than two optional tools proactive
-        # workers weren't relying on anyway.
+        # PRD §16 unit 33: construct Orchestrator FIRST, then take its
+        # registry -- not the other way around. Orchestrator.__init__
+        # only builds the FULL registry (rule_store, spine, task_runner,
+        # decision_log, router) when it is given no registry of its own;
+        # the previous order here built a bare build_default_registry()
+        # with none of those and handed it to Orchestrator, which duly
+        # used exactly that bare one instead of building a better one --
+        # confirmed live: Argus reported having no rules engine at all in
+        # realtime mode, and was silently missing remember_preference,
+        # list_rules, revoke_rule, activate_mode/deactivate_mode, standing
+        # authorizations, start_task/task_status/cancel_task,
+        # query_timeline, compose_document, second_opinion, and
+        # scan_document -- every capability that depends on one of those
+        # five collaborators. If a tool_registry was passed into this
+        # __init__, it's honored here too (the original cf612fd guarantee
+        # this must not regress): passed straight through to Orchestrator
+        # rather than letting it build a second one, so a caller-shared
+        # registry stays shared, not duplicated. Still exactly one
+        # registry and one set of MCP bridges either way.
         from argus.orchestrator import Orchestrator
-        self.orchestrator = Orchestrator(tool_registry=self.tools)
+        self.orchestrator = Orchestrator(tool_registry=tool_registry)
+        self.tools = self.orchestrator.tools
+        self.tools.confirmer = _make_voice_confirmer(self)
 
         from argus.proactive_engine import ProactiveEngine
         self.proactive = ProactiveEngine(self.orchestrator, self.announce, _AnnounceLock(self))
