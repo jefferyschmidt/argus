@@ -1929,6 +1929,28 @@ rhythms/rules/threads), so this will get more frequent in production, not less.
     and each store's `__init__` — so a writer waits for the lock rather than failing.
   - Acceptance: a test with N threads writing the same DB via separate connections raises no
     `database is locked`; every connection-opening path sets the pragma.
+  - **DONE (commit at the 43a gate), with a correction: this was not the flake's cause.** Python's
+    `sqlite3.connect()` already defaults `timeout=5.0`, i.e. `busy_timeout=5000`, so ordinary
+    write contention on an already-WAL file was *already* waiting, not failing. The prior gate's
+    diagnosis identified the wrong mechanism. The explicit pragma is still correct (immune to a
+    future `connect(timeout=0)`), and the source-inspection test — not the runtime readback,
+    which passes even unfixed — is what guards it. The real remaining cause is 43a-ii.
+
+**43a-ii — Serialize the WAL-mode transition (the actual remaining flake).** Measured at the 43a
+gate: several connections racing `PRAGMA journal_mode=WAL` against a *brand-new* file contend on
+a mode-transition lock the busy handler does **not** retry (8 threads → ~7–9/10 failures
+regardless of `busy_timeout`). This is the residual "reproduces clean on rerun" failure, always
+at `journal_mode=WAL`. In production, store construction is mostly sequential (Orchestrator /
+ProactiveEngine build stores one after another on one thread), so this bites the test suite far
+more than production — but it undermines a trustworthy green build, and the fix removes real
+duplication too.
+  - Fix: one shared `_open_db(path, schema)` helper that every one of the 11 connect sites routes
+    through, which (a) sets `busy_timeout`, (b) serializes the one-time WAL transition per
+    resolved path with an in-process lock (plus a small bounded retry as belt-and-braces), and
+    (c) applies the schema. Consolidating the copy-pasted connect+WAL+schema onto one helper is
+    the structural win — the next store can't forget the pragmas.
+  - Acceptance: the 8-threads-fresh-file WAL-race test raises no `database is locked`; all 11
+    sites open through the shared helper; the full suite runs clean across repeated runs.
 
 **43b — atomic interruption budget.** Make the budget check-and-consume one locked operation, so
 concurrent workers cannot exceed the hourly cap.
