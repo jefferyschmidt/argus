@@ -14,9 +14,14 @@ catch that — it calls the function directly. This map can.
 - The one rule that would have prevented every orphan bug: **nothing is "done" until this map
   shows a real production producer *and* consumer for it.** "Has tests" is not "is wired."
 
-Last audited: 2026-09-04 (post-u41 gate). Orphan sweep (I3), connection-discipline (I1), and
-observation-kind (I2) greps re-run clean; this round added no new production code (test-only),
-so no new producer/consumer/store claims to reconcile here.
+Last audited: 2026-09-04 (post-u40-Part-1 gate). Orphan sweep (I3), connection-discipline (I1),
+and observation-kind (I2) greps re-run clean; the new `start_proactive_engine` helper has three
+real production callers (`cli.py::chat`, `voice/loop.py`, `voice/realtime.py`), not just tests.
+One genuine finding from this round, recorded above and not fixed (Part 1 changes no shared
+behavior by design): pipeline mode doesn't caption escalation-delivered proactive text the way
+realtime does, since `EscalationScheduler.process_due()` bypasses `SalienceDispatcher._deliver()`
+(the only thing that normally publishes that caption) and pipeline's own speak_fn never does
+either. Candidate for Part 2's shared-behavior unification to close.
 
 ---
 
@@ -97,20 +102,40 @@ handles cross-connection WAL contention.
 | Wake word | required ("Argus") | none (continuous) | inherent difference |
 | Tool registry | Orchestrator full | Orchestrator full (§16 u33) | ✅ |
 | Time grounding | per-turn (`_dynamic_context`) | per-connect + refresh (§16 u34) | ✅ |
-| Confirmations | `voice/confirm.py` | `_ask_voice_confirmation` (§13 u24/24a) | ⚠️ two copies (§19 u40 to unify) |
-| Reminder/proactive delivery | shared `ProactiveEngine` | shared `ProactiveEngine` | ✅ (§19 u37) |
-| Acknowledgment | `_process_utterance` | `_receive` transcript path | ⚠️ two copies (§19 u40) |
+| Confirmations | `voice/confirm.py` | `_ask_voice_confirmation` (§13 u24/24a) | ⚠️ two copies (§19 u40 Part 2 to unify) |
+| Reminder/proactive delivery | shared `ProactiveEngine` (via `start_proactive_engine`) | shared `ProactiveEngine` (via `start_proactive_engine`) | ✅ (§19 u37, u40 Part 1) |
+| Acknowledgment | `_process_utterance` | `_receive` transcript path | ⚠️ two copies (§19 u40 Part 2) |
+| Escalation-follow-up captioning | ⚠️ **not captioned** -- `EscalationScheduler.process_due()` calls `deliver_fn`/`speak_fn` directly, bypassing `SalienceDispatcher._deliver()` (which is the only thing that publishes a caption on the normal delivery path); `_speak_and_open_mic`/`_speak_with_barge_in` never publish one themselves | captioned -- `announce()` unconditionally publishes its own caption regardless of caller | ⚠️ **found at the §19 u41/u40-Part-1 pipeline-harness gate, not fixed (Part 1 changes no shared behavior) -- Part 2's unification should close this** |
 
-**Default:** hardcoded `pipeline` until §19 u40 makes it resolve to realtime when a key is
-present. Today `.env` `VOICE_MODE` decides.
+**Default:** `config.py::resolved_voice_mode()` -- realtime when `VOICE_MODE` is unset and
+`openai_api_key` is present, pipeline otherwise; an explicitly-set `VOICE_MODE` (env/.env/kwarg,
+checked via `model_fields_set`) is never overridden. `cli.py::voice()` calls it. (§19 u40 Part 1)
 
-**End-to-end regression coverage (§19 u41):** `tests/test_realtime_e2e.py` drives the real
-`RealtimeVoiceLoop` (`_receive`, `_run_pending_tools`, `_ask_voice_confirmation`, `announce`,
-`submit_text_message`, `_create_response_or_defer`) through a fake websocket -- the only fakes are
-the socket and (implicitly) sounddevice, never touched by these paths. Covers: barge-in cancel,
-false-barge-in resume, caption-matches-delivery, spoken CONFIRM-tier approval (u24a), typed input
-mid-turn, a tool-call round-trip, escalation-driven `announce()` delivery, and reminder delivery
-with mark-notified-after-delivery. The last two are the acceptance-critical pair: both are proven
-to fail against the pre-u37 wiring (escalation via toggling `dispatcher.escalation` back to its
-pre-u37 `None` default; reminders via `_tick_reminders` simply not existing/being called) and pass
-against the current one, exercising the real tick → dispatcher → announce chain, not a direct call.
+**Proactive layer at both entry points (§19 u40 Part 1):** `argus voice` (either loop) and
+`argus chat` all start `ProactiveEngine` through the one shared `proactive_engine.start_proactive_engine()`
+helper -- chat's speak_fn (`cli.py::_chat_announce`) has no voice output, so a proactive item prints
+as text; a construction failure there is caught (`cli.py::_start_chat_proactive`) so chat still
+works with none of it, matching I10. Voice loops' own construction is unchanged (still fails loudly
+on construction error, same as before this item) -- only the construct-then-start pair itself moved
+into one place.
+
+**End-to-end regression coverage (§19 u41, extended to pipeline at §19 u40 Part 1):**
+`tests/test_realtime_e2e.py` drives the real `RealtimeVoiceLoop` (`_receive`, `_run_pending_tools`,
+`_ask_voice_confirmation`, `announce`, `submit_text_message`, `_create_response_or_defer`) through a
+fake websocket; `tests/test_pipeline_e2e.py` drives the real `VoiceLoop` (`_process_utterance`,
+`_speak_with_barge_in`, `_watch_for_barge_in`, `_barge_in_session`, `_resume_after_interruption`,
+`_speak_and_open_mic`, the `voice/confirm.py` confirmer) through a fake mic/wake-word stream
+(`FakeInputStream`) plus faked STT/TTS (`FakeTranscriber`/`FakeSpeaker`) and a faked
+`record_followup` -- the only fakes in either suite are these transport/hardware edges, never the
+loops' own logic. Both suites cover the same 8 behaviors (barge-in cancel, false-barge-in resume,
+caption-matches-delivery, spoken CONFIRM-tier approval, typed input mid-turn, a tool-call
+round-trip, escalation-driven delivery, and reminder delivery with mark-notified-after-delivery),
+each noting where pipeline's shape genuinely differs (no response.create/cancel protocol, no
+persisted conversation-item history for a u24a-style leak to guard against, typed input queues
+behind a real lock instead of cancelling an in-flight response) rather than forcing a false
+equivalence. The escalation-caption divergence above was found by running pipeline's version of the
+escalation test with the SAME assertions as realtime's -- it failed, which is what surfaced the gap.
+The escalation and reminder tests are the acceptance-critical pair in both suites: proven to fail
+against the pre-u37 wiring (escalation via toggling `dispatcher.escalation` back to its pre-u37
+`None` default; reminders via `_tick_reminders` simply not existing/being called -- verified with a
+live mutation check, temporarily no-op'ing it, for both suites) and pass against the current one.
