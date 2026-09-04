@@ -57,6 +57,14 @@ theory.
 - **I11 — All perception state is persisted; nothing important lives only in memory.** *(Incident:
   `_triaged_uids`/`_suppressed_titles` reset every restart — P7. The spine `dedupe_key` exists to
   make idempotent re-reporting free.)*
+- **I12 — Capability parity across voice modes.** A capability reachable in one voice mode must
+  be reachable in the other — never silently stubbed to a no-op or placeholder — unless the gap
+  is an inherent transport limit *explicitly recorded as permanent* in SYSTEM_MAP §4. When a new
+  mode or path can't do something the other can, bridge it (delegate to Claude via the shared
+  Orchestrator) or record it as a permanent difference; do not stub-and-forget. *(Incident:
+  realtime mode silently discarded screenshot/camera images — replacing them with a text
+  placeholder — so vision, which worked in pipeline, regressed to blind in realtime and nothing
+  caught it. §21/§22. Web search had the same shape.)*
 
 ## Historical pitfalls (the P-series, still live)
 

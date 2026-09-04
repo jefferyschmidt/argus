@@ -2048,3 +2048,116 @@ and treat them differently:
 logic at all is the same divergence Unit 40 exists to remove — if the shared-connect helper from
 40/43a-ii is being built around the same time, route both IMAP paths through one place and apply
 44 there once. Otherwise, apply it twice and note the duplication for 40 to collapse later.
+
+---
+
+## 21. The realtime→Claude capability bridge (web search + vision)
+
+**North star (user, 2026-09-04):** the goal is the Star Trek computer — do *everything* by
+voice, never touch the keyboard (a health necessity, not a preference). Realtime mode
+(continuous voice, no wake word) is the only mode that delivers that; pipeline's per-turn wake
+word is still "touching" the interface. **Therefore any capability that works only in pipeline
+is a capability that fails the mission.** Two such gaps are known, and both have the same cause
+and the same fix.
+
+**The pattern.** OpenAI's realtime model answers directly and cannot do, through its
+function-tool channel, two things Claude can: (a) Anthropic's server-side web search (exists
+only inside a Claude API call), and (b) *see images* — the realtime API takes audio/text, and
+the current code discards any image a tool returns (`realtime.py` replaces image bytes with the
+text "…returned an image"; pipeline renders it as a real image block Claude sees). Realtime
+already holds an `Orchestrator` with a Claude router. The fix for both is one mechanism:
+**delegate the provider-gapped capability to Claude via a shared bridge, return text to the
+realtime model.**
+
+### Unit 45 — the bridge helper (build once, used by 46 and 47)
+
+A single small helper — `argus/voice/claude_bridge.py` (or a method on the Orchestrator) —
+that runs a one-shot Claude call and returns a plain-text result the realtime model can
+consume as a tool result:
+- `ask_claude_text(prompt) -> str` — a frontier call with the Anthropic server-side
+  `web_search` tool available, for research questions.
+- `describe_image(image_bytes, prompt) -> str` — `router.complete_with_image`, for "what's on
+  screen."
+
+Runs on the tool-execution background thread (never the receive thread — P2). Bounded (its own
+short token cap). This is the one place the realtime↔Claude delegation lives; 46 and 47 are thin
+tools over it.
+
+**Acceptance:** both helpers return text; each makes exactly one Claude call; a failure returns
+an `"error: …"` string, never raises into the caller.
+
+### Unit 46 — web_search as a registry tool (both modes)
+
+A first-class `web_search` tool in the Argus registry whose handler calls
+`ask_claude_text`. Because the registry is shared, this gives search to **both** voice modes,
+chat, tasks, and the research worker — one portable tool, no new API key (reuses the Anthropic
+key). Pipeline keeps its native server-side search as its default (one round-trip cheaper); the
+registry tool is what makes search reachable everywhere Claude isn't the direct speaker.
+
+**Acceptance:**
+- [ ] `web_search` appears in the realtime session's advertised tools and in pipeline's registry.
+- [ ] A realtime "what movies came out this year named X" query returns real current results
+      (the failing 2026-09-04 transcript case), not "I can't search."
+- [ ] The tool makes exactly one Claude call and returns text.
+
+### Unit 47 — restore vision in realtime (the regression fix)
+
+Vision worked before realtime mode existed; realtime silently stubbed it. Restore it:
+- In `_run_pending_tools`, a tool returning image bytes must no longer be flattened to
+  "…returned an image." Instead route the bytes through `describe_image` (Unit 45) so the
+  realtime model receives a **text description** of what the screenshot/camera shows.
+- Also check whether the current OpenAI realtime API accepts `input_image` content blocks; if
+  it does, prefer sending pixels directly (higher fidelity) and fall back to the Claude
+  description otherwise. Verify against the live API, do not assume.
+- Desktop-control grounding in realtime: prefer `list_ui_elements` (already returns text, works
+  in realtime today) to locate controls before clicking, and use the vision path to **verify
+  after acting**.
+
+**Acceptance:**
+- [ ] In realtime, `take_screenshot` results in a spoken description of the actual screen
+      content, not a claim that an image exists.
+- [ ] The e2e harness proves the regression is closed: a realtime screenshot yields a
+      description, and this test FAILS against the current stub code.
+- [ ] A desktop-control task in realtime grounds via `list_ui_elements` before clicking.
+
+## 22. Unit 48 — realtime honesty (stop fabricating), do this FIRST
+
+The 2026-09-04 calculator transcript: Argus claimed it had opened the calculator and gotten
+64 before acting, asserted "the result is 64" without ever seeing the screen, and — asked to
+verify — kept asserting 64 "based on the standard result" instead of admitting it couldn't
+see. That is the Enterprise-computer honesty principle (INVARIANTS I8-adjacent, and the "the
+computer never bluffs" rule from ROADMAP Part III) being violated. **This is a prompt-only fix
+and it stops the actively-misleading behavior even while realtime is still blind**, so it ships
+ahead of 45-47.
+
+Rewrite `_REALTIME_INSTRUCTIONS` so the model:
+- Never states a **screen/tool result** it has not read back from a tool. Arithmetic it knows
+  ("8×8 is 64") is fine; "the calculator shows 64" requires having seen it.
+- Distinguishes knowing an answer from having performed an action. "Do it on the calculator so
+  I can see" is a task whose deliverable is the **verified display**, not the arithmetic.
+- When it cannot see or verify, says so plainly ("I can't see the display in this mode") —
+  never assumes, never waffles about "the tool's internal state."
+- Only claims an action succeeded when the tool result confirms it.
+
+**Acceptance:**
+- [ ] An e2e test where a screenshot returns no readable result asserts the model says it
+      cannot verify — and does NOT state a specific screen value it never saw.
+- [ ] The static persona text is otherwise unchanged (same shape as prior prompt edits).
+
+## Capability-parity guard (stop dropping features across modes)
+
+The vision regression happened silently: a capability present in pipeline was stubbed out when
+realtime was added, and nothing flagged it. Add the systemic guard:
+- **New invariant I12 (INVARIANTS.md): capability parity across modes.** A capability reachable
+  in one voice mode must be reachable (not silently stubbed) in the other, unless the
+  difference is an inherent transport limit *explicitly recorded* in SYSTEM_MAP §4. The
+  argus-audit skill gains a step: for each capability row in §4, confirm neither mode stubs it
+  to a no-op/placeholder.
+- **SYSTEM_MAP §4 gains rows** for vision (screenshots/camera) and web search, marked with
+  their real current status, and flipped to ✅ as 46/47 land.
+
+### Sequencing
+
+48 (honesty, prompt-only) first — it stops the misleading behavior today. Then 45 (bridge),
+then 46 (search) and 47 (vision) which both sit on it. The capability-parity guard (I12 + §4
+rows + audit step) lands with 47, since that's the regression it exists to prevent recurring.

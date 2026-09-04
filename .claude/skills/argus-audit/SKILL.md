@@ -51,6 +51,15 @@ Read `INVARIANTS.md` and check the round's changes against each:
 - **I9** no LLM on a hot path (sensor/matcher/tick/reap).
 - **I10** every background thread / subsystem start is individually try/except-wrapped.
 
+## 4b. Capability parity across voice modes (I12)
+
+For each capability row in SYSTEM_MAP §4, confirm neither mode silently stubs it. The specific
+regression that motivated this: `voice/realtime.py::_run_pending_tools` replacing image bytes
+with a text placeholder while pipeline renders a real image block — vision worked in one mode,
+was blind in the other, and nothing flagged it. Check that a capability present in one mode is
+either present in the other or recorded in §4 as a *permanent inherent difference* — never
+stubbed-and-forgotten. Grep the realtime tool-result path for byte-discarding placeholders.
+
 ## 5. Reconcile SYSTEM_MAP.md
 
 Compare the map's producer/consumer/wired claims to what you just found. Report every divergence.
