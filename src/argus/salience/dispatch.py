@@ -12,7 +12,7 @@ import time
 
 from argus.salience.engine import SalienceEngine
 from argus.salience.scoring import Candidate, Decision
-from argus.ui import events as ui_events
+from argus.voice.captions import publish_spoken
 from argus.world.model import WorldModel
 
 log = logging.getLogger(__name__)
@@ -95,8 +95,7 @@ class SalienceDispatcher:
         if not self._interaction_lock.acquire(blocking=False):
             return False
         try:
-            ui_events.publish({"type": "transcript", "role": "argus", "text": text})
-            ui_events.publish({"type": "caption", "text": text})
+            publish_spoken(text)
             self._speak_fn(text)
         finally:
             self._interaction_lock.release()

@@ -14,14 +14,11 @@ catch that — it calls the function directly. This map can.
 - The one rule that would have prevented every orphan bug: **nothing is "done" until this map
   shows a real production producer *and* consumer for it.** "Has tests" is not "is wired."
 
-Last audited: 2026-09-04 (post-u40-Part-1 gate). Orphan sweep (I3), connection-discipline (I1),
-and observation-kind (I2) greps re-run clean; the new `start_proactive_engine` helper has three
-real production callers (`cli.py::chat`, `voice/loop.py`, `voice/realtime.py`), not just tests.
-One genuine finding from this round, recorded above and not fixed (Part 1 changes no shared
-behavior by design): pipeline mode doesn't caption escalation-delivered proactive text the way
-realtime does, since `EscalationScheduler.process_due()` bypasses `SalienceDispatcher._deliver()`
-(the only thing that normally publishes that caption) and pipeline's own speak_fn never does
-either. Candidate for Part 2's shared-behavior unification to close.
+Last audited: 2026-09-04 (post-u40-Part-2 gate). Orphan sweep (I3), connection-discipline (I1),
+and observation-kind (I2) greps re-run clean; `voice/captions.py`'s three new functions
+(`publish_spoken`/`publish_caption`/`publish_transcript`) all have real production callers in
+both voice loops and in `salience/dispatch.py`/`salience/escalation.py`, not just tests. The
+Part-1 escalation-caption finding is closed this round (see §4) -- no findings open.
 
 ---
 
@@ -99,13 +96,15 @@ handles cross-connection WAL contention.
 | Behavior | pipeline (`voice/loop.py`) | realtime (`voice/realtime.py`) | Unified? |
 |---|---|---|---|
 | Transport | local STT/TTS + wake word | OpenAI realtime socket | — |
-| Wake word | required ("Argus") | none (continuous) | inherent difference |
+| Wake word | required ("Argus") | none (continuous) | **permanent, inherent difference** -- pipeline has no server-side turn detection to lean on instead; not a unification candidate |
 | Tool registry | Orchestrator full | Orchestrator full (§16 u33) | ✅ |
 | Time grounding | per-turn (`_dynamic_context`) | per-connect + refresh (§16 u34) | ✅ |
-| Confirmations | `voice/confirm.py` | `_ask_voice_confirmation` (§13 u24/24a) | ⚠️ two copies (§19 u40 Part 2 to unify) |
+| Confirmations | `voice/confirm.py` -- records audio, then transcribes it (STT is a separate, blocking step) | `_ask_voice_confirmation` -- the model streams a transcript asynchronously as it's produced (no discrete record-then-transcribe step exists) | **permanent, inherent difference** -- the capture MECHANISM is tied to each transport's own audio model and cannot be merged without making one loop pretend to have a capability it doesn't. §19 u40 Part 2 deliberately left this separate (not force-merged); both still call the same `voice/acknowledgment.py`-style shared phrase/window logic where that part genuinely is common (see Acknowledgment row) |
 | Reminder/proactive delivery | shared `ProactiveEngine` (via `start_proactive_engine`) | shared `ProactiveEngine` (via `start_proactive_engine`) | ✅ (§19 u37, u40 Part 1) |
-| Acknowledgment | `_process_utterance` | `_receive` transcript path | ⚠️ two copies (§19 u40 Part 2) |
-| Escalation-follow-up captioning | ⚠️ **not captioned** -- `EscalationScheduler.process_due()` calls `deliver_fn`/`speak_fn` directly, bypassing `SalienceDispatcher._deliver()` (which is the only thing that publishes a caption on the normal delivery path); `_speak_and_open_mic`/`_speak_with_barge_in` never publish one themselves | captioned -- `announce()` unconditionally publishes its own caption regardless of caller | ⚠️ **found at the §19 u41/u40-Part-1 pipeline-harness gate, not fixed (Part 1 changes no shared behavior) -- Part 2's unification should close this** |
+| Caption/transcript publishing | `voice/captions.py::publish_spoken/publish_caption/publish_transcript` | same | ✅ (§19 u40 Part 2) -- one shared module both loops and `SalienceDispatcher._deliver()`/`EscalationScheduler.process_due()` call; each loop's own historical event shape (whether a caption event carries an explicit `role` key) preserved exactly per call site, since the UI treats a missing role as `"argus"` either way (`ui/static/index.html`) but a literal shape difference is still an observable API contract worth not disturbing silently |
+| Held-item handling | `SalienceDispatcher.submit()`'s `held.add(...)` fallback | same | ✅ already centralized (pre-dates §19 u40) -- neither loop ever had its own copy of this; nothing to extract |
+| Acknowledgment | `_process_utterance` calls `voice/acknowledgment.py::maybe_acknowledge_spoken_thread`, with its own additional "skip while a confirmation is active" guard (kept, deliberately redundant -- see its own comment) | `_receive`'s transcript path calls the same function, structurally unreachable while a confirmation is active | ✅ (§19 u40 Part 2) -- the "skip while a confirmation is pending" rule now also lives inside `maybe_acknowledge_spoken_thread` itself, not just at each call site, so a future third caller can't forget it; both loops' own call-site guards are left in place as intentional defense in depth, not because they're still load-bearing on their own |
+| Escalation-follow-up captioning | ✅ captioned -- `EscalationScheduler.process_due()` now calls `publish_spoken()` before `deliver_fn`, closing the gap found at the §19 u41/u40-Part-1 pipeline-harness gate (`tests/test_pipeline_e2e.py::test_escalation_caption_gap_is_closed`, verified failing pre-fix via a live mutation check) | ✅ captioned (was already, via `announce()`'s own unconditional publish) | ✅ (§19 u40 Part 2) |
 
 **Default:** `config.py::resolved_voice_mode()` -- realtime when `VOICE_MODE` is unset and
 `openai_api_key` is present, pipeline otherwise; an explicitly-set `VOICE_MODE` (env/.env/kwarg,
@@ -118,6 +117,19 @@ as text; a construction failure there is caught (`cli.py::_start_chat_proactive`
 works with none of it, matching I10. Voice loops' own construction is unchanged (still fails loudly
 on construction error, same as before this item) -- only the construct-then-start pair itself moved
 into one place.
+
+**Shared-behavior extraction (§19 u40 Part 2):** caption/transcript publishing, held-item
+handling, and acknowledgment are now genuinely ONE implementation each, called by both loops --
+see the table rows above for exactly what moved and why each one is safe (no observable-shape or
+timing change beyond the one authorized fix). Confirmation capture and the wake word were
+deliberately left separate: PRD's own instruction was not to force-merge genuinely
+transport-specific behavior, and both are exactly that -- the confirmation MECHANISM differs
+(pipeline blocks on a record-then-transcribe call; realtime reacts to an async transcript event
+already arriving off the socket it's always reading), and the wake word has no realtime analog at
+all (server-side turn detection replaces it entirely, not "the same thing done differently").
+Closed as part of this: the escalation-caption gap found in Part 1 (see the table row above) --
+`EscalationScheduler.process_due()` now calls the same `publish_spoken()` `SalienceDispatcher.
+_deliver()` uses, instead of bypassing captioning entirely.
 
 **End-to-end regression coverage (§19 u41, extended to pipeline at §19 u40 Part 1):**
 `tests/test_realtime_e2e.py` drives the real `RealtimeVoiceLoop` (`_receive`, `_run_pending_tools`,

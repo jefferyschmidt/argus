@@ -8,16 +8,25 @@ the exact same mechanism the dashboard's "got it" button already uses
 eligible; never a bulk close, never an older one.
 
 Shared by both voice loops (voice/loop.py, voice/realtime.py) so they
-don't grow separate phrase lists or separate window logic. Callers are
-responsible for their own ordering: this must only be reached AFTER
-whatever diversion sends a pending tool-confirmation answer to the
-confirmer instead of here (voice/realtime.py's
-is_voice_confirmation_active() check in _receive; voice/loop.py never
-needs an explicit check of its own -- see its call site for why)."""
+don't grow separate phrase lists or separate window logic. PRD.md §19
+unit 40 Part 2: is_voice_confirmation_active() is now also checked
+INSIDE this function, not just at each call site -- both loops
+previously each carried their own copy of that guard (realtime's via
+an if/elif branch structure that only reaches this call once the
+confirmation-diversion branch has already been ruled out; pipeline's
+via an explicit standalone check, deliberately redundant against
+future callers per its own "belt-and-braces" comment, since neither
+loop's structural guarantee that this is never reached mid-confirmation
+is itself enforced anywhere). Both loops' own checks are left in place
+(a caller re-checking something this function also checks is harmless,
+and pipeline's own comment explains why it wants that defense in
+depth) -- but the canonical rule now lives here too, once, so a future
+third caller can't forget it."""
 
 import time
 
 from argus.config import settings
+from argus.ui import commands as ui_commands
 
 # Deliberately NOT voice/confirm.py's _YES_WORDS: a bare "yes" answering
 # some unrelated question must never silently close a thread. Closing a
@@ -47,6 +56,8 @@ def maybe_acknowledge_spoken_thread(text: str, proactive_engine, now: float | No
     this codebase (see registry.py's getattr(tool, "group", None))."""
     if proactive_engine is None:
         return False
+    if ui_commands.is_voice_confirmation_active():
+        return False  # a yes/no meant for a pending confirmer must never close a thread here
     if not is_acknowledgment_phrase(text):
         return False
 

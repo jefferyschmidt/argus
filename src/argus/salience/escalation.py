@@ -17,6 +17,7 @@ from pathlib import Path
 
 from argus.config import settings
 from argus.db import open_db
+from argus.voice.captions import publish_spoken
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +117,19 @@ class EscalationScheduler:
                     continue
             if self.deliver_fn is not None:
                 try:
+                    # PRD §19 unit 40 Part 2: process_due() calls deliver_fn
+                    # directly, bypassing SalienceDispatcher._deliver() --
+                    # the only other place a caption/transcript gets
+                    # published for spoken output. Without this, an
+                    # escalation follow-up's text reached the user's ears
+                    # (or console) with nothing captioned for it in
+                    # pipeline mode specifically (found at the §19 u41/
+                    # u40-Part-1 pipeline-harness gate). Every channel
+                    # currently just speaks regardless of its declared
+                    # value (see ProactiveEngine's own deliver_fn comment --
+                    # channel-specific ambient/push routing isn't built
+                    # yet), so this captions unconditionally to match.
+                    publish_spoken(step.text)
                     self.deliver_fn(step.channel, step.text)
                 except Exception:
                     log.exception("Escalation delivery failed for step %s", step.id)

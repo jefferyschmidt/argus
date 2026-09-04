@@ -23,6 +23,7 @@ from argus.persona import CONVERSATION_PROMPT
 from argus.tools.registry import ToolDenied
 from argus.ui import commands as ui_commands
 from argus.ui import events as ui_events
+from argus.voice.captions import publish_caption, publish_spoken, publish_transcript
 from argus.voice.confirm import _NO_WORDS, _YES_WORDS
 
 log = logging.getLogger(__name__)
@@ -514,8 +515,7 @@ class RealtimeVoiceLoop:
         socket = self._socket
         if socket is None or self._audio_is_active():
             return False
-        ui_events.publish({"type": "transcript", "role": "argus", "text": text})
-        ui_events.publish({"type": "caption", "text": text, "role": "argus"})
+        publish_spoken(text, role="argus")
         try:
             self._send(socket, {
                 "type": "conversation.item.create",
@@ -550,11 +550,9 @@ class RealtimeVoiceLoop:
         # pending question).
         if ui_commands.is_voice_confirmation_active():
             ui_commands.submit_confirmation_answer(text)
-            ui_events.publish({"type": "transcript", "role": "you", "text": text})
-            ui_events.publish({"type": "caption", "text": text, "role": "you"})
+            publish_spoken(text, role="you")
             return True
-        ui_events.publish({"type": "transcript", "role": "you", "text": text})
-        ui_events.publish({"type": "caption", "text": text, "role": "you"})
+        publish_spoken(text, role="you")
         try:
             if self._audio_is_active():
                 self._clear_pending_audio()
@@ -668,7 +666,7 @@ class RealtimeVoiceLoop:
                 elif event_type in {"response.output_audio_transcript.done", "response.audio_transcript.done"}:
                     transcript = event.get("transcript", "") or "".join(self._transcript)
                     if transcript:
-                        ui_events.publish({"type": "caption", "text": transcript, "role": "argus"})
+                        publish_caption(transcript, role="argus")
                         self._output_captioned = True
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     transcript = event.get("transcript", "")
@@ -680,8 +678,7 @@ class RealtimeVoiceLoop:
                         # turn. Must run on this thread since it's the
                         # only one reading events off the socket.
                         ui_commands.submit_confirmation_answer(transcript)
-                        ui_events.publish({"type": "transcript", "role": "you", "text": transcript})
-                        ui_events.publish({"type": "caption", "text": transcript, "role": "you"})
+                        publish_spoken(transcript, role="you")
                     elif transcript:
                         # The audio model may call a tool after this turn;
                         # mark only clear action requests as pre-authorized,
@@ -718,8 +715,7 @@ class RealtimeVoiceLoop:
                         self.tools.reset_task_autonomy(explicitly_requested=_should_use_tools(transcript))
                         if self._audio_is_active():
                             self._clear_pending_audio()
-                        ui_events.publish({"type": "transcript", "role": "you", "text": transcript})
-                        ui_events.publish({"type": "caption", "text": transcript, "role": "you"})
+                        publish_spoken(transcript, role="you")
                         self._create_response_or_defer(socket)
                 elif event_type == "response.output_item.done":
                     item = event.get("item", {})
@@ -729,9 +725,9 @@ class RealtimeVoiceLoop:
                     self._response_active = False
                     if self._transcript:
                         transcript = "".join(self._transcript)
-                        ui_events.publish({"type": "transcript", "role": "argus", "text": transcript})
+                        publish_transcript(transcript)
                         if not self._output_captioned:
-                            ui_events.publish({"type": "caption", "text": transcript, "role": "argus"})
+                            publish_caption(transcript, role="argus")
                         self._transcript.clear()
                     ui_events.publish({"type": "state", "value": "listening", "mode": "follow_up"})
                     if event_type == "error":

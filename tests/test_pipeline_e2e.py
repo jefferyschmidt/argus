@@ -494,20 +494,16 @@ def test_proactive_announcement_delivers_via_speak_and_open_mic_and_escalation_t
     way test_realtime_e2e.py's equivalent test is, by toggling the
     exact collaborator wire unit 37 added.
 
-    A genuine, pre-existing per-mode divergence surfaced while writing
-    this test, NOT fixed here (out of scope for Part 1 -- unifying this
-    is exactly what Part 2 exists for): EscalationScheduler.process_due()
-    calls deliver_fn directly, bypassing SalienceDispatcher._deliver()
-    entirely -- so an escalation follow-up is never captioned by
-    _deliver() the way a normal dispatcher.submit() delivery is.
-    RealtimeVoiceLoop.announce() happens to cover this anyway because it
-    unconditionally publishes its own caption regardless of caller;
-    VoiceLoop's speak_fn (_speak_and_open_mic -> _speak_with_barge_in)
-    does not -- only _speak_unless_thought publishes captions, and
-    escalation delivery never goes through it. This test asserts what
-    pipeline actually does today (delivers via real synthesis/speech,
-    no caption for this specific path) rather than a caption that
-    wouldn't reflect real current behavior."""
+    Also covers the §19 u40 Part 1 finding, closed in Part 2: pipeline
+    previously never captioned an escalation follow-up at all --
+    EscalationScheduler.process_due() calls deliver_fn directly,
+    bypassing SalienceDispatcher._deliver() (the only other place a
+    caption/transcript got published), and neither of pipeline's own
+    speak_fn methods (_speak_and_open_mic / _speak_with_barge_in)
+    published one either. Fixed by routing process_due() through the
+    same shared argus.voice.captions.publish_spoken() _deliver() now
+    also uses -- see test_escalation_caption_gap_is_closed below for
+    the explicit before/after proof of that specific fix."""
     loop = pipeline_loop
     engine = loop.proactive
     events_q = ui_events.subscribe()
@@ -539,14 +535,42 @@ def test_proactive_announcement_delivers_via_speak_and_open_mic_and_escalation_t
 
         assert _wait_until(lambda: "the original message" in loop.speaker.synthesized), loop.speaker.synthesized
         assert engine.escalation_scheduler.pending() == []
-        # See the docstring above: escalation delivery bypasses
-        # _deliver(), so unlike realtime's announce() there is no
-        # caption event for this specific path in pipeline mode today.
-        published = _drain(events_q, timeout=0.3)
-        assert not any(e.get("type") == "caption" for e in published), (
-            "if this starts failing, pipeline now DOES caption escalation delivery -- "
-            "update this test's docstring, the divergence it documents is gone"
+        published = _drain(events_q)
+        assert any(e.get("type") == "caption" and "the original message" in e.get("text", "") for e in published), (
+            f"escalation-delivered text must be captioned in pipeline mode too (§19 u40 Part 2): {published}"
         )
+    finally:
+        ui_events.unsubscribe(events_q)
+
+
+def test_escalation_caption_gap_is_closed(pipeline_loop, monkeypatch):
+    """PRD §19 u40 Part 2's explicit acceptance proof: a dedicated test
+    that fails against the pre-fix code and passes after, same
+    discipline as the u37 reminder test -- see the mutation check
+    recorded in this unit's commit message for the live "fails without,
+    passes with" run against argus/salience/escalation.py itself
+    (temporarily removing its publish_spoken(step.text) call)."""
+    loop = pipeline_loop
+    engine = loop.proactive
+    events_q = ui_events.subscribe()
+
+    monkeypatch.setattr(engine.salience_engine, "decide", lambda *a, **k: Decision(
+        action="speak", reason="test", escalation=[EscalationStep(after_seconds=1.0, channel="speak")],
+    ))
+    candidate = Candidate(observation_id=None, kind="test.escalation", subject=None, text="escalation caption check", base_urgency=0.9)
+    now = time.time()
+
+    try:
+        engine.dispatcher.submit(candidate, now=now)
+        assert len(engine.escalation_scheduler.pending()) == 1
+        _drain(events_q)  # discard the caption from the original message's own immediate delivery
+
+        engine._tick_escalation(now=now + 5.0)
+
+        published = _drain(events_q)
+        assert any(
+            e.get("type") == "caption" and "escalation caption check" in e.get("text", "") for e in published
+        ), f"escalation delivery must publish a caption via the shared path: {published}"
     finally:
         ui_events.unsubscribe(events_q)
 

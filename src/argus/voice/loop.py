@@ -13,6 +13,7 @@ from argus.config import settings
 from argus.orchestrator import Orchestrator
 from argus.voice.acknowledgment import maybe_acknowledge_spoken_thread
 from argus.voice.audio_io import ListeningPaused, record_followup
+from argus.voice.captions import publish_caption, publish_spoken
 from argus.voice.speaker_factory import build_speaker
 from argus.voice.stt import Transcriber
 from argus.voice.wake_word import WakeWordListener
@@ -393,8 +394,7 @@ class VoiceLoop:
         having said it, the same gap already fixed for the background
         workers' proactive speech."""
         console.print(f"[dim]({note})[/dim]\n")
-        ui_events.publish({"type": "transcript", "role": "argus", "text": confirmation})
-        ui_events.publish({"type": "caption", "text": confirmation})
+        publish_spoken(confirmation)
         self._speak_and_open_mic(confirmation)
         return True
 
@@ -833,8 +833,7 @@ class VoiceLoop:
                 # because of it is not -- report it and keep listening instead.
                 log.exception("Turn failed unexpectedly: %r", text)
                 error_note = "Something went wrong on that one -- mind trying again?"
-                ui_events.publish({"type": "transcript", "role": "argus", "text": error_note})
-                ui_events.publish({"type": "caption", "text": error_note})
+                publish_spoken(error_note)
                 self._speak_with_barge_in(error_note)
             finally:
                 sentence_queue.put(None)
@@ -899,7 +898,7 @@ class VoiceLoop:
         screen without narrating every step aloud. Returns True if barge-in
         interrupted; a thought is never interrupted because nothing plays."""
         console.print(f"[bold cyan]argus>[/bold cyan] {sentence}")
-        ui_events.publish({"type": "caption", "text": sentence})
+        publish_caption(sentence)
         if _is_thought(sentence):
             console.print("[dim](thought -- not spoken)[/dim]")
             return False
@@ -984,8 +983,7 @@ class VoiceLoop:
 
         console.print("[dim](listening for your journal entry...)[/dim]")
         prompt_text = "Go ahead, I'm listening."
-        ui_events.publish({"type": "transcript", "role": "argus", "text": prompt_text})
-        ui_events.publish({"type": "caption", "text": prompt_text})
+        publish_spoken(prompt_text)
         self._speak_with_barge_in(prompt_text)
 
         entry_audio = self._listen_briefly(20.0)
