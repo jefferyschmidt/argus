@@ -70,7 +70,7 @@ The columns that matter: **Producer** = what actually invokes it in `src/` (not 
 | Reminders | `ReminderStore.list_due()` | tick reminder consumer, mark-notified-on-delivered | ✅ (§19 u37/u38) |
 | Tasks (autonomous) | `TaskRunner` | Orchestrator (shares full registry) | ✅ (§19 u39) |
 | Standing authorizations | `AuthorizationChecker` | `ToolRegistry.execute` step 2b + tick rule-firing | ✅ |
-| Proactive layer itself | `ProactiveEngine.start()` | `argus voice` ✅ / `argus chat` ⚠️ **not started in chat** (§19 u40 pending) |
+| Proactive layer itself | `ProactiveEngine.start()` (via shared `proactive_engine.start_proactive_engine()`) | `argus voice` (both loops) ✅ / `argus chat` ✅ via `cli.py::_start_chat_proactive` -- chat has no voice output, so its speak_fn (`cli.py::_chat_announce`) prints instead; construction failure there is caught so chat still works with no proactive layer, matching I10 | ✅ (§19 u40 Part 1) |
 | `argus agent` CLI | `AgentRunner.run()` | `cli.py::agent()` | ✅ `cli.py::agent()` builds an `Orchestrator` and passes `orchestrator.tools` to `AgentRunner` (matching `tasks/worker.py` and `voice/realtime.py`); `AgentRunner.tool_registry` now has no default, so a caller that omits it fails at construction instead of falling through to a bare, diminished registry. I6 gap closed and mechanically enforced (`test_no_bare_registry_construction`). |
 
 ---

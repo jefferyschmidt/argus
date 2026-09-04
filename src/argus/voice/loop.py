@@ -221,9 +221,11 @@ class VoiceLoop:
         # have both independently polling ReminderStore.list_due() and
         # racing to mark_notified() the same row -- one shared, salience-
         # arbitrated delivery path now, not two.
-        from argus.proactive_engine import ProactiveEngine
-        self.proactive = ProactiveEngine(self.orchestrator, self._speak_and_open_mic, self._interaction_lock)
-        self.proactive.start()
+        from argus.proactive_engine import start_proactive_engine
+        # PRD §19 unit 40 (Part 1): construct-then-start now lives in one
+        # shared helper both voice loops and cli.py::chat() call --
+        # unchanged behavior here (same construction, same start()).
+        self.proactive = start_proactive_engine(self.orchestrator, self._speak_and_open_mic, self._interaction_lock)
 
     def _external_input_worker(self) -> None:
         from argus.voice.audio_io import record_while

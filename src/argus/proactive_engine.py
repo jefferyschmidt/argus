@@ -435,3 +435,23 @@ class ProactiveEngine:
             threading.Thread(target=self._proactive_tick_loop, daemon=True).start()
         except Exception:
             log.exception("Could not start the proactive tick -- continuing without it")
+
+
+def start_proactive_engine(orchestrator: Orchestrator, speak_fn, interaction_lock) -> ProactiveEngine:
+    """PRD §19 unit 40 (Part 1): the one place a caller constructs and
+    starts the proactive layer, so voice and chat share this
+    construct-then-start pair instead of each duplicating it -- both
+    `RealtimeVoiceLoop`/`VoiceLoop` and `cli.py::chat()` call this, each
+    with their own speak_fn/interaction_lock (the only thing that
+    legitimately differs: how a proactive item actually gets announced).
+
+    Construction is deliberately NOT wrapped here -- `.start()` already
+    wraps every individual worker/sensor/tick start (I10, see start()'s
+    own docstring), which is the risk this repo's fail-soft convention
+    actually targets; a caller for whom even construction failing must
+    not be fatal (cli.py::chat(), the first entry point to attempt this
+    where an Orchestrator conversation previously ran with no proactive
+    layer at all) wraps this whole call itself."""
+    engine = ProactiveEngine(orchestrator, speak_fn, interaction_lock)
+    engine.start()
+    return engine

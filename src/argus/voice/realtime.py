@@ -214,9 +214,11 @@ class RealtimeVoiceLoop:
         self.tools = self.orchestrator.tools
         self.tools.confirmer = _make_voice_confirmer(self)
 
-        from argus.proactive_engine import ProactiveEngine
-        self.proactive = ProactiveEngine(self.orchestrator, self.announce, _AnnounceLock(self))
-        self.proactive.start()
+        from argus.proactive_engine import start_proactive_engine
+        # PRD §19 unit 40 (Part 1): construct-then-start now lives in one
+        # shared helper both voice loops and cli.py::chat() call --
+        # unchanged behavior here (same construction, same start()).
+        self.proactive = start_proactive_engine(self.orchestrator, self.announce, _AnnounceLock(self))
 
         # Confirmed orphaned before this (ROADMAP.md Phase 2): text input
         # (console box, Telegram) had no consumer at all in realtime mode.

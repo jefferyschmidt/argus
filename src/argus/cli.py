@@ -40,8 +40,40 @@ def _maybe_start_ui_server(port: int = 8765) -> None:
         pass
 
 
+def _chat_announce(text: str) -> bool:
+    """PRD §19 unit 40 (Part 1): chat has no voice output -- a proactive
+    item (a reminder, an escalation follow-up, any salience-arbitrated
+    announcement) surfaces as plain text instead, printed the same way
+    an ordinary reply is. SalienceDispatcher._deliver() doesn't inspect
+    this return value; the True matches the other speak_fns' contract."""
+    console.print(f"\n[bold cyan]argus>[/bold cyan] {text}\n")
+    return True
+
+
+def _start_chat_proactive(orch: Orchestrator, interaction_lock):
+    """PRD §19 unit 40 (Part 1): "today chat starts none of it" -- no
+    ProactiveEngine at all, so reminders/threads/rules never ran in
+    chat. Wrapped here (not inside start_proactive_engine itself, which
+    voice's own construction relies on failing loudly same as always)
+    because this is the first entry point where an Orchestrator
+    conversation is expected to work with NO proactive layer at all --
+    a construction failure must degrade to that, not take chat down.
+    Split out from chat() itself so this wiring is directly testable
+    without driving chat()'s own blocking console.input() REPL loop."""
+    try:
+        from argus.proactive_engine import start_proactive_engine
+        return start_proactive_engine(orch, _chat_announce, interaction_lock)
+    except Exception:
+        log.exception("Could not start the proactive layer for chat -- continuing without it")
+        return None
+
+
 def chat() -> None:
+    import threading
+
     orch = Orchestrator()
+    interaction_lock = threading.Lock()
+    _start_chat_proactive(orch, interaction_lock)
     _maybe_start_ui_server()
     console.print("[bold cyan]Argus[/bold cyan] online. Type 'exit' to quit.\n")
     while True:
@@ -53,7 +85,8 @@ def chat() -> None:
             break
         if not user_text.strip():
             continue
-        reply = orch.handle(user_text)
+        with interaction_lock:
+            reply = orch.handle(user_text)
         tag = f"[dim]({orch.last_tier.value}: {orch.last_model})[/dim]"
         console.print(f"[bold cyan]argus>[/bold cyan] {reply} {tag}\n")
 
