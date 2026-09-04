@@ -194,8 +194,8 @@ class RealtimeVoiceLoop:
         # registry -- not the other way around. Orchestrator.__init__
         # only builds the FULL registry (rule_store, spine, task_runner,
         # decision_log, router) when it is given no registry of its own;
-        # the previous order here built a bare build_default_registry()
-        # with none of those and handed it to Orchestrator, which duly
+        # the previous order here built a bare build_default_registry(...)
+        # call with none of those and handed it to Orchestrator, which duly
         # used exactly that bare one instead of building a better one --
         # confirmed live: Argus reported having no rules engine at all in
         # realtime mode, and was silently missing remember_preference,

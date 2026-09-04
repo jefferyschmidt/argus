@@ -22,6 +22,13 @@ theory.
 - **I3 — No orphaned subsystem.** Every store/engine constructed has a production caller of its
   core method (`fire`, `reap`, `prune`, `run_once`, `schedule`). *(Incident: the entire §19
   reliability pass — six subsystems built, unit-tested, never driven.)*
+- **I6 — One shared tool registry.** Any component needing tools (voice loops, TaskRunner,
+  the `argus agent` CLI, proactive workers) gets the Orchestrator's full registry — with rules
+  and the authorization checker — never a bare `build_default_registry()` call with no
+  collaborators. `AgentRunner.tool_registry` has no default, so forgetting it fails at
+  construction instead of silently degrading. *(Incident: the same bug at three sites — realtime
+  mode §16 u33, TaskRunner §19 u39, and the `argus agent` CLI (`cli.py:97`) — each time a
+  diminished registry missing rules/auth/spine.)*
 
 ## Review judgment (read at every gate)
 
@@ -32,10 +39,6 @@ theory.
 - **I5 — Sensors observe, they do not mutate or judge.** A sensor emits an Observation and
   changes no state. *(Incident: ReminderSensor called `mark_notified` → reminders consumed
   before delivery, silently lost. §20 u38.)*
-- **I6 — One shared tool registry.** Any component needing tools (voice loops, TaskRunner,
-  proactive workers) gets the Orchestrator's full registry — with rules and the authorization
-  checker — never a bare `build_default_registry()`. *(Incident: realtime mode §16 u33, then
-  TaskRunner §19 u39 — the same bug at two sites, a diminished registry with no rules/auth.)*
 - **I7 — Verify a diagnosis empirically before speccing a fix.** Reproduce the mechanism (a
   socket test, a bare `connect()`, a measured timing) before writing the fix. *(Incident: the
   busy_timeout misdiagnosis — a plausible mechanism specced without measuring; the real cause was

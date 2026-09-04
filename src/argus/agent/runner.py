@@ -5,7 +5,7 @@ from argus.agent.audit import AuditLog
 from argus.config import settings
 from argus.llm.base import Tier
 from argus.llm.router import ModelRouter
-from argus.tools import ToolRegistry, build_default_registry
+from argus.tools import ToolRegistry
 
 log = logging.getLogger(__name__)
 
@@ -43,14 +43,23 @@ class AgentRunner:
 
     def __init__(
         self,
-        tool_registry: ToolRegistry | None = None,
+        tool_registry: ToolRegistry,
         router: ModelRouter | None = None,
         max_iterations: int = 25,
         max_wall_seconds: float = 600,
         max_tokens_total: int | None = None,
         daily_cap_usd: float = 5.0,
     ):
-        self.tools = tool_registry or build_default_registry()
+        # PRD/INVARIANTS.md I6: no bare build_default_registry(...) call
+        # fallback here -- that silently built a registry missing rules, the
+        # AuthorizationChecker, decision_log, and spine (no task tools,
+        # no rule introspection, no compose_document/query_timeline, no
+        # standing authorizations). It caused the same bug at three call
+        # sites (realtime u33, TaskRunner u39, the `argus agent` CLI).
+        # Every caller now passes the Orchestrator's own full registry --
+        # forgetting it fails at construction instead of silently
+        # degrading.
+        self.tools = tool_registry
         self.router = router or ModelRouter(daily_cap_usd=daily_cap_usd)
         self.max_iterations = max_iterations
         self.max_wall_seconds = max_wall_seconds

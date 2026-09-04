@@ -168,7 +168,7 @@ class Orchestrator:
         # same orphaned-registry bug unit 33 already fixed for
         # RealtimeVoiceLoop, previously still present here: TaskRunner was
         # constructed with no tool_registry at all, so every task ran
-        # through AgentRunner's own build_default_registry() with none of
+        # through AgentRunner's own bare build_default_registry(...) with none of
         # router/rule_store/decision_log/spine passed in -- no task tools,
         # no rule introspection, no compose_document/query_timeline, and
         # critically no AuthorizationChecker (rule_store=None), so a

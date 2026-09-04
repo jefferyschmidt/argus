@@ -14,7 +14,7 @@ catch that — it calls the function directly. This map can.
 - The one rule that would have prevented every orphan bug: **nothing is "done" until this map
   shows a real production producer *and* consumer for it.** "Has tests" is not "is wired."
 
-Last audited: 2026-09-04.
+Last audited: 2026-09-04 (post-u43a-ii/u44 gate).
 
 ---
 
@@ -37,7 +37,7 @@ or dead vocabulary — flagged.
 | `argus.integration_failed` | argus_health `report_failure` | tick → `open_system_health` thread; scoring | ✅ (§20 u44c) |
 | `argus.credential_failed` | EmailWatcher + MailSensor (`report_failure` at auth-fail limit) | tick → `open_system_health` thread | ✅ (§20 u44c) |
 | `argus.credential_recovered` | EmailWatcher + MailSensor (`report_recovery`) | tick → closes system_health thread | ✅ (§20 u44c) |
-| `argus.spend_recorded` | argus_health (spend.json read) | salience | ✅ |
+| `argus.spend_recorded` | argus_health (spend.json read) | rule-matching tick (no explicit urgency score → `_UNKNOWN_KIND_URGENCY=0.30`, logs warning) | ⚠️ add entry to `scoring.py::_BASE_URGENCY` to silence warn and set intended urgency |
 | `task.started/progress/finished/failed` | TaskRunner/worker | tick (task-close threads), salience | ✅ |
 | `document.composed` | compose tool | salience | ✅ |
 | `thread.opened`, `thread.closed` | ThreadStore.open/close | timeline, `thread_closed` predicate | ✅ |
@@ -69,6 +69,7 @@ The columns that matter: **Producer** = what actually invokes it in `src/` (not 
 | Tasks (autonomous) | `TaskRunner` | Orchestrator (shares full registry) | ✅ (§19 u39) |
 | Standing authorizations | `AuthorizationChecker` | `ToolRegistry.execute` step 2b + tick rule-firing | ✅ |
 | Proactive layer itself | `ProactiveEngine.start()` | `argus voice` ✅ / `argus chat` ⚠️ **not started in chat** (§19 u40 pending) |
+| `argus agent` CLI | `AgentRunner.run()` | `cli.py::agent()` | ✅ `cli.py::agent()` builds an `Orchestrator` and passes `orchestrator.tools` to `AgentRunner` (matching `tasks/worker.py` and `voice/realtime.py`); `AgentRunner.tool_registry` now has no default, so a caller that omits it fails at construction instead of falling through to a bare, diminished registry. I6 gap closed and mechanically enforced (`test_no_bare_registry_construction`). |
 
 ---
 

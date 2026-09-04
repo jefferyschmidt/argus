@@ -87,6 +87,18 @@ def test_every_observation_kind_has_a_consumer():
     assert not unexpected, f"observation kinds consumed by nothing: {unexpected}"
 
 
+# -- I6: one shared tool registry, never a bare build_default_registry() -
+
+def test_no_bare_registry_construction():
+    """INVARIANTS.md I6: build_default_registry() with no args builds a
+    registry missing rules/auth/spine. It should never be called bare in
+    src/ -- every consumer takes the Orchestrator's full registry.
+    (Footgun that caused the same bug at realtime u33, TaskRunner u39,
+    argus-agent CLI.)"""
+    src = _all_src_text()
+    assert "build_default_registry()" not in src, "bare registry construction (I6) -- pass the full registry"
+
+
 # -- I3/I4: the reliability-pass subsystems still have production callers -
 
 def test_reliability_subsystems_have_production_callers():

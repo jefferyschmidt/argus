@@ -94,7 +94,12 @@ def voice() -> None:
 def agent(goal: str) -> None:
     from argus.agent.runner import AgentRunner
 
-    runner = AgentRunner()
+    # I6: the Orchestrator's own full registry (rules, AuthorizationChecker,
+    # decision_log, spine wired in), matching how tasks/worker.py and
+    # voice/realtime.py already do it -- never a bare AgentRunner() that
+    # would fall through to a bare build_default_registry(...) with none of that.
+    orch = Orchestrator()
+    runner = AgentRunner(tool_registry=orch.tools)
     console.print(f"[bold cyan]Argus[/bold cyan] working autonomously on:\n  {goal}\n")
     result = runner.run(goal)
     console.print(f"\n[bold cyan]Result>[/bold cyan] {result}")
