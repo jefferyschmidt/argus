@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 
 from argus.config import settings
+from argus.db import open_db
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS episodes (
@@ -110,17 +111,13 @@ def get_connection(path: Path | None = None) -> sqlite3.Connection:
     # _interaction_lock already serializes every call path that touches
     # this connection -- sqlite3's default same-thread restriction is a
     # blanket guard, not something this app actually needs given that.
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    # PRD §19 unit 43a: without this, a writer that meets a lock held by
-    # another connection to the SAME file raises "database is locked"
-    # IMMEDIATELY under WAL instead of waiting -- every other store
-    # (SpineStore, RuleStore, RhythmStore, TaskStore, RuleInstanceStore,
-    # ...) opens its own separate connection to this same argus.db, and
-    # this function is called fresh, repeatedly, from several different
-    # threads (reminders, routines, memory review). Diagnosed as the real
-    # cause of a "database is locked" flake that "reproduced clean on
-    # rerun" three times.
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA)
-    return conn
+    # PRD §19 unit 43a/43a-ii: every other store (SpineStore, RuleStore,
+    # RhythmStore, TaskStore, RuleInstanceStore, ...) opens its own
+    # separate connection to this same argus.db, and this function is
+    # called fresh, repeatedly, from several different threads
+    # (reminders, routines, memory review) -- open_db() sets
+    # busy_timeout and serializes this file's one-time WAL transition
+    # against all of them, closing both the "database is locked" flake
+    # this function's own docstring used to describe and the
+    # WAL-transition race unit 43a's fix didn't (see db.py).
+    return open_db(db_path, SCHEMA)

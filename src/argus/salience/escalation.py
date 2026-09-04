@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from argus.config import settings
+from argus.db import open_db
 
 log = logging.getLogger(__name__)
 
@@ -64,21 +65,12 @@ class EscalationScheduler:
         self.deliver_fn = deliver_fn
         self._path = db_path or (settings.data_dir / "argus.db")
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(self._path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        with self._lock:
-            # PRD §19 unit 43a: without this, a writer that meets a lock
-            # held by another connection to the SAME file raises "database
-            # is locked" IMMEDIATELY under WAL, instead of waiting -- this
-            # store's own self._lock only serializes threads within THIS
-            # connection, not across the several other stores that each
-            # open their own connection to the same argus.db. Diagnosed as
-            # the real cause of a "database is locked" flake that
-            # "reproduced clean on rerun" three times.
-            self._conn.execute("PRAGMA busy_timeout=5000")
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.executescript(SCHEMA)
-            self._conn.commit()
+        # PRD §19 unit 43a/43a-ii: open_db() sets busy_timeout and
+        # serializes this file's one-time WAL transition against every
+        # other store that opens a connection to the same argus.db (see
+        # db.py) -- this store's own self._lock only serializes threads
+        # within THIS connection.
+        self._conn = open_db(self._path, SCHEMA)
         self._stop = threading.Event()
 
     def schedule(self, *, text: str, steps: list, thread_id: int | None = None, now: float | None = None) -> list[int]:

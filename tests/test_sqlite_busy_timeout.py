@@ -159,39 +159,71 @@ def test_concurrent_writers_with_busy_timeout_raise_nothing(tmp_path):
     assert errors == []
 
 
-def test_every_sqlite3_connect_call_site_sets_busy_timeout_explicitly():
-    """The genuinely discriminating regression check for "every
-    connection-opening path sets the pragma": since
-    sqlite3.connect()'s own default already provides an equivalent
-    busy handler (see test_bare_connect_already_defaults_to_a_5_second_
-    busy_timeout below), a RUNTIME PRAGMA busy_timeout readback on a
-    live store instance can't actually tell "explicit pragma present"
-    apart from "relying on the unstated library default" -- confirmed
-    directly: temporarily deleting the explicit
-    self._conn.execute("PRAGMA busy_timeout=5000") line from RuleStore
-    left every runtime-readback assertion in this file still passing.
-    This inspects the source instead: every sqlite3.connect( call site
-    in src/argus must be followed, within a few lines, by an explicit
-    PRAGMA busy_timeout statement."""
+def test_only_db_py_calls_sqlite3_connect_directly():
+    """PRD.md §19 unit 43a-ii: the 11 sites that used to each open their
+    own connect+busy_timeout+WAL+schema block now all route through the
+    one shared argus.db.open_db() helper -- see that module's docstring.
+    This is the regression guard for "all 11 sites open through the
+    shared helper" (43a-ii's own acceptance box): a future store that
+    calls sqlite3.connect() directly instead of open_db() bypasses both
+    the busy_timeout pragma AND the WAL-transition-race fix, silently
+    reintroducing the exact flake this unit exists to close."""
     import re
 
     src_root = Path(__file__).resolve().parents[1] / "src" / "argus"
     connect_pattern = re.compile(r"sqlite3\.connect\(")
-    pragma_pattern = re.compile(r"PRAGMA busy_timeout")
+
+    sites = []
+    for path in src_root.rglob("*.py"):
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if connect_pattern.search(line):
+                sites.append(f"{path.relative_to(src_root)}:{i}")
+
+    assert len(sites) == 1 and sites[0].startswith("db.py:"), (
+        f"sqlite3.connect() called outside db.py's open_db() helper: {sites} -- "
+        "route through argus.db.open_db() instead"
+    )
+
+
+def test_open_db_helper_sets_busy_timeout_explicitly():
+    """The genuinely discriminating regression check for "the shared
+    helper sets the pragma": since sqlite3.connect()'s own default
+    already provides an equivalent busy handler (see
+    test_bare_connect_already_defaults_to_a_5_second_busy_timeout
+    below), a RUNTIME PRAGMA busy_timeout readback on a live connection
+    can't tell "explicit pragma present" apart from "relying on the
+    unstated library default." This inspects db.py's own source
+    instead."""
+    import re
+
+    db_py = (Path(__file__).resolve().parents[1] / "src" / "argus" / "db.py").read_text(encoding="utf-8")
+    connect_line = next(i for i, line in enumerate(db_py.splitlines()) if "sqlite3.connect(" in line)
+    window = "\n".join(db_py.splitlines()[connect_line:connect_line + 10])
+    assert re.search(r"PRAGMA busy_timeout", window)
+
+
+def test_every_known_store_module_calls_open_db_not_sqlite3_connect():
+    """The other half of the guard above, from the call-site side: every
+    module that used to open its own connection now imports and calls
+    open_db() instead of sqlite3.connect()."""
+    import re
+
+    src_root = Path(__file__).resolve().parents[1] / "src" / "argus"
+    known_sites = [
+        "memory/store.py", "rules/store.py", "rules/instances.py",
+        "salience/budget.py", "salience/decision_log.py", "salience/escalation.py",
+        "salience/held.py", "spine/store.py", "tasks/store.py",
+        "world/rhythms.py", "world/threads.py",
+    ]
+    open_db_pattern = re.compile(r"\bopen_db\(")
 
     missing = []
-    checked = 0
-    for path in src_root.rglob("*.py"):
-        lines = path.read_text(encoding="utf-8").splitlines()
-        for i, line in enumerate(lines):
-            if connect_pattern.search(line):
-                checked += 1
-                window = "\n".join(lines[i:i + 15])
-                if not pragma_pattern.search(window):
-                    missing.append(f"{path.relative_to(src_root)}:{i + 1}")
+    for rel_path in known_sites:
+        text = (src_root / rel_path).read_text(encoding="utf-8")
+        if not open_db_pattern.search(text):
+            missing.append(rel_path)
 
-    assert checked >= 11, f"expected at least the 11 known sqlite3.connect() call sites, found {checked}"
-    assert missing == [], f"sqlite3.connect() call site(s) with no nearby explicit PRAGMA busy_timeout: {missing}"
+    assert missing == [], f"expected these to call open_db(): {missing}"
 
 
 def test_bare_connect_already_defaults_to_a_5_second_busy_timeout(tmp_path):
