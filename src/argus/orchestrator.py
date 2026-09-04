@@ -143,6 +143,42 @@ class Orchestrator:
         from argus.spine.store import SpineStore
         self.spine = SpineStore()
 
+        # Phase G (PRD §7): always constructed, unlike task_runner --
+        # Phase G has no enable_ flag. Exposed the same way task_runner
+        # is, for the same reason: ProactiveEngine (built from this
+        # orchestrator, after it) reuses these exact instances for its
+        # RuleMatcher and SalienceEngine's decision log instead of
+        # building its own, so a rule revoked via the introspection tools
+        # here is immediately visible to matching, and a decision logged
+        # by salience there is immediately explainable here. Built before
+        # self.tools below (not after, as previously) so the registry's
+        # AuthorizationChecker can be wired at that same construction.
+        from argus.rules.store import RuleStore
+        from argus.salience.decision_log import DecisionLog
+        self.rule_store = RuleStore()
+        self.decision_log = DecisionLog()
+
+        # PRD §19 unit 39: registry built BEFORE task_runner, without task
+        # tools yet -- task_runner doesn't exist at this point, and
+        # build_default_registry only registers start_task/task_status/
+        # cancel_task when one is already supplied. This breaks the
+        # construction cycle (the registry wants task_runner for those
+        # three tools; task_runner, below, wants THIS registry so its
+        # AgentRunner doesn't build a second, bare one of its own -- the
+        # same orphaned-registry bug unit 33 already fixed for
+        # RealtimeVoiceLoop, previously still present here: TaskRunner was
+        # constructed with no tool_registry at all, so every task ran
+        # through AgentRunner's own build_default_registry() with none of
+        # router/rule_store/decision_log/spine passed in -- no task tools,
+        # no rule introspection, no compose_document/query_timeline, and
+        # critically no AuthorizationChecker (rule_store=None), so a
+        # standing authorization never applied inside a task).
+        built_own_registry = tool_registry is None
+        self.tools = tool_registry or build_default_registry(
+            router=self.router, task_runner=None,
+            rule_store=self.rule_store, decision_log=self.decision_log, spine=self.spine,
+        )
+
         # Phase I autonomous tasks (PRD §6), off by default
         # (enable_task_runner). Exposed as self.task_runner (not just
         # closed over inside the tool registry) so ProactiveEngine can
@@ -152,25 +188,18 @@ class Orchestrator:
         if settings.enable_task_runner:
             from argus.tasks.store import TaskStore
             from argus.tasks.worker import TaskRunner
-            self.task_runner = TaskRunner(TaskStore(), self.spine, self.router)
-
-        # Phase G (PRD §7): always constructed, unlike task_runner --
-        # Phase G has no enable_ flag. Exposed the same way task_runner
-        # is, for the same reason: ProactiveEngine (built from this
-        # orchestrator, after it) reuses these exact instances for its
-        # RuleMatcher and SalienceEngine's decision log instead of
-        # building its own, so a rule revoked via the introspection tools
-        # here is immediately visible to matching, and a decision logged
-        # by salience there is immediately explainable here.
-        from argus.rules.store import RuleStore
-        from argus.salience.decision_log import DecisionLog
-        self.rule_store = RuleStore()
-        self.decision_log = DecisionLog()
-
-        self.tools = tool_registry or build_default_registry(
-            router=self.router, task_runner=self.task_runner,
-            rule_store=self.rule_store, decision_log=self.decision_log, spine=self.spine,
-        )
+            self.task_runner = TaskRunner(TaskStore(), self.spine, self.router, tool_registry=self.tools)
+            if built_own_registry:
+                # The registry build above skipped these three (no
+                # task_runner existed yet) -- register them onto that SAME
+                # registry object now, rather than building a second one.
+                # Skipped when the caller supplied their own tool_registry
+                # (built_own_registry False): registering onto a
+                # caller-owned registry isn't this constructor's call.
+                from argus.tools.tasks import _build_cancel_task, _build_start_task, _build_task_status
+                self.tools.register(_build_start_task(self.task_runner))
+                self.tools.register(_build_task_status(self.task_runner))
+                self.tools.register(_build_cancel_task(self.task_runner))
         self.last_tier: Tier | None = None
         self.last_model: str | None = None
         self.last_expression: str | None = None
