@@ -14,7 +14,9 @@ catch that — it calls the function directly. This map can.
 - The one rule that would have prevented every orphan bug: **nothing is "done" until this map
   shows a real production producer *and* consumer for it.** "Has tests" is not "is wired."
 
-Last audited: 2026-09-04 (post-u43a-ii/u44 gate).
+Last audited: 2026-09-04 (post-u41 gate). Orphan sweep (I3), connection-discipline (I1), and
+observation-kind (I2) greps re-run clean; this round added no new production code (test-only),
+so no new producer/consumer/store claims to reconcile here.
 
 ---
 
@@ -101,3 +103,14 @@ handles cross-connection WAL contention.
 
 **Default:** hardcoded `pipeline` until §19 u40 makes it resolve to realtime when a key is
 present. Today `.env` `VOICE_MODE` decides.
+
+**End-to-end regression coverage (§19 u41):** `tests/test_realtime_e2e.py` drives the real
+`RealtimeVoiceLoop` (`_receive`, `_run_pending_tools`, `_ask_voice_confirmation`, `announce`,
+`submit_text_message`, `_create_response_or_defer`) through a fake websocket -- the only fakes are
+the socket and (implicitly) sounddevice, never touched by these paths. Covers: barge-in cancel,
+false-barge-in resume, caption-matches-delivery, spoken CONFIRM-tier approval (u24a), typed input
+mid-turn, a tool-call round-trip, escalation-driven `announce()` delivery, and reminder delivery
+with mark-notified-after-delivery. The last two are the acceptance-critical pair: both are proven
+to fail against the pre-u37 wiring (escalation via toggling `dispatcher.escalation` back to its
+pre-u37 `None` default; reminders via `_tick_reminders` simply not existing/being called) and pass
+against the current one, exercising the real tick → dispatcher → announce chain, not a direct call.
