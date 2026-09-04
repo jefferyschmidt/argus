@@ -59,10 +59,14 @@ def chat() -> None:
 
 
 def voice() -> None:
-    from argus.config import settings
+    from argus.config import resolved_voice_mode
 
+    # PRD §19 unit 40: realtime is the default, actively-developed mode
+    # once an OpenAI key is present; pipeline is kept only as the
+    # unmaintained fallback (no realtime API dependency). VOICE_MODE
+    # explicitly set overrides this resolution either way.
     try:
-        if settings.voice_mode.lower() == "realtime":
+        if resolved_voice_mode() == "realtime":
             from argus.voice.realtime import RealtimeVoiceLoop
             loop = RealtimeVoiceLoop()
         else:
@@ -345,7 +349,11 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("chat", help="Start an interactive chat session")
-    sub.add_parser("voice", help="Start wake-word voice mode")
+    sub.add_parser(
+        "voice",
+        help="Start voice mode -- realtime (native, continuous) by default when an OpenAI key is "
+        "set; pipeline is the fallback (local STT/TTS, no realtime API)",
+    )
 
     agent_parser = sub.add_parser("agent", help="Run an autonomous goal")
     agent_parser.add_argument("goal", help="What Argus should figure out and do")

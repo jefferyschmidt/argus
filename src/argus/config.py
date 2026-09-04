@@ -435,3 +435,26 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def resolved_voice_mode(settings_obj: "Settings | None" = None) -> str:
+    """PRD §19 unit 40: realtime is now the default, actively-developed
+    voice mode; pipeline is kept only as an unmaintained fallback (no
+    OpenAI dependency, or explicit cost/offline preference). VOICE_MODE
+    unset resolves to realtime when an OpenAI key is present, pipeline
+    otherwise -- VOICE_MODE explicitly set (env, .env, or passed
+    directly) is never overridden.
+
+    `model_fields_set` (not a plain attribute read) is what "unset"
+    means here: pydantic-settings only populates it from what was
+    actually supplied at construction (env/.env/kwargs), not from a
+    later plain attribute assignment -- which is also why this takes an
+    optional Settings instance rather than only ever reading the module
+    singleton: monkeypatching `settings.voice_mode` post-construction
+    would never register as "explicitly set" the way a real VOICE_MODE
+    env var does, making that path untestable against the module
+    singleton alone."""
+    s = settings_obj if settings_obj is not None else settings
+    if "voice_mode" in s.model_fields_set:
+        return s.voice_mode
+    return "realtime" if s.openai_api_key else "pipeline"
