@@ -271,6 +271,24 @@ class ProactiveEngine:
         since = self._last_rule_check_ts
         self._last_rule_check_ts = now
         for obs in self.spine.query(since=since, limit=500):
+            # PRD §19/§20 unit 44c: argus.credential_failed/integration_
+            # failed observations were recorded onto the spine but nothing
+            # ever turned one into a system_health thread -- this is that
+            # wiring, reusing the same "observations since last tick" scan
+            # this step already does rather than a second spine query.
+            # open_system_health() dedupes by subject, so re-seeing the
+            # same failure is a no-op touch, not a duplicate thread.
+            if obs.kind in ("argus.credential_failed", "argus.integration_failed") and obs.subject:
+                description = (
+                    f"{obs.subject} email sign-in is failing -- the app password looks wrong"
+                    if obs.kind == "argus.credential_failed"
+                    else f"{obs.subject} integration is failing"
+                )
+                self.threads.open_system_health(subject=obs.subject, description=description)
+            elif obs.kind == "argus.credential_recovered" and obs.subject:
+                existing = self.threads.find_open("system_health", obs.subject)
+                if existing:
+                    self.threads.close(existing.id, reason="credential now working")
             for rule in self.rule_matcher.match(obs):
                 try:
                     action_type = rule.action.get("type")

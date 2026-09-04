@@ -77,14 +77,19 @@ def test_mail_below_baseline_is_ignored(monkeypatch):
     assert observations == []
 
 
-def test_authentication_failure_reports_credential_failed(tmp_path, monkeypatch):
+def test_authentication_failure_reaching_the_limit_reports_credential_failed(tmp_path, monkeypatch):
+    """PRD §19/§20 unit 44c: exactly once, when the consecutive-failure
+    count reaches imap_auth_failure_limit -- not on every poll (the
+    pre-44c behavior this replaces)."""
     monkeypatch.setattr("argus.spine.sensors.argus_health.settings.argus_data_dir", str(tmp_path))
     _configured_settings(monkeypatch)
+    monkeypatch.setattr("argus.spine.sensors.mail.settings.imap_auth_failure_limit", 3)
     fake_conn = MagicMock()
     fake_conn.login.side_effect = imaplib.IMAP4.error("b'AUTHENTICATIONFAILED'")
     with patch("argus.spine.sensors.mail.imaplib.IMAP4_SSL", return_value=fake_conn):
         sensor = MailSensor()
-        observations = sensor.poll()
+        for _ in range(3):
+            observations = sensor.poll()
 
     assert observations == []
 
@@ -93,6 +98,108 @@ def test_authentication_failure_reports_credential_failed(tmp_path, monkeypatch)
     assert len(health_observations) == 1
     assert health_observations[0].kind == "argus.credential_failed"
     assert health_observations[0].subject == "Gmail"
+
+
+def test_authentication_failure_below_the_limit_reports_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr("argus.spine.sensors.argus_health.settings.argus_data_dir", str(tmp_path))
+    _configured_settings(monkeypatch)
+    monkeypatch.setattr("argus.spine.sensors.mail.settings.imap_auth_failure_limit", 3)
+    fake_conn = MagicMock()
+    fake_conn.login.side_effect = imaplib.IMAP4.error("b'AUTHENTICATIONFAILED'")
+    with patch("argus.spine.sensors.mail.imaplib.IMAP4_SSL", return_value=fake_conn):
+        sensor = MailSensor()
+        sensor.poll()
+        sensor.poll()
+
+    health = ArgusHealthSensor()
+    assert health.poll() == []
+
+
+def test_account_stops_being_polled_once_the_limit_is_reached(monkeypatch):
+    _configured_settings(monkeypatch)
+    monkeypatch.setattr("argus.spine.sensors.mail.settings.imap_auth_failure_limit", 3)
+    fake_conn = MagicMock()
+    fake_conn.login.side_effect = imaplib.IMAP4.error("b'AUTHENTICATIONFAILED'")
+    with patch("argus.spine.sensors.mail.imaplib.IMAP4_SSL", return_value=fake_conn) as mock_ssl:
+        sensor = MailSensor()
+        for _ in range(3):
+            sensor.poll()
+        assert mock_ssl.call_count == 3
+        sensor.poll()  # limit reached -- must not even attempt to connect
+
+    assert mock_ssl.call_count == 3
+
+
+def test_successful_login_after_failures_resets_counter_and_reports_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr("argus.spine.sensors.argus_health.settings.argus_data_dir", str(tmp_path))
+    _configured_settings(monkeypatch)
+    sensor = MailSensor()
+    sensor._auth_failures["Gmail"] = 2
+    sensor._failed_password["Gmail"] = "app-password"
+    fake_conn = MagicMock()
+    fake_conn.status.return_value = ("OK", [b"* STATUS INBOX (UIDNEXT 1)"])
+    with patch("argus.spine.sensors.mail.imaplib.IMAP4_SSL", return_value=fake_conn):
+        sensor.poll()
+
+    assert "Gmail" not in sensor._auth_failures
+
+    health = ArgusHealthSensor()
+    health_observations = health.poll()
+    assert len(health_observations) == 1
+    assert health_observations[0].kind == "argus.credential_recovered"
+    assert health_observations[0].subject == "Gmail"
+
+
+def test_changed_password_resets_the_counter_and_resumes_polling(monkeypatch):
+    """44c: 'reset the counter ... when the credential setting changes' --
+    a fixed password must not have to wait out the old failure streak."""
+    monkeypatch.setattr("argus.spine.sensors.mail._ACCOUNTS", [_ACCOUNT])
+    monkeypatch.setattr("argus.spine.sensors.mail.settings.gmail_imap_user", "me@gmail.com")
+    monkeypatch.setattr("argus.spine.sensors.mail.settings.gmail_imap_app_password", "old-password")
+    monkeypatch.setattr("argus.spine.sensors.mail.settings.imap_auth_failure_limit", 2)
+    fake_conn = MagicMock()
+    fake_conn.login.side_effect = imaplib.IMAP4.error("AUTHENTICATIONFAILED")
+    sensor = MailSensor()
+    with patch("argus.spine.sensors.mail.imaplib.IMAP4_SSL", return_value=fake_conn) as mock_ssl:
+        sensor.poll()
+        sensor.poll()
+    assert mock_ssl.call_count == 2
+    assert sensor._auth_failures["Gmail"] == 2
+
+    monkeypatch.setattr("argus.spine.sensors.mail.settings.gmail_imap_app_password", "new-password")
+    with patch("argus.spine.sensors.mail.imaplib.IMAP4_SSL", return_value=fake_conn) as mock_ssl2:
+        sensor.poll()  # different password -- must attempt to connect, not skip
+    assert mock_ssl2.call_count == 1
+
+
+def test_connect_passes_the_configured_timeout(monkeypatch):
+    """44b: a real incident had a bad password tarpitted by Yahoo -- the
+    resulting dropped connections hung on the OS default (~21s) with no
+    timeout set, masquerading as a network fault."""
+    _configured_settings(monkeypatch)
+    monkeypatch.setattr("argus.spine.sensors.mail.settings.imap_connect_timeout_seconds", 7.0)
+    fake_conn = MagicMock()
+    fake_conn.login.side_effect = imaplib.IMAP4.error("boom")
+    with patch("argus.spine.sensors.mail.imaplib.IMAP4_SSL", return_value=fake_conn) as mock_ssl:
+        sensor = MailSensor()
+        sensor.poll()
+    mock_ssl.assert_called_once_with("imap.gmail.com", timeout=7.0)
+
+
+def test_connect_timeout_does_not_count_toward_auth_failure_limit_or_report(tmp_path, monkeypatch):
+    """44c: a connection timeout is NOT an auth failure -- must not count
+    toward the backoff limit or emit argus.credential_failed."""
+    monkeypatch.setattr("argus.spine.sensors.argus_health.settings.argus_data_dir", str(tmp_path))
+    _configured_settings(monkeypatch)
+    monkeypatch.setattr("argus.spine.sensors.mail.settings.imap_auth_failure_limit", 3)
+    with patch("argus.spine.sensors.mail.imaplib.IMAP4_SSL", side_effect=TimeoutError("timed out")):
+        sensor = MailSensor()
+        for _ in range(5):  # well past the auth-failure limit
+            sensor.poll()
+
+    assert sensor._auth_failures == {}
+    health = ArgusHealthSensor()
+    assert health.poll() == []
 
 
 def test_connect_failure_does_not_raise(monkeypatch):

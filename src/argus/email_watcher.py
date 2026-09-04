@@ -10,6 +10,7 @@ from email.header import decode_header
 from argus.config import settings
 from argus.salience.scoring import Candidate, base_urgency_for
 from argus.spine.observation import Observation
+from argus.spine.sensors.argus_health import report_failure, report_recovery
 from argus.ui import commands as ui_commands
 
 log = logging.getLogger(__name__)
@@ -171,6 +172,13 @@ class EmailWatcher:
         self._threads = threads
         self._triaged_uids: set[tuple[str, bytes]] = set()
         self._baseline_uid: dict[str, int] = {}
+        # PRD §19/§20 unit 44c: consecutive-AUTHENTICATIONFAILED count and
+        # the password that produced it, per account -- keyed on the
+        # password so a changed credential (the user fixing it) is
+        # detected and resets polling immediately rather than waiting out
+        # the old failure streak.
+        self._auth_failures: dict[str, int] = {}
+        self._failed_password: dict[str, str] = {}
 
     def run(self) -> None:
         while True:
@@ -185,10 +193,19 @@ class EmailWatcher:
             password = getattr(settings, account["password_setting"])
             if not user or not password:
                 continue
+            name = account["name"]
+            if self._failed_password.get(name) != password:
+                self._auth_failures.pop(name, None)
+                self._failed_password.pop(name, None)
+            elif self._auth_failures.get(name, 0) >= settings.imap_auth_failure_limit:
+                # Stopped polling this account -- argus.credential_failed
+                # was already reported exactly once when the limit was
+                # first reached, in _check_account below.
+                continue
             try:
                 self._check_account(account, user, password)
             except Exception:
-                log.exception("Email check failed for %s", account["name"])
+                log.exception("Email check failed for %s", name)
 
     def _get_uidnext(self, conn, mailbox: str = "INBOX") -> int | None:
         status, data = conn.status(mailbox, "(UIDNEXT)")
@@ -198,9 +215,39 @@ class EmailWatcher:
         return int(match.group(1)) if match else None
 
     def _check_account(self, account: dict, user: str, password: str) -> None:
-        conn = imaplib.IMAP4_SSL(account["host"])
+        name = account["name"]
+        # 44b: a real incident had a bad password tarpitted by Yahoo -- the
+        # resulting dropped connections hung on the OS default (~21s) with
+        # no timeout set, masquerading as a network fault. A connect/
+        # timeout failure here is NOT an auth failure -- it propagates to
+        # check_now()'s own except Exception without touching the counter
+        # below or emitting argus.credential_failed.
+        conn = imaplib.IMAP4_SSL(account["host"], timeout=settings.imap_connect_timeout_seconds)
         try:
-            conn.login(user, password)
+            try:
+                conn.login(user, password)
+            except imaplib.IMAP4.error as e:
+                # The motivating case for ArgusHealthSensor existing: a
+                # bad app password used to just log.exception and go
+                # quiet forever -- now it's a durable, queryable fact.
+                if "AUTHENTICATIONFAILED" in str(e).upper():
+                    failures = self._auth_failures.get(name, 0) + 1
+                    self._auth_failures[name] = failures
+                    self._failed_password[name] = password
+                    if failures == settings.imap_auth_failure_limit:
+                        # Exactly once -- not one report per poll.
+                        report_failure("argus.credential_failed", name, {"error": str(e)})
+                else:
+                    # Some other IMAP4 error at login (not
+                    # AUTHENTICATIONFAILED) -- doesn't count toward the
+                    # auth-failure limit either.
+                    log.exception("Email watcher login failed for %s", name)
+                return
+
+            if self._auth_failures.pop(name, None):
+                self._failed_password.pop(name, None)
+                report_recovery(name)
+
             conn.select("INBOX", readonly=True)
 
             if account["name"] not in self._baseline_uid:

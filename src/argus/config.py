@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -216,6 +217,26 @@ class Settings(BaseSettings):
     yahoo_imap_app_password: str = ""
     email_watch_enabled: bool = True
     email_watch_poll_seconds: float = 120.0
+    # PRD §19/§20 unit 44b: a real 2026-08-31 incident had a bad password
+    # tarpitted by Yahoo -- the resulting dropped connections hung on the
+    # OS default (~21s) with no timeout set, masquerading as a network
+    # fault. Applied to every imaplib.IMAP4_SSL(...) call site.
+    imap_connect_timeout_seconds: float = 10.0
+    # PRD §19/§20 unit 44c: consecutive AUTHENTICATIONFAILED logins (never
+    # a connection timeout -- retrying that CAN fix it) before an account
+    # stops polling and reports exactly one argus.credential_failed.
+    imap_auth_failure_limit: int = 3
+
+    # PRD §19/§20 unit 44a: strip whitespace from ONLY these two fields --
+    # nothing else. A general password can legitimately contain spaces; an
+    # IMAP app password never does. The 2026-08-31 incident's root cause
+    # was a Yahoo app password stored with the spaces Yahoo displays it
+    # with (19 chars incl. 3 spaces; the real password is 16, no spaces),
+    # which made every login AUTHENTICATIONFAILED.
+    @field_validator("gmail_imap_app_password", "yahoo_imap_app_password")
+    @classmethod
+    def _strip_imap_app_password_whitespace(cls, value: str) -> str:
+        return "".join(value.split())
 
     # Google Calendar (argus/google_calendar.py) -- real OAuth2, not the
     # browser-automation approach used for the rest of Google Calendar's

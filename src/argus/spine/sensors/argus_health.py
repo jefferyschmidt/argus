@@ -32,6 +32,18 @@ def report_failure(kind: str, subject: str | None = None, payload: dict | None =
         _queue.append((kind, subject, payload or {}))
 
 
+def report_recovery(subject: str) -> None:
+    """PRD §19/§20 unit 44c: the other half of report_failure() -- a
+    previously-failing account (mail sensor or email watcher) logged in
+    successfully again. Consumed by ProactiveEngine's tick to close the
+    system_health thread argus.credential_failed opened for this
+    subject; see that tick's docstring for why closing lives there
+    rather than in the sensor (a Sensor only detects and reports facts,
+    per this module's own base class)."""
+    with _lock:
+        _queue.append(("argus.credential_recovered", subject, {}))
+
+
 class ArgusHealthSensor(Sensor):
     name = "argus.health"
 

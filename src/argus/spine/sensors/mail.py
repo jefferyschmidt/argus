@@ -20,7 +20,7 @@ import time
 from argus.config import settings
 from argus.email_watcher import _ACCOUNTS, _decode, _plain_text_body
 from argus.spine.observation import Observation
-from argus.spine.sensors.argus_health import report_failure
+from argus.spine.sensors.argus_health import report_failure, report_recovery
 from argus.spine.sensors.base import Sensor
 
 log = logging.getLogger(__name__)
@@ -32,6 +32,13 @@ class MailSensor(Sensor):
     def __init__(self):
         self.interval_seconds = settings.email_watch_poll_seconds
         self._baseline_uid: dict[str, int] = {}
+        # PRD §19/§20 unit 44c: consecutive-AUTHENTICATIONFAILED count and
+        # the password that produced it, per account -- keyed on the
+        # password so a changed credential (the user fixing it) is
+        # detected and resets polling immediately rather than waiting out
+        # the old failure streak.
+        self._auth_failures: dict[str, int] = {}
+        self._failed_password: dict[str, str] = {}
 
     def poll(self) -> list[Observation]:
         observations: list[Observation] = []
@@ -39,6 +46,15 @@ class MailSensor(Sensor):
             user = getattr(settings, account["user_setting"])
             password = getattr(settings, account["password_setting"])
             if not user or not password:
+                continue
+            name = account["name"]
+            if self._failed_password.get(name) != password:
+                self._auth_failures.pop(name, None)
+                self._failed_password.pop(name, None)
+            elif self._auth_failures.get(name, 0) >= settings.imap_auth_failure_limit:
+                # Stopped polling this account -- argus.credential_failed
+                # was already reported exactly once when the limit was
+                # first reached, below.
                 continue
             observations.extend(self._check_account(account, user, password))
         return observations
@@ -51,10 +67,16 @@ class MailSensor(Sensor):
         return int(match.group(1)) if match else None
 
     def _check_account(self, account: dict, user: str, password: str) -> list[Observation]:
+        name = account["name"]
         try:
-            conn = imaplib.IMAP4_SSL(account["host"])
+            # 44b: a real incident had a bad password tarpitted by Yahoo --
+            # the resulting dropped connections hung on the OS default
+            # (~21s) with no timeout set, masquerading as a network fault.
+            conn = imaplib.IMAP4_SSL(account["host"], timeout=settings.imap_connect_timeout_seconds)
         except Exception:
-            log.exception("Mail sensor connect failed for %s", account["name"])
+            # A connect/timeout failure is NOT an auth failure -- must not
+            # touch the counter below or emit argus.credential_failed.
+            log.exception("Mail sensor connect failed for %s", name)
             return []
         try:
             try:
@@ -64,10 +86,23 @@ class MailSensor(Sensor):
                 # bad app password used to just log.exception and go
                 # quiet forever (P7) -- now it's a durable, queryable fact.
                 if "AUTHENTICATIONFAILED" in str(e).upper():
-                    report_failure("argus.credential_failed", account["name"], {"error": str(e)})
+                    failures = self._auth_failures.get(name, 0) + 1
+                    self._auth_failures[name] = failures
+                    self._failed_password[name] = password
+                    if failures == settings.imap_auth_failure_limit:
+                        # Exactly once -- not one report per poll, unlike
+                        # the pre-44c behavior this replaces.
+                        report_failure("argus.credential_failed", name, {"error": str(e)})
                 else:
-                    log.exception("Mail sensor login failed for %s", account["name"])
+                    # Some other IMAP4 error at login (not
+                    # AUTHENTICATIONFAILED) -- doesn't count toward the
+                    # auth-failure limit either.
+                    log.exception("Mail sensor login failed for %s", name)
                 return []
+
+            if self._auth_failures.pop(name, None):
+                self._failed_password.pop(name, None)
+                report_recovery(name)
 
             conn.select("INBOX", readonly=True)
 

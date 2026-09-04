@@ -1,3 +1,4 @@
+import imaplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from unittest.mock import MagicMock, patch
@@ -220,3 +221,118 @@ def test_new_uid_above_baseline_is_fetched_triaged_and_submitted():
     dispatcher.submit.assert_called_once()  # submitted even though IGNORE -- salience decides now, not this worker
     (candidate,), _kwargs = dispatcher.submit.call_args
     assert candidate.base_urgency == 0.10
+
+
+# -- IMAP hardening (PRD §19/§20 unit 44) ------------------------------------
+
+def test_connect_passes_the_configured_timeout():
+    """44b: a real incident had a bad password tarpitted by Yahoo -- the
+    resulting dropped connections hung on the OS default (~21s) with no
+    timeout set, masquerading as a network fault."""
+    worker, _dispatcher = _worker([])
+    fake_conn = MagicMock()
+    fake_conn.login.side_effect = imaplib.IMAP4.error("boom")
+    with patch("argus.email_watcher.imaplib.IMAP4_SSL", return_value=fake_conn) as mock_ssl, \
+         patch("argus.email_watcher.settings.imap_connect_timeout_seconds", 7.0):
+        worker._check_account({"name": "Gmail", "host": "imap.gmail.com"}, "user@gmail.com", "app-password")
+    mock_ssl.assert_called_once_with("imap.gmail.com", timeout=7.0)
+
+
+def test_connect_timeout_does_not_count_toward_auth_failure_limit_or_report():
+    """44c: a connection timeout is NOT an auth failure -- must not count
+    toward the backoff limit or emit argus.credential_failed."""
+    worker, _dispatcher = _worker([])
+    with patch("argus.email_watcher.imaplib.IMAP4_SSL", side_effect=TimeoutError("timed out")), \
+         patch("argus.email_watcher.report_failure") as mock_report, \
+         patch("argus.email_watcher.settings.gmail_imap_user", "user@gmail.com"), \
+         patch("argus.email_watcher.settings.gmail_imap_app_password", "app-password"), \
+         patch("argus.email_watcher.settings.imap_auth_failure_limit", 3):
+        for _ in range(5):  # well past the auth-failure limit
+            worker.check_now()
+    mock_report.assert_not_called()
+    assert worker._auth_failures == {}
+
+
+def test_auth_failure_below_limit_does_not_report():
+    worker, _dispatcher = _worker([])
+    fake_conn = MagicMock()
+    fake_conn.login.side_effect = imaplib.IMAP4.error("AUTHENTICATIONFAILED")
+    with patch("argus.email_watcher.imaplib.IMAP4_SSL", return_value=fake_conn), \
+         patch("argus.email_watcher.report_failure") as mock_report, \
+         patch("argus.email_watcher.settings.imap_auth_failure_limit", 3):
+        worker._check_account({"name": "Gmail", "host": "imap.gmail.com"}, "user@gmail.com", "app-password")
+        worker._check_account({"name": "Gmail", "host": "imap.gmail.com"}, "user@gmail.com", "app-password")
+    mock_report.assert_not_called()
+    assert worker._auth_failures["Gmail"] == 2
+
+
+def test_auth_failure_reaching_limit_reports_exactly_once():
+    worker, _dispatcher = _worker([])
+    fake_conn = MagicMock()
+    fake_conn.login.side_effect = imaplib.IMAP4.error("AUTHENTICATIONFAILED")
+    with patch("argus.email_watcher.imaplib.IMAP4_SSL", return_value=fake_conn), \
+         patch("argus.email_watcher.report_failure") as mock_report, \
+         patch("argus.email_watcher.settings.imap_auth_failure_limit", 3):
+        for _ in range(3):
+            worker._check_account({"name": "Gmail", "host": "imap.gmail.com"}, "user@gmail.com", "app-password")
+    mock_report.assert_called_once_with("argus.credential_failed", "Gmail", {"error": "AUTHENTICATIONFAILED"})
+
+
+def test_account_stops_being_polled_once_the_limit_is_reached():
+    worker, _dispatcher = _worker([])
+    fake_conn = MagicMock()
+    fake_conn.login.side_effect = imaplib.IMAP4.error("AUTHENTICATIONFAILED")
+    with patch("argus.email_watcher.imaplib.IMAP4_SSL", return_value=fake_conn) as mock_ssl, \
+         patch("argus.email_watcher.report_failure"), \
+         patch("argus.email_watcher.settings.gmail_imap_user", "user@gmail.com"), \
+         patch("argus.email_watcher.settings.gmail_imap_app_password", "app-password"), \
+         patch("argus.email_watcher.settings.yahoo_imap_user", ""), \
+         patch("argus.email_watcher.settings.yahoo_imap_app_password", ""), \
+         patch("argus.email_watcher.settings.imap_auth_failure_limit", 3):
+        for _ in range(3):
+            worker.check_now()
+        assert mock_ssl.call_count == 3
+        worker.check_now()  # limit reached -- must not even attempt to connect
+    assert mock_ssl.call_count == 3
+
+
+def test_successful_login_after_failures_resets_counter_and_reports_recovery():
+    worker, _dispatcher = _worker([])
+    worker._auth_failures["Gmail"] = 2
+    worker._failed_password["Gmail"] = "app-password"
+    fake_conn = MagicMock()
+    fake_conn.status.return_value = ("OK", [b"INBOX (UIDNEXT 1)"])
+    with patch("argus.email_watcher.imaplib.IMAP4_SSL", return_value=fake_conn), \
+         patch("argus.email_watcher.report_recovery") as mock_recovery:
+        worker._check_account({"name": "Gmail", "host": "imap.gmail.com"}, "user@gmail.com", "app-password")
+    mock_recovery.assert_called_once_with("Gmail")
+    assert "Gmail" not in worker._auth_failures
+
+
+def test_changed_password_resets_counter_and_resumes_polling():
+    """44c: 'reset the counter ... when the credential setting changes' --
+    a fixed password must not have to wait out the old failure streak."""
+    worker, _dispatcher = _worker([])
+    fake_conn = MagicMock()
+    fake_conn.login.side_effect = imaplib.IMAP4.error("AUTHENTICATIONFAILED")
+    with patch("argus.email_watcher.imaplib.IMAP4_SSL", return_value=fake_conn) as mock_ssl, \
+         patch("argus.email_watcher.report_failure"), \
+         patch("argus.email_watcher.settings.gmail_imap_user", "user@gmail.com"), \
+         patch("argus.email_watcher.settings.gmail_imap_app_password", "old-password"), \
+         patch("argus.email_watcher.settings.yahoo_imap_user", ""), \
+         patch("argus.email_watcher.settings.yahoo_imap_app_password", ""), \
+         patch("argus.email_watcher.settings.imap_auth_failure_limit", 2):
+        worker.check_now()
+        worker.check_now()
+    assert mock_ssl.call_count == 2
+    assert worker._auth_failures["Gmail"] == 2
+
+    with patch("argus.email_watcher.imaplib.IMAP4_SSL", return_value=fake_conn) as mock_ssl2, \
+         patch("argus.email_watcher.report_failure"), \
+         patch("argus.email_watcher.settings.gmail_imap_user", "user@gmail.com"), \
+         patch("argus.email_watcher.settings.gmail_imap_app_password", "new-password"), \
+         patch("argus.email_watcher.settings.yahoo_imap_user", ""), \
+         patch("argus.email_watcher.settings.yahoo_imap_app_password", ""), \
+         patch("argus.email_watcher.settings.imap_auth_failure_limit", 2):
+        worker.check_now()  # different password -- must attempt to connect, not skip
+    assert mock_ssl2.call_count == 1

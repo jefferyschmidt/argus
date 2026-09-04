@@ -12,6 +12,11 @@ KINDS = frozenset({
     "reminder.due", "routine.due",
     "git.commit", "git.branch_stale",
     "argus.integration_failed", "argus.credential_failed", "argus.spend_recorded",
+    # PRD §19/§20 unit 44c: the other half of argus.credential_failed --
+    # emitted once a previously-failing account logs in successfully
+    # again, so the proactive tick can close the system_health thread
+    # credential_failed opened for it.
+    "argus.credential_recovered",
     "task.started", "task.progress", "task.finished", "task.failed",
     "document.composed",
     "thread.opened", "thread.closed",

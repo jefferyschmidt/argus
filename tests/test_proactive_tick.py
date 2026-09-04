@@ -95,6 +95,71 @@ def test_a_failing_rule_fire_does_not_block_other_rules_that_tick(tmp_path, monk
     assert calls == [{}]
 
 
+# -- system_health thread wiring (PRD §19/§20 unit 44c) --------------------
+
+def test_credential_failed_observation_opens_a_system_health_thread(tmp_path, monkeypatch):
+    """44c: 'the credential_failed observation opens a system_health
+    thread that the §19 tick can reap once the credential works again --
+    that's the point of it, not just logging.' Nothing in the codebase
+    called open_system_health() in response to a health observation
+    before this unit -- this is the wiring that makes it happen."""
+    engine = _isolated_engine(tmp_path, monkeypatch)
+
+    engine.spine.record(Observation(
+        source="argus.health", kind="argus.credential_failed", ts=time.time(),
+        subject="Yahoo", payload={"error": "AUTHENTICATIONFAILED"},
+    ))
+
+    engine._run_proactive_tick(now=time.time())
+
+    thread = engine.threads.find_open("system_health", "Yahoo")
+    assert thread is not None
+    assert "Yahoo" in thread.title
+
+
+def test_repeated_credential_failed_observations_touch_one_thread_not_many(tmp_path, monkeypatch):
+    engine = _isolated_engine(tmp_path, monkeypatch)
+    now = time.time()
+
+    engine.spine.record(Observation(source="argus.health", kind="argus.credential_failed", ts=now, subject="Yahoo", payload={}))
+    engine._run_proactive_tick(now=now)
+    first = engine.threads.find_open("system_health", "Yahoo")
+
+    engine.spine.record(Observation(source="argus.health", kind="argus.credential_failed", ts=now + 1, subject="Yahoo", payload={}))
+    engine._run_proactive_tick(now=now + 1)
+    second = engine.threads.find_open("system_health", "Yahoo")
+
+    assert first.id == second.id
+
+
+def test_credential_recovered_observation_closes_the_system_health_thread(tmp_path, monkeypatch):
+    """The other half of the acceptance box: reap-eligible once the
+    credential works again."""
+    engine = _isolated_engine(tmp_path, monkeypatch)
+
+    engine.spine.record(Observation(source="argus.health", kind="argus.credential_failed", ts=time.time(), subject="Yahoo", payload={}))
+    engine._run_proactive_tick(now=time.time())
+    thread_id = engine.threads.find_open("system_health", "Yahoo").id
+
+    # A tick boundary that lands exactly on an observation's own ts can, by
+    # this tick's own documented design (_tick_rule_firing's docstring),
+    # see that observation again next tick -- advance well clear of it so
+    # this test isn't exercising that narrow, accepted race.
+    engine.spine.record(Observation(source="argus.health", kind="argus.credential_recovered", ts=time.time() + 5, subject="Yahoo", payload={}))
+    engine._run_proactive_tick(now=time.time() + 5)
+
+    assert engine.threads.get(thread_id).closed_ts is not None
+    assert engine.threads.find_open("system_health", "Yahoo") is None
+
+
+def test_credential_recovered_with_no_open_thread_is_a_safe_noop(tmp_path, monkeypatch):
+    engine = _isolated_engine(tmp_path, monkeypatch)
+
+    engine.spine.record(Observation(source="argus.health", kind="argus.credential_recovered", ts=time.time(), subject="Yahoo", payload={}))
+
+    engine._run_proactive_tick(now=time.time())  # must not raise
+
+
 # -- reap on a timer (step 4) ----------------------------------------------
 
 def test_thread_with_a_timeout_close_condition_closes_on_the_timer_with_no_acknowledgment(tmp_path, monkeypatch):
