@@ -1,0 +1,102 @@
+# Argus System Map
+
+**This file is the source of truth for how Argus is *wired* — who produces each signal and who
+consumes it.** It exists because the project's most expensive, most repeated bug is a subsystem
+that is built and unit-tested but never driven in production (reminders lost, `fire()` never
+called, `reap()` never on a timer, induction/escalation/prune orphaned). A unit test cannot
+catch that — it calls the function directly. This map can.
+
+**Maintenance is not optional and is partly enforced by tests** (`tests/test_system_integrity.py`):
+- Update this file **in the same commit** as any change to a producer/consumer, a store, or an
+  observation kind.
+- At every gate, run `tests/test_system_integrity.py` and reconcile any diff between this map
+  and reality. The mechanical claims below are checked there; the prose is on you.
+- The one rule that would have prevented every orphan bug: **nothing is "done" until this map
+  shows a real production producer *and* consumer for it.** "Has tests" is not "is wired."
+
+Last audited: 2026-09-04.
+
+---
+
+## 1. Observation kinds — producer → consumer
+
+Every kind in `spine/observation.py::KINDS`. A kind with no producer, or no consumer, is a bug
+or dead vocabulary — flagged.
+
+| Kind | Produced by | Consumed by | Status |
+|---|---|---|---|
+| `focus.changed` | WindowFocusSensor | rhythms, interruption_cost, context_awareness | ✅ |
+| `focus.idle_started/ended` | WindowFocusSensor | interruption_cost | ✅ |
+| `mail.received` | MailSensor, EmailWatcher | salience (via dispatcher), thread openers | ✅ |
+| `mail.deleted` | **nothing** | thread close-conditions (email_reply), rhythms (`_ACTED_KINDS`) | ⚠️ **ORPHAN — consumed, never produced.** "Close the email thread when I delete it" never fires; deletions never count toward sender_importance. Needs a producer (the delete_email tool, or a mail-flag sensor). |
+| `calendar.event_upcoming` | CalendarSensor | salience, interruption_cost (`_in_a_meeting`) | ✅ |
+| `calendar.event_changed` | **nothing** | **nothing** | ⚠️ **DEAD vocabulary** — remove from KINDS or wire a producer+consumer. |
+| `reminder.due` | ReminderSensor (timeline only) + ProactiveEngine tick reads `ReminderStore.list_due` directly | tick reminder consumer → salience | ✅ (§19 u37) |
+| `routine.due` | RoutineSensor | tick routine consumer → salience | ✅ (§19 u37) |
+| `git.commit`, `git.branch_stale` | GitActivitySensor | salience | ✅ |
+| `argus.integration_failed` | argus_health `report_failure` | tick → `open_system_health` thread; scoring | ✅ (§20 u44c) |
+| `argus.credential_failed` | EmailWatcher + MailSensor (`report_failure` at auth-fail limit) | tick → `open_system_health` thread | ✅ (§20 u44c) |
+| `argus.credential_recovered` | EmailWatcher + MailSensor (`report_recovery`) | tick → closes system_health thread | ✅ (§20 u44c) |
+| `argus.spend_recorded` | argus_health (spend.json read) | salience | ✅ |
+| `task.started/progress/finished/failed` | TaskRunner/worker | tick (task-close threads), salience | ✅ |
+| `document.composed` | compose tool | salience | ✅ |
+| `thread.opened`, `thread.closed` | ThreadStore.open/close | timeline, `thread_closed` predicate | ✅ |
+| `thread.acknowledged` | ProactiveEngine.acknowledge_thread (voice + ui) | `user_acknowledged` predicate, rhythms | ✅ |
+| `tool.auto_approved` | ToolRegistry (standing-auth grant) | audit trail (`argus timeline`) | ✅ |
+
+**Action items from this audit:** `mail.deleted` producer (real), `calendar.event_changed`
+decide (wire or delete). Both pre-existing, neither introduced by recent work.
+
+---
+
+## 2. Subsystems — what drives each
+
+The columns that matter: **Producer** = what actually invokes it in `src/` (not a test).
+"Built, tested, no producer" is the orphan signature.
+
+| Subsystem | Entry point | Producer (prod caller) | Status |
+|---|---|---|---|
+| Spine sensors | `SpineEngine.start()` | `ProactiveEngine.start()` | ✅ |
+| Salience decide | `SalienceDispatcher.submit()` | 7 workers + tick | ✅ |
+| Interruption budget | `budget.consume()` | dispatcher | ✅ (atomicity = §19 u43b, pending) |
+| Held queue | `held.add()` | dispatcher | ✅ |
+| Thread reap (timer) | `threads.reap()` | `ProactiveEngine._tick_reap` | ✅ (§19 u37) |
+| Rule matching + firing | `RuleInstanceStore.fire()` | `ProactiveEngine._tick_rule_firing` | ✅ (§19 u37) |
+| Escalation | `escalation.schedule()` / `process_due()` | dispatcher (schedule) + tick (drain) | ✅ (§19 u37) |
+| Induction | `InductionEngine.run_once()` | `ProactiveEngine._tick_induction` (daily) | ✅ (§19 u37) |
+| Retention prune | `SpineStore.prune()` | `ProactiveEngine._tick_retention` (daily) | ✅ (§19 u37) |
+| Reminders | `ReminderStore.list_due()` | tick reminder consumer, mark-notified-on-delivered | ✅ (§19 u37/u38) |
+| Tasks (autonomous) | `TaskRunner` | Orchestrator (shares full registry) | ✅ (§19 u39) |
+| Standing authorizations | `AuthorizationChecker` | `ToolRegistry.execute` step 2b + tick rule-firing | ✅ |
+| Proactive layer itself | `ProactiveEngine.start()` | `argus voice` ✅ / `argus chat` ⚠️ **not started in chat** (§19 u40 pending) |
+
+---
+
+## 3. Stores & connection discipline (P1)
+
+Every SQLite store opens through `argus/db.py::open_db(path, schema)` — sets `busy_timeout`,
+serializes the one-time WAL transition per file (§19 u43a/43a-ii). **No raw `sqlite3.connect`
+may exist outside `db.py`** (enforced by `test_system_integrity.py`).
+
+Stores on `argus.db`: RuleStore, RuleInstanceStore, RhythmStore, ThreadStore, TaskStore,
+InterruptionBudget, DecisionLog, EscalationScheduler, HeldQueue, ReminderStore/RoutineStore
+(via `memory.store.get_connection`). Store on `spine.db`: SpineStore. Each owns its own
+connection + `threading.Lock`; the lock serializes threads within one connection, `open_db`
+handles cross-connection WAL contention.
+
+---
+
+## 4. Voice modes (transport differs, behavior should not)
+
+| Behavior | pipeline (`voice/loop.py`) | realtime (`voice/realtime.py`) | Unified? |
+|---|---|---|---|
+| Transport | local STT/TTS + wake word | OpenAI realtime socket | — |
+| Wake word | required ("Argus") | none (continuous) | inherent difference |
+| Tool registry | Orchestrator full | Orchestrator full (§16 u33) | ✅ |
+| Time grounding | per-turn (`_dynamic_context`) | per-connect + refresh (§16 u34) | ✅ |
+| Confirmations | `voice/confirm.py` | `_ask_voice_confirmation` (§13 u24/24a) | ⚠️ two copies (§19 u40 to unify) |
+| Reminder/proactive delivery | shared `ProactiveEngine` | shared `ProactiveEngine` | ✅ (§19 u37) |
+| Acknowledgment | `_process_utterance` | `_receive` transcript path | ⚠️ two copies (§19 u40) |
+
+**Default:** hardcoded `pipeline` until §19 u40 makes it resolve to realtime when a key is
+present. Today `.env` `VOICE_MODE` decides.
