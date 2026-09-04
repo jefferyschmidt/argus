@@ -1970,3 +1970,81 @@ independent. 40 depends on 37 (shared delivery is what 37's reminder consumer pl
 should be written alongside 37 so its reminder/proactive tests are the acceptance evidence. 42
 and 43 are independent and lower priority. Gate each with the cross-cutting "no orphaned
 producers" grep.
+
+---
+
+## 20. Unit 44 — IMAP hardening (from a live incident, 2026-09-04)
+
+**What happened:** Yahoo email silently stopped working, presenting as a `WinError 10060`
+connection timeout that looked like a network fault. Root cause: the Yahoo app password was
+stored **with the spaces Yahoo shows it in** (`xxxx xxxx xxxx xxxx`, 19 chars incl. 3 spaces;
+a real app password is 16 chars, no spaces). Every login failed (`AUTHENTICATIONFAILED`), the
+watcher kept polling with the bad password, and Yahoo began **tarpitting the source IP** as an
+anti-abuse response — dropped connections surface as TCP timeouts, not auth errors, which is why
+it masqueraded as a network problem. The network and Yahoo were fine; a fresh socket to port 993
+(no login attempt) connected in 0.07s.
+
+Three independent weaknesses each contributed. Fix all three, in **both** IMAP code paths —
+`email_watcher.py` (the old worker) and `spine/sensors/mail.py` (the new sensor) — which today
+duplicate the same fragile connect logic.
+
+### 44a — Strip whitespace from IMAP app passwords at config load
+
+Every provider (Yahoo, Gmail, iCloud) *displays* app passwords space-grouped for readability and
+expects them entered without spaces. Strip all internal whitespace from the two IMAP
+app-password settings (`gmail_imap_app_password`, `yahoo_imap_app_password`) when they are read
+in `config.py`.
+
+- **Scope this to the IMAP app-password fields only.** A general password can legitimately
+  contain spaces; an IMAP *app password* is an alnum token that never does. Do not apply this to
+  any other secret.
+- This single change would have prevented the entire incident.
+
+**Acceptance:**
+- [ ] A configured app password containing spaces is used with the spaces removed.
+- [ ] A 16-char app password entered without spaces is unchanged.
+- [ ] No other secret/setting has whitespace stripped.
+
+### 44b — Connect timeout
+
+`imaplib.IMAP4_SSL(host)` is called with no `timeout=`, so a tarpitted or stalled connection
+hangs the calling thread for the OS default (~21s) before failing. Pass
+`settings.imap_connect_timeout_seconds` (default 10) to every IMAP connect.
+
+**Acceptance:**
+- [ ] Both IMAP connect sites pass the configured timeout.
+- [ ] A connect to an unreachable endpoint fails in ~timeout seconds, not ~21s.
+
+### 44c — Back off after repeated auth failures, and surface it
+
+The watcher retries the same bad credentials every poll — which is exactly what triggers the
+provider's IP throttle. Distinguish a permanent auth failure from a transient connection error
+and treat them differently:
+
+- On `AUTHENTICATIONFAILED` (bad credentials — retrying cannot fix it), stop polling that
+  account after `settings.imap_auth_failure_limit` (default 3) consecutive auth failures, and
+  emit an `argus.credential_failed` observation with the account name. Reset the counter on a
+  successful login or a credentials change.
+- **This ties into the machinery §19 just made live:** `argus.credential_failed` opens a
+  `system_health` thread (world/threads.py), so a dead credential becomes one tracked, surfaced
+  item Argus can actually tell the user about — *"Yahoo email sign-in is failing; the app
+  password looks wrong"* — instead of an error buried in the log and an inexplicably missing
+  feature. This is exactly the "Argus monitors its own integrations" case from ROADMAP Part III.
+- A transient connection error / timeout is **not** an auth failure: keep the normal poll cadence
+  for it (it will recover on its own), just bounded by 44b's timeout. Do not count it toward the
+  auth-failure limit.
+
+**Acceptance:**
+- [ ] After `imap_auth_failure_limit` consecutive auth failures, the account stops being polled
+      and one `argus.credential_failed` observation is emitted (not one per poll).
+- [ ] A successful login resets the counter and resumes normal polling.
+- [ ] A connection timeout does not count toward the auth-failure limit and does not stop polling.
+- [ ] The `system_health` thread for the failed credential appears and is reap-eligible once the
+      credential works again.
+
+### Note on the two code paths
+
+44a–c must land in both `email_watcher.py` and `spine/sensors/mail.py`. That they duplicate this
+logic at all is the same divergence Unit 40 exists to remove — if the shared-connect helper from
+40/43a-ii is being built around the same time, route both IMAP paths through one place and apply
+44 there once. Otherwise, apply it twice and note the duplication for 40 to collapse later.
